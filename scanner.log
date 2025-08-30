@@ -1,0 +1,26 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `target/debug/scanner`
+[INFO] devIdx: 0
+[INFO] SerNo: 2301034E34
+[INFO] hwVer: 3
+[INFO] rspDuoMode: 1
+[INFO] tuner: 1
+[INFO] rspDuoSampleFreq: 0.000000
+Opened device: SDRplay Dev0 RSPduo 2301034E34 - Single Tuner
+Device reports frequency range: 0.001 MHz to 2000.000 MHz
+Scanner starting...
+Scanning from 0.001 MHz to 2000.000 MHz
+Tuned to 88.900 MHz. Starting stream...
+[INFO] Using format CS16.
+Receiving samples from reader thread...
+  - Received chunk 1 with 8192 samples
+  - Received chunk 2 with 8192 samples
+  - Received chunk 3 with 8192 samples
+  - Received chunk 4 with 8192 samples
+  - Received chunk 5 with 8192 samples
+  - Received chunk 6 with 8192 samples
+  - Received chunk 7 with 8192 samples
+  - Received chunk 8 with 7168 samples
+  - Received chunk 9 with 8192 samples
+  - Received chunk 10 with 8192 samples
+Shutting down reader thread...

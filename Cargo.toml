@@ -3,4 +3,11 @@ name = "scanner"
 version = "0.1.0"
 edition = "2024"
 
+license = "MIT"
+
 [dependencies]
+clap = { version = "4.5.4", features = ["derive"] }
+soapysdr = "0.2.0"
+thiserror = "1.0"
+num-complex = "0.2"
+
