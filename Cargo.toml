@@ -9,5 +9,7 @@ license = "MIT"
 clap = { version = "4.5.4", features = ["derive"] }
 soapysdr = "0.2.0"
 thiserror = "1.0"
+cpal = "0.15"
+
 num-complex = "0.2"
 

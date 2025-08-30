@@ -1,10 +1,15 @@
 use clap::{Parser, ValueEnum};
 use num_complex::Complex;
-use soapysdr::{Device, Direction};
+use soapysdr::{Device, Direction, RxStream};
+use std::cmp::Ordering;
 use std::f32::consts::PI;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use thiserror::Error;
+
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{Device as AudioDevice, SampleFormat, Stream, StreamConfig};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -24,6 +29,10 @@ struct Args {
     /// SDR device arguments (e.g., "driver=sdrplay")
     #[arg(long)]
     device_args: Option<String>,
+
+    /// Number of processing loops to run (defaults to 1)
+    #[arg(long, default_value_t = 1)]
+    loops: usize,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -56,6 +65,16 @@ enum ScannerError {
     NoDevicesFound(String),
     #[error("Error: {0}")]
     Custom(String),
+    #[error(transparent)]
+    Audio(#[from] cpal::SupportedStreamConfigsError),
+    #[error(transparent)]
+    AudioBuild(#[from] cpal::BuildStreamError),
+    #[error(transparent)]
+    AudioPlay(#[from] cpal::PlayStreamError),
+    #[error(transparent)]
+    AudioDevice(#[from] cpal::DefaultStreamConfigError),
+    #[error(transparent)]
+    AudioDeviceName(#[from] cpal::DeviceNameError),
 }
 
 type Result<T> = std::result::Result<T, ScannerError>;
@@ -75,7 +94,8 @@ fn main() -> Result<()> {
         stop_freq / 1e6
     );
 
-    run_scanner(device, start_freq, stop_freq)?;
+    let (mut scanner_app, audio_rx) = MainLoop::new(device, start_freq, stop_freq, args.loops)?;
+    scanner_app.run(audio_rx)?; // Pass audio_rx to run method
 
     println!("Scanner finished.");
     Ok(())
@@ -126,57 +146,381 @@ fn determine_frequency_range(args: &Args, device: &Device) -> Result<(f64, f64)>
     }
 }
 
-#[allow(clippy::unnecessary_mut_passed)]
-fn run_scanner(device: Device, _start_freq: f64, _stop_freq: f64) -> Result<()> {
-    let rx_channel = 0;
-    let sample_rate = 2.4e6;
-    let bandwidth = 2.4e6;
-    let test_freq = 88.9e6;
+struct SdrManager {
+    device: Device,
+    rx_channel: usize,
+    sample_rate: f64,
+    bandwidth: f64,
+    tuned_freq: f64,
+}
 
-    device.set_sample_rate(Direction::Rx, rx_channel, sample_rate)?;
-    device.set_bandwidth(Direction::Rx, rx_channel, bandwidth)?;
-    device.set_frequency(Direction::Rx, rx_channel, test_freq, "")?;
-    device.set_gain_mode(Direction::Rx, rx_channel, false)?;
-    device.set_gain(Direction::Rx, rx_channel, 20.0)?;
+impl SdrManager {
+    fn new(
+        device: Device,
+        rx_channel: usize,
+        sample_rate: f64,
+        bandwidth: f64,
+        tuned_freq: f64,
+    ) -> Self {
+        SdrManager {
+            device,
+            rx_channel,
+            sample_rate,
+            bandwidth,
+            tuned_freq,
+        }
+    }
 
-    println!("Tuned to {:.3} MHz. Starting stream...", test_freq / 1e6);
+    fn configure_device(&self) -> Result<()> {
+        self.device
+            .set_sample_rate(Direction::Rx, self.rx_channel, self.sample_rate)?;
+        println!(
+            "Configured Sample Rate: {}",
+            self.device.sample_rate(Direction::Rx, self.rx_channel)?
+        );
+        self.device
+            .set_bandwidth(Direction::Rx, self.rx_channel, self.bandwidth)?;
+        println!(
+            "Configured Bandwidth: {}",
+            self.device.bandwidth(Direction::Rx, self.rx_channel)?
+        );
+        self.device
+            .set_frequency(Direction::Rx, self.rx_channel, self.tuned_freq, "")?;
+        println!(
+            "Configured Frequency: {}",
+            self.device.frequency(Direction::Rx, self.rx_channel)?
+        );
+        self.device
+            .set_gain_mode(Direction::Rx, self.rx_channel, true)?;
+        println!(
+            "Configured Gain Mode: {}",
+            self.device.gain_mode(Direction::Rx, self.rx_channel)?
+        );
+        self.device.set_gain(Direction::Rx, self.rx_channel, 40.0)?;
+        println!(
+            "Configured Gain: {}",
+            self.device.gain(Direction::Rx, self.rx_channel)?
+        );
 
-    let mut rx_stream = device.rx_stream::<Complex<i16>>(&[rx_channel])?;
-    let (tx, rx) = mpsc::channel::<Vec<Complex<i16>>>();
+        Ok(())
+    }
 
-    let reader_handle = thread::spawn(move || {
-        rx_stream.activate(None).unwrap();
-        loop {
-            let mut buffer = vec![Complex::new(0, 0); 8192];
-            match rx_stream.read(&mut [&mut buffer], 1_000_000) {
-                Ok(len) => {
-                    buffer.truncate(len);
-                    if tx.send(buffer).is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error reading from stream: {}", e);
+    fn start_stream(&self) -> Result<RxStream<Complex<f32>>> {
+        let rx_stream = self.device.rx_stream::<Complex<f32>>(&[self.rx_channel])?;
+        Ok(rx_stream)
+    }
+}
+
+struct DspProcessor {
+    sample_rate: f64,
+    center_freq: f64,
+    decimation_factor: usize,
+}
+
+impl DspProcessor {
+    fn new(sample_rate: f64, center_freq: f64, decimation_factor: usize) -> Self {
+        DspProcessor {
+            sample_rate,
+            center_freq,
+            decimation_factor,
+        }
+    }
+
+    fn process_and_demodulate_chunk(&self, chunk: &[Complex<f32>], audio_tx: mpsc::Sender<f32>) {
+        let fft_size = chunk.len();
+
+        let window: Vec<f32> = (0..fft_size)
+            .map(|i| 0.5 * (1.0 - (2.0 * PI * i as f32 / (fft_size - 1) as f32).cos()))
+            .collect();
+
+        let buffer: Vec<Complex<f32>> = chunk
+            .iter()
+            .zip(window.iter())
+            .map(|(sample, w)| Complex::new(sample.re * w, sample.im * w))
+            .collect();
+
+        // Perform DFT (for signal detection)
+        let fft_output = dft(&buffer);
+
+        let power_spectrum: Vec<f32> = fft_output.iter().map(|c| c.norm_sqr()).collect();
+
+        let (max_idx, _max_power) = power_spectrum
+            .iter()
+            .enumerate()
+            .max_by(|&(_, &a), &(_, &b)| a.partial_cmp(&b).unwrap_or(Ordering::Equal))
+            .unwrap_or((0, &0.0));
+
+        let freq_resolution = self.sample_rate / fft_size as f64;
+        let peak_freq_offset = if max_idx < fft_size / 2 {
+            max_idx as f64 * freq_resolution
+        } else {
+            (max_idx as f64 - fft_size as f64) * freq_resolution
+        };
+        let peak_freq = self.center_freq + peak_freq_offset;
+        // Log the actual frequency of the strongest signal for debugging/information.
+        println!("Strongest signal detected at: {:.3} MHz", peak_freq / 1e6);
+
+        // --- WBFM Demodulation ---
+        let mut prev_phase = 0.0f32;
+        let mut current_freq_offset = 0.0f32; // For frequency shifting
+
+        for (i, sample) in buffer.iter().enumerate() {
+            // Frequency shift to baseband (for the strongest signal found)
+            // This is a simplified shift, a proper one would track the actual signal center
+            let phase_increment = -2.0 * PI * (peak_freq_offset as f32 / self.sample_rate as f32);
+            current_freq_offset += phase_increment;
+            let shifter = Complex::new(current_freq_offset.cos(), current_freq_offset.sin());
+            let shifted_sample = sample * shifter;
+
+            // WBFM Demodulation (phase differentiation)
+            let phase = shifted_sample.arg(); // atan2(im, re)
+            let mut diff = phase - prev_phase;
+            prev_phase = phase;
+
+            // Handle phase wrapping
+            if diff > PI {
+                diff -= 2.0 * PI;
+            }
+            if diff < -PI {
+                diff += 2.0 * PI;
+            }
+
+            // Decimate and send to audio
+            if i % self.decimation_factor == 0 {
+                // Scale for audio output (arbitrary scaling for now)
+                let audio_sample = diff * 50.0;
+                if audio_tx.send(audio_sample).is_err() {
+                    // Audio thread disconnected
                     break;
                 }
             }
         }
-        rx_stream.deactivate(None).ok();
-        println!("Reader thread finished.");
-    });
+    }
+}
 
-    println!("Receiving samples for processing...");
-    for chunk in rx.iter().take(10) {
-        if !chunk.is_empty() {
-            process_chunk(&chunk, sample_rate, test_freq);
-        }
+#[allow(dead_code)]
+struct AudioPlayer {
+    host: cpal::Host,
+    device: AudioDevice,
+    config: StreamConfig,
+    sample_format: SampleFormat,
+    audio_rx: Arc<Mutex<mpsc::Receiver<f32>>>,
+    stream: Option<Stream>,
+}
+
+impl AudioPlayer {
+    fn new(audio_rx: mpsc::Receiver<f32>) -> Result<Self> {
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .expect("no output device available");
+        let supported_config = device
+            .default_output_config()
+            .expect("Failed to get default output config");
+        let sample_format = supported_config.sample_format();
+        let config: StreamConfig = supported_config.into();
+
+        Ok(AudioPlayer {
+            host,
+            device,
+            config,
+            sample_format,
+            audio_rx: Arc::new(Mutex::new(audio_rx)),
+            stream: None,
+        })
     }
 
-    drop(rx);
-    println!("Shutting down reader thread...");
-    reader_handle.join().expect("Reader thread panicked");
+    fn build_and_play_stream(&mut self) -> Result<()> {
+        // Change signature
+        let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
+        let audio_rx_moved = self.audio_rx.clone(); // Clone the Arc
 
-    Ok(())
+        let stream = match self.sample_format {
+            SampleFormat::F32 => self.device.build_output_stream(
+                &self.config,
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    for sample in data.iter_mut() {
+                        *sample = match audio_rx_moved.lock().unwrap().try_recv() {
+                            // Lock and receive
+                            Ok(s) => s,
+                            Err(mpsc::TryRecvError::Empty) => 0.0f32,
+                            Err(mpsc::TryRecvError::Disconnected) => 0.0f32,
+                        };
+                    }
+                },
+                err_fn,
+                None,
+            )?,
+            SampleFormat::I16 => self.device.build_output_stream(
+                &self.config,
+                move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+                    for sample in data.iter_mut() {
+                        *sample = match audio_rx_moved.lock().unwrap().try_recv() {
+                            // Lock and receive
+                            Ok(s) => cpal::Sample::from_sample(s),
+                            Err(mpsc::TryRecvError::Empty) => cpal::Sample::from_sample(0.0f32),
+                            Err(mpsc::TryRecvError::Disconnected) => {
+                                cpal::Sample::from_sample(0.0f32)
+                            }
+                        };
+                    }
+                },
+                err_fn,
+                None,
+            )?,
+            SampleFormat::U16 => self.device.build_output_stream(
+                &self.config,
+                move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
+                    for sample in data.iter_mut() {
+                        *sample = match audio_rx_moved.lock().unwrap().try_recv() {
+                            // Lock and receive
+                            Ok(s) => cpal::Sample::from_sample(s),
+                            Err(mpsc::TryRecvError::Empty) => cpal::Sample::from_sample(0.0f32),
+                            Err(mpsc::TryRecvError::Disconnected) => {
+                                cpal::Sample::from_sample(0.0f32)
+                            }
+                        };
+                    }
+                },
+                err_fn,
+                None,
+            )?,
+            _ => {
+                return Err(ScannerError::Custom(
+                    "Unsupported sample format".to_string(),
+                ));
+            }
+        };
+
+        stream.play()?;
+        self.stream = Some(stream);
+        Ok(()) // Return Ok(())
+    }
+}
+
+struct MainLoop {
+    sdr_manager: SdrManager,
+    dsp_processor: DspProcessor,
+    iq_tx: mpsc::Sender<Vec<Complex<f32>>>,
+    iq_rx: mpsc::Receiver<Vec<Complex<f32>>>,
+    audio_tx_main: mpsc::Sender<f32>,
+    stop_tx: mpsc::Sender<()>, // This can remain a Sender
+    stop_rx: Arc<Mutex<mpsc::Receiver<()>>>,
+    loops: usize,
+}
+
+impl MainLoop {
+    fn new(
+        device: Device,
+        _start_freq: f64,
+        _stop_freq: f64,
+        loops: usize,
+    ) -> Result<(Self, mpsc::Receiver<f32>)> {
+        let rx_channel = 0;
+        let sample_rate = 5.0e6; // 5.0 Msps
+        let bandwidth = 5.0e6;
+        let test_freq = 88.9e6; // A test frequency in the FM band
+        let audio_sample_rate = 48_000.0; // 48 kHz
+        let decimation_factor = (sample_rate / audio_sample_rate) as usize;
+
+        let sdr_manager = SdrManager::new(device, rx_channel, sample_rate, bandwidth, test_freq);
+        let dsp_processor = DspProcessor::new(sample_rate, test_freq, decimation_factor);
+
+        let (iq_tx, iq_rx) = mpsc::channel::<Vec<Complex<f32>>>();
+        let (audio_tx_main, audio_rx) = mpsc::channel::<f32>();
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+
+        Ok((
+            MainLoop {
+                sdr_manager,
+                dsp_processor,
+                iq_tx,
+                iq_rx,
+                audio_tx_main,
+                stop_tx,
+                stop_rx: Arc::new(Mutex::new(stop_rx)),
+                loops,
+            },
+            audio_rx,
+        ))
+    }
+
+    #[allow(clippy::unnecessary_mut_passed)]
+    fn run(&mut self, audio_rx: mpsc::Receiver<f32>) -> Result<()> {
+        self.sdr_manager.configure_device()?;
+
+        println!(
+            "Tuned to {:.3} MHz. Starting stream...",
+            self.sdr_manager.tuned_freq / 1e6
+        );
+
+        let mut rx_stream = self.sdr_manager.start_stream()?;
+
+        // Spawn a dedicated I/O thread for reading from SDR
+        let iq_tx_reader = self.iq_tx.clone(); // Clone for reader thread
+        let stop_rx_reader = self.stop_rx.clone(); // Clone the Arc
+        let reader_handle = thread::spawn(move || {
+            rx_stream.activate(None).unwrap();
+            loop {
+                // Check for stop signal
+                if stop_rx_reader.lock().unwrap().try_recv().is_ok() {
+                    // Lock and receive
+                    break;
+                }
+
+                let mut buffer = vec![Complex::new(0.0, 0.0); 8192];
+                match rx_stream.read(&mut [&mut buffer], 1_000_000) {
+                    Ok(len) => {
+                        buffer.truncate(len);
+
+                        if iq_tx_reader.send(buffer).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Reader thread: Error reading from stream: {}. Breaking loop.",
+                            e
+                        );
+                        break;
+                    }
+                }
+            }
+            rx_stream.deactivate(None).ok();
+            println!("Reader thread finished.");
+        });
+
+        // Spawn an audio playback thread
+        let _audio_handle = thread::spawn(move || {
+            let mut audio_player = AudioPlayer::new(audio_rx)?; // Create AudioPlayer inside the thread
+            audio_player.build_and_play_stream()?; // Build and play the stream
+
+            // The audio thread will park itself indefinitely to keep the stream alive.
+            // It will be unparked or terminated when the main process exits.
+            thread::park();
+            Ok::<(), ScannerError>(())
+        });
+
+        // Main thread acts as the DSP processor
+        println!("Receiving samples for processing...");
+        for chunk in self.iq_rx.iter().take(self.loops) {
+            if !chunk.is_empty() {
+                self.dsp_processor
+                    .process_and_demodulate_chunk(&chunk, self.audio_tx_main.clone());
+            }
+        }
+
+        // Signal reader thread to stop explicitly
+        self.stop_tx.send(()).ok();
+
+        // The audio thread will eventually exit when its receiver disconnects.
+        // For now, we don't explicitly join it here as it might block indefinitely
+        // if the audio stream is still active and waiting for data.
+        // In a real app, you'd have a more robust shutdown for the audio thread.
+        reader_handle.join().expect("Reader thread panicked");
+
+        Ok(())
+    }
 }
 
 /// A basic, unoptimized Discrete Fourier Transform.
@@ -195,40 +539,4 @@ fn dft(samples: &[Complex<f32>]) -> Vec<Complex<f32>> {
     }
 
     output
-}
-
-fn process_chunk(chunk: &[Complex<i16>], sample_rate: f64, center_freq: f64) {
-    let fft_size = chunk.len();
-
-    let window: Vec<f32> = (0..fft_size)
-        .map(|i| 0.5 * (1.0 - (2.0 * PI * i as f32 / (fft_size - 1) as f32).cos()))
-        .collect();
-
-    let buffer: Vec<Complex<f32>> = chunk
-        .iter()
-        .zip(window.iter())
-        .map(|(sample, w)| {
-            Complex::new(
-                (sample.re as f32 / 32768.0) * w,
-                (sample.im as f32 / 32768.0) * w,
-            )
-        })
-        .collect();
-
-    // Perform DFT
-    let fft_output = dft(&buffer);
-
-    let power_spectrum: Vec<f32> = fft_output.iter().map(|c| c.norm_sqr()).collect();
-
-    let (max_idx, _max_power) = power_spectrum
-        .iter()
-        .enumerate()
-        .max_by_key(|&(_, &power)| power as u32)
-        .unwrap_or((0, &0.0));
-
-    let freq_resolution = sample_rate / fft_size as f64;
-    let peak_freq_offset = (max_idx as f64 - (fft_size as f64 / 2.0)) * freq_resolution;
-    let peak_freq = center_freq + peak_freq_offset;
-
-    println!("Strongest signal found at: {:.3} MHz", peak_freq / 1e6);
 }
