@@ -1,5 +1,6 @@
 use clap::{Parser, ValueEnum};
-use num_complex::Complex;
+use rustfft::FftPlanner;
+use rustfft::num_complex::Complex;
 use soapysdr::{Device, Direction, RxStream};
 use std::cmp::Ordering;
 use std::f32::consts::PI;
@@ -215,14 +216,18 @@ struct DspProcessor {
     sample_rate: f64,
     center_freq: f64,
     decimation_factor: usize,
+    fft_planner: Arc<Mutex<FftPlanner<f32>>>,
 }
 
 impl DspProcessor {
     fn new(sample_rate: f64, center_freq: f64, decimation_factor: usize) -> Self {
+        let planner = FftPlanner::new();
+
         DspProcessor {
             sample_rate,
             center_freq,
             decimation_factor,
+            fft_planner: Arc::new(Mutex::new(planner)),
         }
     }
 
@@ -233,14 +238,16 @@ impl DspProcessor {
             .map(|i| 0.5 * (1.0 - (2.0 * PI * i as f32 / (fft_size - 1) as f32).cos()))
             .collect();
 
-        let buffer: Vec<Complex<f32>> = chunk
+        let mut buffer: Vec<Complex<f32>> = chunk
             .iter()
             .zip(window.iter())
             .map(|(sample, w)| Complex::new(sample.re * w, sample.im * w))
             .collect();
 
-        // Perform DFT (for signal detection)
-        let fft_output = dft(&buffer);
+        // Perform FFT (for signal detection)
+        let fft = self.fft_planner.lock().unwrap().plan_fft_forward(fft_size);
+        fft.process(&mut buffer);
+        let fft_output = &buffer;
 
         let power_spectrum: Vec<f32> = fft_output.iter().map(|c| c.norm_sqr()).collect();
 
@@ -521,22 +528,4 @@ impl MainLoop {
 
         Ok(())
     }
-}
-
-/// A basic, unoptimized Discrete Fourier Transform.
-fn dft(samples: &[Complex<f32>]) -> Vec<Complex<f32>> {
-    let n = samples.len();
-    let mut output = Vec::with_capacity(n);
-
-    for k in 0..n {
-        let mut sum = Complex::new(0.0, 0.0);
-        for (i, sample) in samples.iter().enumerate() {
-            let angle = -2.0 * PI * (k as f32 * i as f32) / n as f32;
-            let twiddle = Complex::new(angle.cos(), angle.sin());
-            sum += sample * twiddle;
-        }
-        output.push(sum);
-    }
-
-    output
 }

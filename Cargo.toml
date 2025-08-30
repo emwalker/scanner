@@ -7,9 +7,9 @@ license = "MIT"
 
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
-soapysdr = "0.2.0"
+soapysdr = "0.4.2"
 thiserror = "1.0"
 cpal = "0.15"
 
-num-complex = "0.2"
+rustfft = "6.4.0"
 
