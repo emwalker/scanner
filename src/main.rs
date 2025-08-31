@@ -3,7 +3,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 use rustradio::blocks::*;
 use rustradio::fir;
-use rustradio::graph::{Graph, GraphRunner};
+use rustradio::graph::{CancellationToken, Graph, GraphRunner};
 use rustradio::stream::ReadStream;
 use rustradio::window::WindowType;
 use rustradio::{Complex, Float, blockchain};
@@ -268,10 +268,13 @@ fn analyze_spectral_characteristics(
 
 /// Detect FM radio stations using spectral analysis with main lobe vs sidelobe discrimination
 /// This approach analyzes spectral characteristics like peak width, density, and shape
-fn find_candidates(peaks: &[Peak], center_freq: f64, sample_rate: f64) -> Vec<Candidate> {
+fn find_candidates(
+    peaks: &[Peak],
+    center_freq: f64,
+    sample_rate: f64,
+    candidate_tx: &mpsc::SyncSender<Candidate>,
+) {
     println!("Using spectral analysis for FM station detection with sidelobe discrimination...");
-
-    let mut stations = Vec::new();
 
     // Calculate the frequency range we scanned based on center freq and sample rate
     let scan_range_mhz = sample_rate / 2e6; // Half sample rate in MHz (Nyquist)
@@ -332,26 +335,19 @@ fn find_candidates(peaks: &[Peak], center_freq: f64, sample_rate: f64) -> Vec<Ca
                 0.0
             };
 
-            stations.push(Candidate {
-                frequency_mhz: fm_freq,
-                peak_count,
-                max_magnitude,
-                avg_magnitude,
-                signal_strength: signal_strength.to_string(),
-            });
+            candidate_tx
+                .send(Candidate {
+                    frequency_mhz: fm_freq,
+                    peak_count,
+                    max_magnitude,
+                    avg_magnitude,
+                    signal_strength: signal_strength.to_string(),
+                })
+                .expect("Failed to send candidate");
         }
 
         fm_freq = (fm_freq * 10.0 + 2.0) / 10.0; // Next odd tenth (add 0.2)
     }
-
-    // Sort by frequency
-    stations.sort_by(|a, b| {
-        a.frequency_mhz
-            .partial_cmp(&b.frequency_mhz)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    stations
 }
 
 // New architecture: Station-based audio mixing
@@ -475,7 +471,7 @@ impl rustradio::block::Block for MpscSink {
 // Create rustradio graph for a station (matches the scanner example exactly)
 fn create_station_graph(
     source_receiver: mpsc::Receiver<rustradio::Complex>,
-    samp_rate: f32,
+    samp_rate: f64,
     audio_sender: mpsc::SyncSender<f32>,
     channel_name: String,
 ) -> rustradio::Result<Graph> {
@@ -486,7 +482,12 @@ fn create_station_graph(
     graph.add(Box::new(mpsc_source_block));
 
     // RF Filter
-    let taps = fir::low_pass_complex(samp_rate, 120_000.0f32, 25_000.0f32, &WindowType::Hamming);
+    let taps = fir::low_pass_complex(
+        samp_rate as _,
+        120_000.0f32,
+        25_000.0f32,
+        &WindowType::Hamming,
+    );
     let prev = blockchain![graph, prev, FftFilter::new(prev, taps)];
 
     // Resample to 100kHz
@@ -534,6 +535,39 @@ fn create_station_graph(
     Ok(graph)
 }
 
+fn spawn_sdr_producer_thread(
+    device_args: Option<String>,
+    center_freq: f64,
+    samp_rate: f64,
+    sdr_tx: mpsc::SyncSender<rustradio::Complex>,
+) -> Result<(thread::JoinHandle<Result<()>>, CancellationToken)> {
+    let mut sdr_graph = Graph::new();
+    let sdr_graph_cancel_token = sdr_graph.cancel_token();
+
+    let sdr_handle = thread::spawn(move || -> Result<()> {
+        let driver = device_args.unwrap_or_else(|| "driver=sdrplay".to_string());
+        eprintln!("Frequency {}, sample rate {}", center_freq, samp_rate);
+
+        let dev = soapysdr::Device::new(&*driver)?;
+        let (sdr_source_block, sdr_output_stream) =
+            SoapySdrSource::builder(&dev, center_freq, samp_rate)
+                .igain(1 as _)
+                .build()?;
+
+        sdr_graph.add(Box::new(sdr_source_block));
+        let prev = sdr_output_stream;
+
+        sdr_graph.add(Box::new(MpscSenderSink::new(prev, sdr_tx)));
+
+        sdr_graph
+            .run()
+            .map_err(|e| ScannerError::Custom(format!("SDR Graph error: {}", e)))?;
+        Ok(())
+    });
+
+    Ok((sdr_handle, sdr_graph_cancel_token))
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -548,6 +582,16 @@ fn main() -> Result<()> {
         .init()?;
 
     println!("Starting RustRadio-based scanner...");
+
+    // Create audio mixer system
+    let mut audio_mixer = AudioMixer::new();
+
+    // Create MPSC channel for this station
+    let (audio_tx, audio_rx) = mpsc::sync_channel::<f32>(16384);
+    let station_name = format!("{:.1}FM", args.center_freq / 1e6);
+
+    // Create MPSC channel for candidate stations
+    let (candidate_tx, candidate_rx) = mpsc::sync_channel::<Candidate>(100);
 
     // Collect peaks synchronously before starting rustradio graph
     let driver = args
@@ -571,68 +615,37 @@ fn main() -> Result<()> {
     if peaks.is_empty() {
         println!("No peaks detected above threshold.");
     } else {
-        let candidates = find_candidates(&peaks, args.center_freq, samp_rate);
-
-        if candidates.is_empty() {
-            println!("No FM stations detected in scanned frequency range.");
-        } else {
-            println!("\nDetected {} likely FM stations:", candidates.len());
-            for candidate in &candidates {
-                println!(
-                    "  {:.1} MHz - {} signal ({} peaks, max: {:.1}, avg: {:.1})",
-                    candidate.frequency_mhz,
-                    candidate.signal_strength,
-                    candidate.peak_count,
-                    candidate.max_magnitude,
-                    candidate.avg_magnitude
-                );
-            }
-        }
+        find_candidates(&peaks, args.center_freq, samp_rate, &candidate_tx.clone());
         println!();
     }
 
     // Create MPSC channel for SDR samples
     let (sdr_tx, sdr_rx) = mpsc::sync_channel::<rustradio::Complex>(16384);
 
-    let samp_rate = 1_000_000.0f32;
-
-    // Create SDR graph and get its cancel token
-    let mut sdr_graph = Graph::new();
-    let sdr_graph_cancel_token = sdr_graph.cancel_token();
-
-    // Spawn SDR thread
-    let sdr_handle = thread::spawn(move || -> Result<()> {
-        let driver = args
-            .device_args
-            .unwrap_or_else(|| "driver=sdrplay".to_string());
-        eprintln!("Frequency {}, sample rate {}", args.center_freq, samp_rate);
-
-        // Create device first, then pass to builder (like working example)
-        let dev = soapysdr::Device::new(&*driver)?;
-        let (sdr_source_block, sdr_output_stream) =
-            SoapySdrSource::builder(&dev, args.center_freq, samp_rate as f64)
-                .igain(1 as _)
-                .build()?;
-
-        sdr_graph.add(Box::new(sdr_source_block));
-        let prev = sdr_output_stream;
-
-        // Just send audio samples to MPSC channel
-        sdr_graph.add(Box::new(MpscSenderSink::new(prev, sdr_tx)));
-
-        // Run the SDR graph
-        sdr_graph
-            .run()
-            .map_err(|e| ScannerError::Custom(format!("SDR Graph error: {}", e)))?;
-        Ok(())
+    // Spawn thread to process candidate stations
+    let _candidate_processor_handle = thread::spawn(move || {
+        println!("Candidate processor thread started.");
+        for candidate in candidate_rx {
+            println!(
+                "[Candidate Processor] Received: {:.1} MHz - {} signal ({} peaks, max: {:.1}, avg: {:.1})",
+                candidate.frequency_mhz,
+                candidate.signal_strength,
+                candidate.peak_count,
+                candidate.max_magnitude,
+                candidate.avg_magnitude
+            );
+            // In the future, this is where we'll spawn rustradio threads
+        }
+        println!("Candidate processor thread finished.");
     });
 
-    // Create audio mixer system
-    let mut audio_mixer = AudioMixer::new();
-
-    // Create MPSC channel for this station
-    let (audio_tx, audio_rx) = mpsc::sync_channel::<f32>(16384);
-    let station_name = format!("{:.1}FM", args.center_freq / 1e6);
+    // Spawn SDR thread
+    let (sdr_handle, sdr_graph_cancel_token) = spawn_sdr_producer_thread(
+        args.device_args.clone(),
+        args.center_freq,
+        samp_rate,
+        sdr_tx,
+    )?;
 
     // Add station to mixer
     audio_mixer.add_channel(station_name.clone(), args.center_freq, audio_rx, 1.0);
@@ -704,6 +717,9 @@ fn main() -> Result<()> {
     // Unpark and join the audio thread to allow graceful shutdown
     audio_handle.thread().unpark();
     let _ = audio_handle.join();
+
+    // Join candidate processor thread
+    // candidate_processor_handle.join().unwrap();
 
     // Join SDR thread with timeout to prevent hanging
     let sdr_join_handle = std::thread::spawn(move || {
