@@ -2,14 +2,17 @@
 name = "scanner"
 version = "0.1.0"
 edition = "2024"
-
 license = "MIT"
+
+[profile.dev]
+debug = true
 
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
-soapysdr = "0.4.2"
-thiserror = "1.0"
 cpal = "0.15"
-
+log = "0.4.27"
 rustfft = "6.4.0"
-
+rustradio = { path = "../../rustradio", features = ["soapysdr", "fast-math"] }
+soapysdr = "0.4.2"
+stderrlog = "0.6.0"
+thiserror = "1.0"
