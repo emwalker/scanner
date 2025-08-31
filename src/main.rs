@@ -175,12 +175,33 @@ impl SdrManager {
     }
 
     fn configure_device(&self) -> Result<()> {
+        println!("Requesting sample rate: {}", self.sample_rate);
+
+        // Check supported sample rates first
+        let supported_rates = self
+            .device
+            .get_sample_rate_range(Direction::Rx, self.rx_channel)?;
+        println!("Supported sample rate ranges:");
+        for range in &supported_rates {
+            println!(
+                "  {:.0} - {:.0} Hz (step: {:.0})",
+                range.minimum, range.maximum, range.step
+            );
+        }
+
         self.device
             .set_sample_rate(Direction::Rx, self.rx_channel, self.sample_rate)?;
+        let actual_rate = self.device.sample_rate(Direction::Rx, self.rx_channel)?;
         println!(
-            "Configured Sample Rate: {}",
-            self.device.sample_rate(Direction::Rx, self.rx_channel)?
+            "Configured Sample Rate: {} (requested: {})",
+            actual_rate, self.sample_rate
         );
+
+        if (actual_rate - self.sample_rate).abs() > 1000.0 {
+            println!(
+                "WARNING: Large sample rate mismatch! This will affect decimation calculations."
+            );
+        }
         self.device
             .set_bandwidth(Direction::Rx, self.rx_channel, self.bandwidth)?;
         println!(
@@ -248,6 +269,15 @@ struct DspProcessor {
     k_fm: f32, // Scaling factor for FM demodulation
     debug_print_interval: usize,
     debug_counter: usize,
+    // Audio quality debugging
+    audio_level_sum: f64,
+    audio_level_count: usize,
+    audio_samples_above_threshold: usize,
+    min_audio_level: f32,
+    max_audio_level: f32,
+    audio_dc_accumulator: f64,
+    noise_floor_samples: Vec<f32>,
+    signal_to_noise_samples: usize,
 }
 
 impl DspProcessor {
@@ -293,6 +323,15 @@ impl DspProcessor {
             k_fm,
             debug_print_interval: 1000,
             debug_counter: 0,
+            // Audio quality debugging
+            audio_level_sum: 0.0,
+            audio_level_count: 0,
+            audio_samples_above_threshold: 0,
+            min_audio_level: f32::INFINITY,
+            max_audio_level: f32::NEG_INFINITY,
+            audio_dc_accumulator: 0.0,
+            noise_floor_samples: Vec::with_capacity(10000),
+            signal_to_noise_samples: 0,
         }
     }
 
@@ -371,6 +410,31 @@ impl DspProcessor {
                 continue; // Skip this sample if not time to decimate
             }
             self.decimation_counter = 0; // Reset counter
+            
+            // Debug: Track decimation behavior
+            if self.audio_samples_sent < 5 {
+                println!("DEBUG: Decimation sample {} - input rate check", self.audio_samples_sent + 1);
+            }
+
+            // Audio quality analysis before sending
+            let audio_level = audio_filtered_sample.abs();
+            self.audio_level_sum += audio_level as f64;
+            self.audio_level_count += 1;
+            self.min_audio_level = self.min_audio_level.min(audio_level);
+            self.max_audio_level = self.max_audio_level.max(audio_level);
+            self.audio_dc_accumulator += audio_filtered_sample as f64;
+
+            // Track noise floor (samples below threshold)
+            let signal_threshold = 0.01; // Adjust based on expected signal levels
+            if audio_level < signal_threshold {
+                if self.noise_floor_samples.len() < 10000 {
+                    self.noise_floor_samples.push(audio_level);
+                }
+            } else {
+                self.audio_samples_above_threshold += 1;
+            }
+
+            self.signal_to_noise_samples += 1;
 
             // Send the final audio sample
             if audio_tx.try_send(audio_filtered_sample).is_ok() {
@@ -400,6 +464,62 @@ impl DspProcessor {
                 self.min_freq_deviation, self.max_freq_deviation
             );
             println!("Samples at full scale: {}", self.samples_at_full_scale);
+
+            // Audio quality analysis
+            if self.audio_level_count > 0 {
+                let avg_audio_level = self.audio_level_sum / self.audio_level_count as f64;
+                let dc_bias = self.audio_dc_accumulator / self.audio_level_count as f64;
+                let noise_floor_avg = if !self.noise_floor_samples.is_empty() {
+                    self.noise_floor_samples.iter().sum::<f32>()
+                        / self.noise_floor_samples.len() as f32
+                } else {
+                    0.0
+                };
+                let signal_percentage = (self.audio_samples_above_threshold as f64
+                    / self.signal_to_noise_samples as f64)
+                    * 100.0;
+
+                println!("\n--- Audio Quality Analysis ---");
+                println!(
+                    "Audio Level: Avg={:.6}, Min={:.6}, Max={:.6}",
+                    avg_audio_level, self.min_audio_level, self.max_audio_level
+                );
+                println!("DC Bias: {:.6}", dc_bias);
+                println!(
+                    "Noise Floor: Avg={:.6} ({} samples)",
+                    noise_floor_avg,
+                    self.noise_floor_samples.len()
+                );
+                println!("Signal vs Noise: {:.1}% above threshold", signal_percentage);
+
+                // Estimate SNR
+                if noise_floor_avg > 0.0 {
+                    let estimated_snr_db =
+                        20.0 * (avg_audio_level / noise_floor_avg as f64).log10();
+                    println!("Estimated SNR: {:.1} dB", estimated_snr_db);
+                }
+
+                // Analyze potential hiss sources
+                if dc_bias.abs() > 0.001 {
+                    println!(
+                        "WARNING: Significant DC bias detected ({:.6}) - may cause audio artifacts",
+                        dc_bias
+                    );
+                }
+                if noise_floor_avg > 0.005 {
+                    println!(
+                        "WARNING: High noise floor ({:.6}) - may be source of hiss",
+                        noise_floor_avg
+                    );
+                }
+                if signal_percentage < 50.0 {
+                    println!(
+                        "WARNING: Low signal content ({:.1}%) - mostly noise/hiss",
+                        signal_percentage
+                    );
+                }
+                println!("-----------------------------");
+            }
             println!("----------------------");
 
             // Reset for next interval
@@ -412,6 +532,15 @@ impl DspProcessor {
             self.min_freq_deviation = f32::INFINITY;
             self.max_freq_deviation = f32::NEG_INFINITY;
             self.samples_at_full_scale = 0;
+            // Reset audio quality stats
+            self.audio_level_sum = 0.0;
+            self.audio_level_count = 0;
+            self.audio_samples_above_threshold = 0;
+            self.min_audio_level = f32::INFINITY;
+            self.max_audio_level = f32::NEG_INFINITY;
+            self.audio_dc_accumulator = 0.0;
+            self.noise_floor_samples.clear();
+            self.signal_to_noise_samples = 0;
             self.debug_counter = 0;
         }
     }
@@ -478,9 +607,10 @@ impl AudioPlayer {
                         };
                     }
 
-                    // Debug audio callback underruns when they occur
-                    if samples_empty > data.len() / 2 {
-                        // More than 50% empty samples
+                    // Debug audio callback underruns when they occur (but not during shutdown)
+                    if samples_empty > data.len() / 2 && samples_received > 0 {
+                        // More than 50% empty samples, but only warn if we got some data
+                        // This avoids spam during program shutdown when channel is closed
                         println!(
                             "Audio underrun: requested {}, got {}, empty {}",
                             data.len(),
@@ -554,7 +684,7 @@ impl MainLoop {
     fn new(device: Device, tuned_freq: f64, loops: usize) -> Result<(Self, mpsc::Receiver<f32>)> {
         let rx_channel = 0;
         // Use 4.8 MHz for perfect integer decimation to 48 kHz audio (4.8M / 48k = 100)
-        let sample_rate = 960e3; // 4.8 Msps - divides evenly into 48 kHz
+        let sample_rate = 960e3; // 960 kSps - divides evenly into 48 kHz
         let bandwidth = 960e3;
 
         // Configure audio system for a specific sample rate instead of using default (likely 44.1kHz)
@@ -581,6 +711,15 @@ impl MainLoop {
 
         let sdr_manager = SdrManager::new(device, rx_channel, sample_rate, bandwidth, tuned_freq);
         let dsp_processor = DspProcessor::new(sample_rate, decimation_factor);
+
+        println!("=== DECIMATION DEBUG INFO ===");
+        println!("Requested SDR sample rate: {:.1} Hz", sample_rate);
+        println!("Audio system sample rate: {:.1} Hz", audio_sample_rate);
+        println!("Calculated decimation factor: {} (for {:.1} Hz -> {:.1} Hz)", 
+                 decimation_factor, sample_rate, audio_sample_rate);
+        println!("Expected audio production rate: {:.1} Hz", sample_rate / decimation_factor as f64);
+        println!("Rate error (if SDR worked as requested): {:.1}%", 
+                 ((sample_rate / decimation_factor as f64) - audio_sample_rate) / audio_sample_rate * 100.0);
 
         println!("Audio system sample rate: {:.1} Hz", audio_sample_rate);
         println!("Ideal decimation: {:.3}", ideal_decimation);
@@ -620,6 +759,18 @@ impl MainLoop {
     #[allow(clippy::unnecessary_mut_passed)]
     fn run(&mut self, audio_rx: mpsc::Receiver<f32>) -> Result<()> {
         self.sdr_manager.configure_device()?;
+        
+        // Check what sample rate we actually got vs what DSP processor expects
+        let actual_sdr_rate = self.sdr_manager.device.sample_rate(Direction::Rx, self.sdr_manager.rx_channel)?;
+        println!("=== RUNTIME SAMPLE RATE CHECK ===");
+        println!("DSP processor was configured for: {:.1} Hz", self.sdr_manager.sample_rate);
+        println!("SDR is actually running at: {:.1} Hz", actual_sdr_rate);
+        println!("Sample rate mismatch: {:.1}%", 
+                 ((actual_sdr_rate - self.sdr_manager.sample_rate) / self.sdr_manager.sample_rate * 100.0));
+        println!("DSP decimation factor: {}", self.dsp_processor.decimation_factor);
+        println!("Actual decimation if we used real SDR rate: {:.1}", 
+                 actual_sdr_rate / 48000.0);
+        println!("================================");
 
         println!(
             "Tuned to {:.3} MHz. Starting stream...",
