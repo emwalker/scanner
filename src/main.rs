@@ -7,6 +7,12 @@ use rustradio::graph::{Graph, GraphRunner};
 use rustradio::stream::ReadStream;
 use rustradio::window::WindowType;
 use rustradio::{Float, blockchain};
+mod deemphasis;
+mod mpsc_receiver_source;
+mod mpsc_sender_sink;
+use crate::deemphasis::Deemphasis;
+use crate::mpsc_receiver_source::MpscReceiverSource;
+use crate::mpsc_sender_sink::MpscSenderSink;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -181,15 +187,16 @@ impl rustradio::block::Block for MpscSink {
 
 // Create rustradio graph for a station (matches the scanner example exactly)
 fn create_station_graph(
-    source: (SoapySdrSource, ReadStream<rustradio::Complex>),
+    source_receiver: mpsc::Receiver<rustradio::Complex>,
     samp_rate: f32,
     audio_sender: mpsc::SyncSender<f32>,
     channel_name: String,
 ) -> rustradio::Result<Graph> {
     let mut graph = Graph::new();
 
-    // SDR Source using device args string (rustradio creates its own device internally)
-    let prev = blockchain![graph, prev, source];
+    // MPSC Source
+    let (mpsc_source_block, prev) = MpscReceiverSource::new(source_receiver);
+    graph.add(Box::new(mpsc_source_block));
 
     // RF Filter
     let taps = fir::low_pass_complex(samp_rate, 120_000.0f32, 25_000.0f32, &WindowType::Hamming);
@@ -208,6 +215,11 @@ fn create_station_graph(
 
     // Quadrature demodulation
     let prev = blockchain![graph, prev, QuadratureDemod::new(prev, 1.0)];
+
+    // FM Deemphasis
+    let (deemphasis_block, deemphasis_output_stream) = Deemphasis::new(prev, quad_rate, 75.0);
+    graph.add(Box::new(deemphasis_block));
+    let prev = deemphasis_output_stream;
 
     // Audio filter
     let taps = fir::low_pass(
@@ -250,6 +262,42 @@ fn main() -> Result<()> {
 
     println!("Starting RustRadio-based scanner...");
 
+    // Create MPSC channel for SDR samples
+    let (sdr_tx, sdr_rx) = mpsc::sync_channel::<rustradio::Complex>(16384);
+
+    let samp_rate = 1_000_000.0f32;
+
+    // Create SDR graph and get its cancel token
+    let mut sdr_graph = Graph::new();
+    let sdr_graph_cancel_token = sdr_graph.cancel_token();
+
+    // Spawn SDR thread
+    let sdr_handle = thread::spawn(move || -> Result<()> {
+        let driver = args
+            .device_args
+            .unwrap_or_else(|| "driver=sdrplay".to_string());
+        eprintln!("Frequency {}, sample rate {}", args.tune_freq, samp_rate);
+
+        // Create device first, then pass to builder (like working example)
+        let dev = soapysdr::Device::new(&*driver)?;
+        let (sdr_source_block, sdr_output_stream) =
+            SoapySdrSource::builder(&dev, args.tune_freq, samp_rate as f64)
+                .igain(1 as _)
+                .build()?;
+
+        sdr_graph.add(Box::new(sdr_source_block));
+        let prev = sdr_output_stream;
+
+        // Add MpscSenderSink to send SDR samples to the channel
+        sdr_graph.add(Box::new(MpscSenderSink::new(prev, sdr_tx)));
+
+        // Run the SDR graph
+        sdr_graph
+            .run()
+            .map_err(|e| ScannerError::Custom(format!("SDR Graph error: {}", e)))?;
+        Ok(())
+    });
+
     // Create audio mixer system
     let mut audio_mixer = AudioMixer::new();
 
@@ -260,20 +308,9 @@ fn main() -> Result<()> {
     // Add station to mixer
     audio_mixer.add_channel(station_name.clone(), args.tune_freq, audio_rx, 1.0);
 
-    let samp_rate = 1_000_000.0f32;
-    let driver = args
-        .device_args
-        .unwrap_or_else(|| "driver=sdrplay".to_string());
-    eprintln!("Frequency {}, sample rate {}", args.tune_freq, samp_rate);
-
-    // Create device first, then pass to builder (like working example)
-    let dev = soapysdr::Device::new(&*driver)?;
-    let source_pair = SoapySdrSource::builder(&dev, args.tune_freq, samp_rate as f64)
-        .igain(1 as _)
-        .build()?;
-
     // Create rustradio graph for the station
-    let mut graph = create_station_graph(source_pair, samp_rate, audio_tx, station_name.clone())?;
+    let mut graph = create_station_graph(sdr_rx, samp_rate, audio_tx, station_name.clone())?;
+    let main_graph_cancel_token = graph.cancel_token(); // Get main graph's cancel token
 
     // Set up audio playback thread
     let audio_handle = thread::spawn(move || -> Result<()> {
@@ -321,14 +358,12 @@ fn main() -> Result<()> {
         Ok(())
     });
 
-    // Get cancel token
-    let token = graph.cancel_token();
-
     // Set up timer thread
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(args.duration));
         println!("{} second timer expired, stopping graph.", args.duration);
-        token.cancel();
+        main_graph_cancel_token.cancel();
+        sdr_graph_cancel_token.cancel();
     });
 
     // Run the rustradio graph in the main thread
@@ -340,6 +375,9 @@ fn main() -> Result<()> {
     // Unpark and join the audio thread to allow graceful shutdown
     audio_handle.thread().unpark();
     let _ = audio_handle.join();
+
+    // Join SDR thread
+    sdr_handle.join().unwrap()?;
 
     println!("Scanner finished.");
     Ok(())
