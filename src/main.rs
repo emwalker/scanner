@@ -192,11 +192,11 @@ fn create_station_graph(
     let prev = blockchain![graph, prev, source];
 
     // RF Filter
-    let taps = fir::low_pass_complex(samp_rate, 100_000.0f32, 25_000.0f32, &WindowType::Hamming);
+    let taps = fir::low_pass_complex(samp_rate, 120_000.0f32, 25_000.0f32, &WindowType::Hamming);
     let prev = blockchain![graph, prev, FftFilter::new(prev, taps)];
 
     // Resample to 100kHz
-    let quad_rate = 200_000.0;
+    let quad_rate = 240_000.0;
     let prev = blockchain![
         graph,
         prev,
@@ -260,7 +260,7 @@ fn main() -> Result<()> {
     // Add station to mixer
     audio_mixer.add_channel(station_name.clone(), args.tune_freq, audio_rx, 1.0);
 
-    let samp_rate = 2_000_000.0f32;
+    let samp_rate = 1_000_000.0f32;
     let driver = args
         .device_args
         .unwrap_or_else(|| "driver=sdrplay".to_string());
