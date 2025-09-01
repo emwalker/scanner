@@ -1,6 +1,7 @@
 use clap::{Parser, ValueEnum};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
+use gag::Gag;
 use std::sync::{Arc, Mutex, mpsc::SyncSender};
 use std::thread;
 
@@ -8,6 +9,32 @@ mod fm;
 mod mpsc;
 mod types;
 use crate::types::{Candidate, Result, ScannerError};
+
+// Macros to force output to console even when stdout/stderr are gagged
+#[macro_export]
+macro_rules! stdout {
+    ($($arg:tt)*) => {
+        {
+            use std::fs::OpenOptions;
+            use std::io::Write;
+            let mut tty = OpenOptions::new().write(true).open("/dev/tty").unwrap();
+            writeln!(tty, $($arg)*).unwrap();
+        }
+    };
+}
+
+#[allow(unused_macros)]
+#[macro_export]
+macro_rules! stderr {
+    ($($arg:tt)*) => {
+        {
+            use std::fs::OpenOptions;
+            use std::io::Write;
+            let mut tty = OpenOptions::new().write(true).open("/dev/tty").unwrap();
+            writeln!(tty, $($arg)*).unwrap();
+        }
+    };
+}
 
 fn parse_stations(stations_str: &str) -> Result<Vec<f64>> {
     stations_str
@@ -260,10 +287,33 @@ struct Args {
     /// Exit after analyzing the first candidate station
     #[arg(long)]
     exit_early: bool,
+
+    /// Enable verbose output from libraries
+    #[arg(long)]
+    verbose: bool,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Suppress library output unless --verbose is specified
+    let _stdout_gag = if !args.verbose {
+        Some(
+            Gag::stdout()
+                .map_err(|_| ScannerError::Custom("Failed to suppress stdout".to_string()))?,
+        )
+    } else {
+        None
+    };
+    let _stderr_gag = if !args.verbose {
+        Some(
+            Gag::stderr()
+                .map_err(|_| ScannerError::Custom("Failed to suppress stderr".to_string()))?,
+        )
+    } else {
+        None
+    };
+
     let driver = args.device_args.unwrap_or(DEFAULT_DRIVER.into());
     let samp_rate = 1_000_000.0f64;
 
@@ -291,7 +341,7 @@ fn main() -> Result<()> {
         .timestamp(stderrlog::Timestamp::Second)
         .init()?;
 
-    println!("Starting RustRadio-based scanner...");
+    stdout!("Scanning for stations ...");
 
     // Create single shared audio channel - all candidates write to this
     let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<f32>(48000); // 1 second buffer
@@ -319,6 +369,6 @@ fn main() -> Result<()> {
     drop(candidate_tx);
     let _ = scanning_thread.join();
 
-    println!("Scanner finished.");
+    stdout!("Scanning complete.");
     Ok(())
 }

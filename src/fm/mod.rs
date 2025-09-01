@@ -3,7 +3,7 @@ use std::{thread, time::Duration};
 use crate::{
     fm::deemph::Deemphasis,
     mpsc::{MpscReceiverSource, MpscSenderSink, MpscSink},
-    types,
+    stdout, types,
     types::{Peak, Result},
 };
 use rustradio::graph::{Graph, GraphRunner};
@@ -32,6 +32,7 @@ impl Candidate {
         config: &crate::ScanningConfig,
         audio_tx: std::sync::mpsc::SyncSender<f32>,
     ) -> Result<()> {
+        stdout!("found {:.1} MHz", self.frequency_hz / 1e6);
         println!(
             "Tuning into {:.1} MHz - {} signal ({} peaks, max: {:.1}, avg: {:.1})",
             self.frequency_hz / 1e6,
