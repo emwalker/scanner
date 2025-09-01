@@ -18,17 +18,10 @@ pub mod deemph;
 
 /// Collect RF peaks synchronously by directly interfacing with the SDR device
 /// This performs FFT analysis to detect spectral peaks above the threshold
-pub fn collect_peaks(
-    device_args: &str,
-    center_freq: f64,
-    sample_rate: f64,
-    duration_secs: u64,
-    fft_size: usize,
-    threshold: f32,
-) -> Result<Vec<Peak>> {
+pub fn collect_peaks(config: &crate::ScanningConfig, device_args: &str) -> Result<Vec<Peak>> {
     println!(
         "Starting peak detection scan for {} seconds...",
-        duration_secs
+        config.peak_scan_duration
     );
 
     // Initialize SDR device and stream
@@ -38,15 +31,15 @@ pub fn collect_peaks(
 
     // Prepare FFT processing
     let mut peaks = Vec::new();
-    let mut fft_buffer = vec![rustfft::num_complex::Complex32::default(); fft_size];
+    let mut fft_buffer = vec![rustfft::num_complex::Complex32::default(); config.fft_size];
     let mut planner = rustfft::FftPlanner::new();
-    let fft = planner.plan_fft_forward(fft_size);
+    let fft = planner.plan_fft_forward(config.fft_size);
 
     // Calculate sampling parameters
-    let samples_per_second = sample_rate as usize;
-    let total_samples_needed = samples_per_second * duration_secs as usize;
+    let samples_per_second = config.samp_rate as usize;
+    let total_samples_needed = samples_per_second * config.peak_scan_duration as usize;
     let mut samples_collected = 0;
-    let mut read_buffer = vec![Complex::default(); fft_size];
+    let mut read_buffer = vec![Complex::default(); config.fft_size];
 
     // Collect samples and perform peak detection
     while samples_collected < total_samples_needed {
@@ -59,7 +52,7 @@ pub fn collect_peaks(
                 // Copy samples to FFT buffer and process
                 for (i, sample) in read_buffer
                     .iter()
-                    .take(samples_read.min(fft_size))
+                    .take(samples_read.min(config.fft_size))
                     .enumerate()
                 {
                     fft_buffer[i] = rustfft::num_complex::Complex32::new(sample.re, sample.im);
@@ -70,13 +63,13 @@ pub fn collect_peaks(
 
                 // Detect peaks: local maxima above threshold
                 for i in 1..magnitudes.len() - 1 {
-                    if magnitudes[i] > threshold
+                    if magnitudes[i] > config.peak_detection_threshold
                         && magnitudes[i] > magnitudes[i - 1]
                         && magnitudes[i] > magnitudes[i + 1]
                     {
                         // Convert FFT bin to frequency
-                        let freq_offset = (i as f64 / fft_size as f64) * sample_rate;
-                        let freq_hz = center_freq - (sample_rate / 2.0) + freq_offset;
+                        let freq_offset = (i as f64 / config.fft_size as f64) * config.samp_rate;
+                        let freq_hz = config.center_freq - (config.samp_rate / 2.0) + freq_offset;
 
                         peaks.push(Peak {
                             frequency_hz: freq_hz,
@@ -207,16 +200,15 @@ fn analyze_spectral_characteristics(
 /// This approach analyzes spectral characteristics like peak width, density, and shape
 pub fn find_candidates(
     peaks: &[Peak],
-    center_freq: f64,
-    sample_rate: f64,
+    config: &crate::ScanningConfig,
     candidate_tx: &std::sync::mpsc::SyncSender<Candidate>,
 ) {
     println!("Using spectral analysis for FM station detection with sidelobe discrimination...");
 
     // Calculate the frequency range we scanned based on center freq and sample rate
-    let scan_range_mhz = sample_rate / 2e6; // Half sample rate in MHz (Nyquist)
-    let freq_start_mhz = (center_freq / 1e6) - scan_range_mhz;
-    let freq_end_mhz = (center_freq / 1e6) + scan_range_mhz;
+    let scan_range_mhz = config.samp_rate / 2e6; // Half sample rate in MHz (Nyquist)
+    let freq_start_mhz = (config.center_freq / 1e6) - scan_range_mhz;
+    let freq_end_mhz = (config.center_freq / 1e6) + scan_range_mhz;
 
     println!(
         "Analyzing spectral patterns in range: {:.1} - {:.1} MHz",
@@ -235,7 +227,7 @@ pub fn find_candidates(
         std::io::Write::flush(&mut std::io::stdout()).unwrap();
 
         let (spectral_score, analysis_summary) =
-            analyze_spectral_characteristics(peaks, fm_freq, sample_rate, center_freq);
+            analyze_spectral_characteristics(peaks, fm_freq, config.samp_rate, config.center_freq);
 
         println!("score: {:.3} ({})", spectral_score, analysis_summary);
 
@@ -356,10 +348,7 @@ pub fn create_station_graph(
 
 pub fn analyze_channel(
     candidate: Candidate,
-    duration: u64,
-    _center_freq: f64,
-    samp_rate: f64,
-    driver: &str,
+    config: &crate::ScanningConfig,
     audio_tx: std::sync::mpsc::SyncSender<f32>,
 ) -> Result<()> {
     println!(
@@ -376,7 +365,7 @@ pub fn analyze_channel(
     let station_name = format!("{:.1}FM", candidate.frequency_hz / 1e6);
 
     // Create DSP graph to process this candidate's frequency
-    let mut dsp_graph = create_station_graph(sdr_rx, samp_rate, audio_tx, station_name)?;
+    let mut dsp_graph = create_station_graph(sdr_rx, config.samp_rate, audio_tx, station_name)?;
     let dsp_cancel_token = dsp_graph.cancel_token();
 
     // Create SDR graph to capture this frequency
@@ -385,12 +374,12 @@ pub fn analyze_channel(
 
     eprintln!(
         "Frequency {}, sample rate {}",
-        candidate.frequency_hz, samp_rate
+        candidate.frequency_hz, config.samp_rate
     );
 
-    let dev = soapysdr::Device::new(driver)?;
+    let dev = soapysdr::Device::new(config.driver.as_str())?;
     let (sdr_source_block, sdr_output_stream) =
-        SoapySdrSource::builder(&dev, candidate.frequency_hz, samp_rate)
+        SoapySdrSource::builder(&dev, candidate.frequency_hz, config.samp_rate)
             .igain(1 as _)
             .build()?;
 
@@ -409,9 +398,13 @@ pub fn analyze_channel(
     });
 
     // Set up timer thread
+    let duration = config.duration;
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(duration));
-        println!("Ran for {duration} seconds, continuing on to the next candidate");
+        println!(
+            "Ran for {} seconds, continuing on to the next candidate",
+            duration
+        );
         sdr_graph_cancel_token.cancel();
         dsp_cancel_token.cancel();
     });

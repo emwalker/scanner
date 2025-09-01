@@ -8,19 +8,28 @@ mod mpsc;
 mod types;
 use crate::types::{Candidate, Result, ScannerError};
 
-const DEFAULT_DRIVER: &str = "driver=sdrplay";
-
-struct ScanningConfig {
-    duration: u64,
-    center_freq: f64,
-    samp_rate: f64,
-    driver: String,
-    exit_early: bool,
+pub struct ScanningConfig {
+    pub duration: u64,
+    pub center_freq: f64,
+    pub samp_rate: f64,
+    pub driver: String,
+    pub exit_early: bool,
+    pub fft_size: usize,
+    pub peak_detection_threshold: f32,
+    pub audio_sample_rate: u32,
+    pub audio_buffer_size: u32,
+    pub peak_scan_duration: u64,
 }
+
+const DEFAULT_DRIVER: &str = "driver=sdrplay";
 
 fn spawn_audio_thread(
     audio_rx: std::sync::mpsc::Receiver<f32>,
+    config: &ScanningConfig,
 ) -> Result<thread::JoinHandle<Result<()>>> {
+    let audio_sample_rate = config.audio_sample_rate;
+    let audio_buffer_size = config.audio_buffer_size;
+
     let handle = thread::spawn(move || -> Result<()> {
         // Set up CPAL audio
         let host = cpal::default_host();
@@ -32,19 +41,22 @@ fn spawn_audio_thread(
             .expect("error while querying configs");
         let supported_config = supported_configs_range
             .filter(|d| d.sample_format() == SampleFormat::F32)
-            .find(|d| d.min_sample_rate().0 <= 48000 && d.max_sample_rate().0 >= 48000)
+            .find(|d| {
+                d.min_sample_rate().0 <= audio_sample_rate
+                    && d.max_sample_rate().0 >= audio_sample_rate
+            })
             .expect("no supported config found")
-            .with_sample_rate(cpal::SampleRate(48000));
+            .with_sample_rate(cpal::SampleRate(audio_sample_rate));
 
         let sample_format = supported_config.sample_format();
-        let mut config: StreamConfig = supported_config.into();
-        config.buffer_size = cpal::BufferSize::Fixed(4096);
+        let mut stream_config: StreamConfig = supported_config.into();
+        stream_config.buffer_size = cpal::BufferSize::Fixed(audio_buffer_size);
 
         let err_fn = |err| eprintln!("Audio error: {}", err);
 
         let stream = match sample_format {
             SampleFormat::F32 => audio_device.build_output_stream(
-                &config,
+                &stream_config,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     // Simple: try to fill the entire buffer from the shared channel
                     for sample in data.iter_mut() {
@@ -81,14 +93,7 @@ fn spawn_scanning_thread(
 
         for candidate in candidate_rx {
             // All candidates write to the same shared audio channel
-            fm::analyze_channel(
-                candidate,
-                config.duration,
-                config.center_freq,
-                config.samp_rate,
-                &config.driver,
-                shared_audio_tx.clone(),
-            )?;
+            fm::analyze_channel(candidate, &config, shared_audio_tx.clone())?;
             if config.exit_early {
                 println!("Early exit requested - stopping after first candidate.");
                 break;
@@ -130,6 +135,20 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
     let driver = args.device_args.unwrap_or(DEFAULT_DRIVER.into());
+    let samp_rate = 1_000_000.0f64;
+
+    let scanning_config = ScanningConfig {
+        duration: args.duration,
+        center_freq: args.center_freq,
+        samp_rate,
+        driver: driver.clone(),
+        exit_early: args.exit_early,
+        fft_size: 1024,
+        peak_detection_threshold: 1.0,
+        audio_sample_rate: 48000,
+        audio_buffer_size: 4096,
+        peak_scan_duration: args.peak_scan_duration,
+    };
 
     // Configure SoapySDR logging (required by rustradio)
     soapysdr::configure_logging();
@@ -150,39 +169,22 @@ fn main() -> Result<()> {
     let (candidate_tx, candidate_rx) = std::sync::mpsc::sync_channel::<Candidate>(100);
 
     // Collect peaks synchronously before starting rustradio graph
-    let samp_rate = 1_000_000.0f64;
-    let fft_size = 1024;
-    let threshold = 1.0;
-
-    let peaks = fm::collect_peaks(
-        &driver,
-        args.center_freq,
-        samp_rate,
-        args.peak_scan_duration,
-        fft_size,
-        threshold,
-    )?;
+    let peaks = fm::collect_peaks(&scanning_config, &driver)?;
 
     // Analyze peaks to infer likely FM stations
     if peaks.is_empty() {
         println!("No peaks detected above threshold.");
     } else {
-        fm::find_candidates(&peaks, args.center_freq, samp_rate, &candidate_tx.clone());
+        fm::find_candidates(&peaks, &scanning_config, &candidate_tx.clone());
         println!();
     }
 
     // Set up audio playback thread with simple blocking receive
-    let audio_handle = spawn_audio_thread(audio_rx)?;
+    let audio_handle = spawn_audio_thread(audio_rx, &scanning_config)?;
 
     let scanning_thread = spawn_scanning_thread(
         candidate_rx,
-        ScanningConfig {
-            duration: args.duration,
-            center_freq: args.center_freq,
-            samp_rate,
-            driver,
-            exit_early: args.exit_early,
-        },
+        scanning_config,
         audio_tx.clone(),
         audio_handle,
     )?;
