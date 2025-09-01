@@ -114,8 +114,20 @@ pub fn collect_peaks(
     device_args: &str,
     center_freq: f64,
 ) -> Result<Vec<Peak>> {
-    let mut sample_source =
+    let sample_source =
         crate::soapy::SdrSampleSource::new(device_args.to_string(), center_freq, config.samp_rate)?;
+
+    // Wrap with capturing source if requested
+    let mut final_source: Box<dyn crate::types::SampleSource> =
+        if let Some(ref capture_file) = config.capture_iq {
+            Box::new(crate::testing::CapturingSampleSource::new(
+                Box::new(sample_source),
+                capture_file,
+                config.capture_duration,
+            )?)
+        } else {
+            Box::new(sample_source)
+        };
 
     // Create a modified config with device-specific peak scan duration if not already set
     let mut modified_config = config.clone();
@@ -127,7 +139,7 @@ pub fn collect_peaks(
         );
     }
 
-    collect_peaks_from_source(&modified_config, &mut sample_source)
+    collect_peaks_from_source(&modified_config, &mut *final_source)
 }
 
 /// Collect RF peaks from any SampleSource (for testing and production)
@@ -158,7 +170,7 @@ pub fn collect_peaks_from_source(
         match sample_source.read_samples(&mut read_buffer) {
             Ok(samples_read) => {
                 if samples_read == 0 {
-                    continue;
+                    break; // End of file reached
                 }
 
                 // Copy samples to FFT buffer and process
@@ -315,12 +327,11 @@ fn analyze_spectral_characteristics(
 
 /// Detect FM radio stations using spectral analysis with main lobe vs sidelobe discrimination
 /// This approach analyzes spectral characteristics like peak width, density, and shape
-pub fn find_candidates(
-    peaks: &[Peak],
-    config: &crate::ScanningConfig,
+pub fn find_candidates<'a>(
+    peaks: &'a [Peak],
+    config: &'a crate::ScanningConfig,
     center_freq: f64,
-    candidate_tx: &std::sync::mpsc::SyncSender<types::Candidate>,
-) {
+) -> impl Iterator<Item = types::Candidate> + 'a {
     debug!("Using spectral analysis for FM station detection with sidelobe discrimination...");
 
     // Calculate the frequency range we scanned based on center freq and sample rate
@@ -340,61 +351,63 @@ pub fn find_candidates(
         fm_freq += 0.1; // Make it an odd tenth
     }
 
-    while fm_freq <= freq_end_mhz {
-        debug!("Analyzing {:.1} MHz... ", fm_freq);
-        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    std::iter::from_fn(move || {
+        while fm_freq <= freq_end_mhz {
+            debug!("Analyzing {:.1} MHz... ", fm_freq);
+            std::io::Write::flush(&mut std::io::stdout()).unwrap();
 
-        let (spectral_score, analysis_summary) =
-            analyze_spectral_characteristics(peaks, fm_freq, config.samp_rate, center_freq);
+            let (spectral_score, analysis_summary) =
+                analyze_spectral_characteristics(peaks, fm_freq, config.samp_rate, center_freq);
 
-        debug!("score: {:.3} ({})", spectral_score, analysis_summary);
+            debug!("score: {:.3} ({})", spectral_score, analysis_summary);
 
-        // Only consider frequencies with significant spectral score
-        if spectral_score > 0.3 {
-            // Map spectral score to traditional signal strength categories
-            let signal_strength = if spectral_score > 0.8 {
-                "Strong"
-            } else if spectral_score > 0.6 {
-                "Medium"
-            } else {
-                "Weak"
-            };
+            let current_freq = fm_freq;
+            fm_freq = (fm_freq * 10.0 + 2.0) / 10.0; // Next odd tenth (add 0.2)
 
-            // Find relevant peaks for this frequency
-            let tolerance_mhz = 0.1;
-            let nearby_peaks: Vec<&Peak> = peaks
-                .iter()
-                .filter(|peak| {
-                    let peak_freq_mhz = peak.frequency_hz / 1e6;
-                    (peak_freq_mhz - fm_freq).abs() <= tolerance_mhz
-                })
-                .collect();
+            // Only consider frequencies with significant spectral score
+            if spectral_score > 0.3 {
+                // Map spectral score to traditional signal strength categories
+                let signal_strength = if spectral_score > 0.8 {
+                    "Strong"
+                } else if spectral_score > 0.6 {
+                    "Medium"
+                } else {
+                    "Weak"
+                };
 
-            let peak_count = nearby_peaks.len();
-            let max_magnitude = nearby_peaks
-                .iter()
-                .map(|p| p.magnitude)
-                .max_by(|a, b| a.partial_cmp(b).unwrap())
-                .unwrap_or(0.0);
-            let avg_magnitude = if peak_count > 0 {
-                nearby_peaks.iter().map(|p| p.magnitude).sum::<f32>() / peak_count as f32
-            } else {
-                0.0
-            };
+                // Find relevant peaks for this frequency
+                let tolerance_mhz = 0.1;
+                let nearby_peaks: Vec<&Peak> = peaks
+                    .iter()
+                    .filter(|peak| {
+                        let peak_freq_mhz = peak.frequency_hz / 1e6;
+                        (peak_freq_mhz - current_freq).abs() <= tolerance_mhz
+                    })
+                    .collect();
 
-            candidate_tx
-                .send(types::Candidate::Fm(Candidate {
-                    frequency_hz: fm_freq * 1e6,
+                let peak_count = nearby_peaks.len();
+                let max_magnitude = nearby_peaks
+                    .iter()
+                    .map(|p| p.magnitude)
+                    .max_by(|a, b| a.partial_cmp(b).unwrap())
+                    .unwrap_or(0.0);
+                let avg_magnitude = if peak_count > 0 {
+                    nearby_peaks.iter().map(|p| p.magnitude).sum::<f32>() / peak_count as f32
+                } else {
+                    0.0
+                };
+
+                return Some(types::Candidate::Fm(Candidate {
+                    frequency_hz: current_freq * 1e6,
                     peak_count,
                     max_magnitude,
                     avg_magnitude,
                     signal_strength: signal_strength.to_string(),
-                }))
-                .expect("Failed to send candidate");
+                }));
+            }
         }
-
-        fm_freq = (fm_freq * 10.0 + 2.0) / 10.0; // Next odd tenth (add 0.2)
-    }
+        None
+    })
 }
 
 // Create rustradio graph for a station (matches the scanner example exactly)
@@ -551,6 +564,8 @@ mod tests {
             peak_scan_duration: Some(0.1),  // Short duration for testing
             print_candidates: false,
             samp_rate: 1000000.0,
+            capture_iq: None,
+            capture_duration: 2.0,
         };
 
         // Create mock source with a signal at +100kHz offset from center
@@ -577,6 +592,44 @@ mod tests {
                 .iter()
                 .map(|p| p.frequency_hz / 1e6)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_fm_detection_from_iq_file() {
+        // Load both I/Q file and metadata in one call
+        let (mut file_source, metadata) =
+            crate::testing::load_iq_fixture("tests/data/fm_88.9_MHz_1s.iq")
+                .expect("Failed to load I/Q fixture");
+        let mut config = crate::ScanningConfig::default();
+        config.driver = "test".to_string();
+
+        let peaks = collect_peaks_from_source(&config, &mut file_source)
+            .expect("Failed to collect peaks from I/Q file");
+        assert!(!peaks.is_empty(), "Expected to find peaks in the I/Q file");
+
+        // Find candidates from the peaks (use center frequency from metadata)
+        let candidates: Vec<_> =
+            find_candidates(&peaks, &config, metadata.center_frequency).collect();
+        let candidate_freqs: Vec<f64> = candidates
+            .iter()
+            .map(|c| (c.frequency_hz() / 1e6 * 10.0).round() / 10.0)
+            .collect();
+
+        assert_eq!(
+            candidate_freqs.len(),
+            2,
+            "Expected exactly 2 candidates (88.9 and 89.3 MHz), but found {} candidates at: {:?}",
+            candidate_freqs.len(),
+            candidate_freqs
+        );
+        assert!(
+            candidate_freqs.contains(&88.9),
+            "Expected to find 88.9 MHz station"
+        );
+        assert!(
+            candidate_freqs.contains(&89.3),
+            "Expected to find 89.3 MHz station"
         );
     }
 }

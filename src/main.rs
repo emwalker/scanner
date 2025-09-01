@@ -27,7 +27,7 @@ fn parse_stations(stations_str: &str) -> Result<Vec<f64>> {
 fn scan_stations(
     stations_str: &str,
     candidate_tx: &SyncSender<Candidate>,
-    _config: &ScanningConfig,
+    config: &ScanningConfig,
 ) -> Result<()> {
     let stations = parse_stations(stations_str)?;
     debug!(
@@ -36,6 +36,15 @@ fn scan_stations(
     );
 
     for station_freq in stations {
+        // If I/Q capture is requested, perform peak collection to trigger capture
+        if config.capture_iq.is_some() {
+            debug!(
+                message = "Capturing I/Q samples for station",
+                frequency_hz = station_freq
+            );
+            let _peaks = fm::collect_peaks(config, &config.driver, station_freq)?;
+        }
+
         let candidate = Candidate::Fm(fm::Candidate {
             frequency_hz: station_freq,
             peak_count: 1,
@@ -73,7 +82,9 @@ fn scan_band(
 
         if !peaks.is_empty() {
             debug!("Found {} peaks in this window", peaks.len());
-            fm::find_candidates(&peaks, config, *center_freq, candidate_tx);
+            for candidate in fm::find_candidates(&peaks, config, *center_freq) {
+                candidate_tx.send(candidate).unwrap();
+            }
         } else {
             debug!("No peaks detected in this window");
         }
@@ -175,6 +186,29 @@ pub struct ScanningConfig {
     pub peak_scan_duration: Option<f64>,
     pub print_candidates: bool,
     pub samp_rate: f64,
+    pub capture_iq: Option<String>,
+    pub capture_duration: f64,
+}
+
+impl Default for ScanningConfig {
+    fn default() -> Self {
+        Self {
+            audio_buffer_size: 4096,
+            audio_sample_rate: 48000,
+            audo_mutex: Arc::new(Mutex::new(Audio)),
+            band: Band::Fm,
+            driver: "driver=sdrplay".to_string(),
+            duration: 3,
+            exit_early: false,
+            fft_size: 1024,
+            peak_detection_threshold: 1.0,
+            peak_scan_duration: None,
+            print_candidates: false,
+            samp_rate: 1_000_000.0,
+            capture_iq: None,
+            capture_duration: 2.0,
+        }
+    }
 }
 
 const DEFAULT_DRIVER: &str = "driver=sdrplay";
@@ -309,6 +343,14 @@ struct Args {
     /// Output format for logs
     #[arg(long, default_value_t = Format::Text)]
     format: Format,
+
+    /// Capture I/Q samples to file for testing
+    #[arg(long)]
+    capture_iq: Option<String>,
+
+    /// Duration to capture I/Q samples (seconds)
+    #[arg(long, default_value_t = 2.0)]
+    capture_duration: f64,
 }
 
 fn main() -> Result<()> {
@@ -329,6 +371,8 @@ fn main() -> Result<()> {
         samp_rate: 1_000_000.0f64,
         audo_mutex: Arc::new(Mutex::new(Audio)),
         print_candidates: args.print_candidates,
+        capture_iq: args.capture_iq,
+        capture_duration: args.capture_duration,
     };
 
     // Configure SoapySDR logging (required by rustradio)

@@ -25,6 +25,10 @@ pub enum ScannerError {
     Stderr(#[from] log::SetLoggerError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("I/Q capture error: {0}")]
+    IqCapture(String),
+    #[error(transparent)]
+    SerdeJson(#[from] serde_json::Error),
 }
 
 pub type Result<T> = std::result::Result<T, ScannerError>;
