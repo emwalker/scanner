@@ -104,6 +104,8 @@ pub enum Format {
     Json,
     /// Simple text logging format
     Text,
+    /// Standard log format with timestamps and levels
+    Log,
 }
 
 impl std::fmt::Display for Format {
@@ -111,6 +113,7 @@ impl std::fmt::Display for Format {
         match self {
             Format::Json => write!(f, "json"),
             Format::Text => write!(f, "text"),
+            Format::Log => write!(f, "log"),
         }
     }
 }

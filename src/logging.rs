@@ -117,6 +117,15 @@ pub fn init(verbose: bool, format: Format) -> Result<()> {
             tracing::subscriber::set_global_default(subscriber)
                 .expect("setting default subscriber failed");
         }
+        Format::Log => {
+            let subscriber = FmtSubscriber::builder()
+                .with_max_level(level)
+                .with_writer(captured_logs.clone())
+                .with_target(false)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("setting default subscriber failed");
+        }
     }
 
     BUFFER
