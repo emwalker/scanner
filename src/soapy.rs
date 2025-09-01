@@ -1,4 +1,4 @@
-use crate::types::Result;
+use crate::types::{Result, SampleSource};
 use rustradio::Complex;
 use rustradio::blocks::SoapySdrSource;
 use tracing::debug;
@@ -98,6 +98,13 @@ impl SdrSource {
     }
 }
 
+/// Trait for abstracting raw stream operations
+#[allow(dead_code)]
+pub trait RawStream {
+    fn read_stream(&mut self, buffers: &mut [&mut [Complex]], timeout_us: i64) -> Result<usize>;
+    fn deactivate(&mut self) -> Result<()>;
+}
+
 /// Wrapper for raw SoapySDR stream access
 pub struct RawSdrStream {
     _device: soapysdr::Device, // Keep device alive
@@ -116,8 +123,58 @@ impl RawSdrStream {
     }
 
     /// Deactivate the stream when done
-    pub fn deactivate(mut self) -> Result<()> {
+    pub fn deactivate(&mut self) -> Result<()> {
         self.stream.deactivate(None)?;
         Ok(())
+    }
+}
+
+impl RawStream for RawSdrStream {
+    fn read_stream(&mut self, buffers: &mut [&mut [Complex]], timeout_us: i64) -> Result<usize> {
+        let samples_read = self.stream.read(buffers, timeout_us)?;
+        Ok(samples_read)
+    }
+
+    fn deactivate(&mut self) -> Result<()> {
+        self.stream.deactivate(None)?;
+        Ok(())
+    }
+}
+
+/// Hardware-based sample source using SoapySDR
+pub struct SdrSampleSource {
+    raw_stream: RawSdrStream,
+    sample_rate: f64,
+    center_frequency: f64,
+}
+
+impl SdrSampleSource {
+    pub fn new(device_args: String, center_freq: f64, sample_rate: f64) -> Result<Self> {
+        let sdr_source = SdrSource::when_ready(device_args)?;
+        let raw_stream = sdr_source.create_raw_stream(center_freq, sample_rate)?;
+
+        Ok(Self {
+            raw_stream,
+            sample_rate,
+            center_frequency: center_freq,
+        })
+    }
+}
+
+impl SampleSource for SdrSampleSource {
+    fn read_samples(&mut self, buffer: &mut [Complex]) -> Result<usize> {
+        self.raw_stream.read_stream(&mut [buffer], 1000000)
+    }
+
+    fn sample_rate(&self) -> f64 {
+        self.sample_rate
+    }
+
+    fn center_frequency(&self) -> f64 {
+        self.center_frequency
+    }
+
+    fn deactivate(&mut self) -> Result<()> {
+        self.raw_stream.deactivate()
     }
 }

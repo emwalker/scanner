@@ -114,17 +114,32 @@ pub fn collect_peaks(
     device_args: &str,
     center_freq: f64,
 ) -> Result<Vec<Peak>> {
-    let peak_scan_duration = config.peak_scan_duration.unwrap_or_else(|| {
-        *PEAK_SCAN_DURATIONS
-            .get(device_args)
-            .unwrap_or(&DEFAULT_PEAK_SCAN_DURATION)
-    });
+    let mut sample_source =
+        crate::soapy::SdrSampleSource::new(device_args.to_string(), center_freq, config.samp_rate)?;
+
+    // Create a modified config with device-specific peak scan duration if not already set
+    let mut modified_config = config.clone();
+    if modified_config.peak_scan_duration.is_none() {
+        modified_config.peak_scan_duration = Some(
+            *PEAK_SCAN_DURATIONS
+                .get(device_args)
+                .unwrap_or(&DEFAULT_PEAK_SCAN_DURATION),
+        );
+    }
+
+    collect_peaks_from_source(&modified_config, &mut sample_source)
+}
+
+/// Collect RF peaks from any SampleSource (for testing and production)
+pub fn collect_peaks_from_source(
+    config: &crate::ScanningConfig,
+    sample_source: &mut dyn crate::types::SampleSource,
+) -> Result<Vec<Peak>> {
+    let peak_scan_duration = config
+        .peak_scan_duration
+        .unwrap_or(DEFAULT_PEAK_SCAN_DURATION);
     debug!("Starting peak detection scan for {peak_scan_duration} seconds...",);
     let lock = config.audo_mutex.lock().unwrap();
-
-    // Initialize SDR device and stream
-    let sdr_source = SdrSource::when_ready(device_args.to_string())?;
-    let mut raw_stream = sdr_source.create_raw_stream(center_freq, config.samp_rate)?;
 
     // Prepare FFT processing
     let mut peaks = Vec::new();
@@ -133,14 +148,14 @@ pub fn collect_peaks(
     let fft = planner.plan_fft_forward(config.fft_size);
 
     // Calculate sampling parameters
-    let samples_per_second = config.samp_rate as usize;
+    let samples_per_second = sample_source.sample_rate() as usize;
     let total_samples_needed = (samples_per_second as f64 * peak_scan_duration) as usize;
     let mut samples_collected = 0;
     let mut read_buffer = vec![Complex::default(); config.fft_size];
 
     // Collect samples and perform peak detection
     while samples_collected < total_samples_needed {
-        match raw_stream.read_stream(&mut [&mut read_buffer], 1000000) {
+        match sample_source.read_samples(&mut read_buffer) {
             Ok(samples_read) => {
                 if samples_read == 0 {
                     continue;
@@ -165,8 +180,11 @@ pub fn collect_peaks(
                         && magnitudes[i] > magnitudes[i + 1]
                     {
                         // Convert FFT bin to frequency
-                        let freq_offset = (i as f64 / config.fft_size as f64) * config.samp_rate;
-                        let freq_hz = center_freq - (config.samp_rate / 2.0) + freq_offset;
+                        let freq_offset =
+                            (i as f64 / config.fft_size as f64) * sample_source.sample_rate();
+                        let freq_hz = sample_source.center_frequency()
+                            - (sample_source.sample_rate() / 2.0)
+                            + freq_offset;
 
                         peaks.push(Peak {
                             frequency_hz: freq_hz,
@@ -184,7 +202,7 @@ pub fn collect_peaks(
         }
     }
 
-    raw_stream.deactivate()?;
+    sample_source.deactivate()?;
     drop(lock);
     debug!("Peak detection scan complete. Found {} peaks.", peaks.len());
 
@@ -444,4 +462,121 @@ pub fn create_station_graph(
     graph.add(Box::new(MpscSink::new(prev, audio_sender, channel_name)));
 
     Ok(graph)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::SampleSource;
+
+    /// Mock sample source for testing that generates a simple sine wave
+    struct MockSampleSource {
+        sample_rate: f64,
+        center_frequency: f64,
+        samples_generated: usize,
+        max_samples: usize,
+        phase: f32,
+        frequency_offset: f32, // Hz offset from center frequency
+    }
+
+    impl MockSampleSource {
+        fn new(
+            sample_rate: f64,
+            center_frequency: f64,
+            max_samples: usize,
+            signal_freq_offset: f32,
+        ) -> Self {
+            Self {
+                sample_rate,
+                center_frequency,
+                samples_generated: 0,
+                max_samples,
+                phase: 0.0,
+                frequency_offset: signal_freq_offset,
+            }
+        }
+    }
+
+    impl SampleSource for MockSampleSource {
+        fn read_samples(&mut self, buffer: &mut [Complex]) -> Result<usize> {
+            let samples_to_generate = buffer.len().min(self.max_samples - self.samples_generated);
+            if samples_to_generate == 0 {
+                return Ok(0);
+            }
+
+            let angular_freq =
+                2.0 * std::f32::consts::PI * self.frequency_offset / self.sample_rate as f32;
+
+            for sample in buffer.iter_mut().take(samples_to_generate) {
+                // Generate complex sinusoid at specified frequency offset
+                *sample = Complex::new(
+                    self.phase.cos() * 0.5, // I component
+                    self.phase.sin() * 0.5, // Q component
+                );
+                self.phase += angular_freq;
+                if self.phase > 2.0 * std::f32::consts::PI {
+                    self.phase -= 2.0 * std::f32::consts::PI;
+                }
+            }
+
+            self.samples_generated += samples_to_generate;
+            Ok(samples_to_generate)
+        }
+
+        fn sample_rate(&self) -> f64 {
+            self.sample_rate
+        }
+
+        fn center_frequency(&self) -> f64 {
+            self.center_frequency
+        }
+
+        fn deactivate(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_collect_peaks_from_mock_source() {
+        let config = crate::ScanningConfig {
+            audio_buffer_size: 4096,
+            audio_sample_rate: 48000,
+            audo_mutex: std::sync::Arc::new(std::sync::Mutex::new(crate::Audio)),
+            band: crate::Band::Fm,
+            driver: "test".to_string(),
+            duration: 1,
+            exit_early: false,
+            fft_size: 1024,
+            peak_detection_threshold: 0.01, // Low threshold for testing
+            peak_scan_duration: Some(0.1),  // Short duration for testing
+            print_candidates: false,
+            samp_rate: 1000000.0,
+        };
+
+        // Create mock source with a signal at +100kHz offset from center
+        let mut mock_source = MockSampleSource::new(
+            1000000.0,  // 1 MHz sample rate
+            88900000.0, // 88.9 MHz center frequency
+            100000,     // 100k samples max
+            100000.0,   // 100 kHz offset signal
+        );
+
+        let peaks = collect_peaks_from_source(&config, &mut mock_source).unwrap();
+
+        // Should detect the peak around 89.0 MHz (88.9 + 0.1)
+        assert!(!peaks.is_empty(), "Should detect at least one peak");
+
+        let target_freq = 89000000.0; // 89.0 MHz
+        let found_peak = peaks
+            .iter()
+            .find(|p| (p.frequency_hz - target_freq).abs() < 50000.0);
+        assert!(
+            found_peak.is_some(),
+            "Should find peak near 89.0 MHz, found peaks at: {:?}",
+            peaks
+                .iter()
+                .map(|p| p.frequency_hz / 1e6)
+                .collect::<Vec<_>>()
+        );
+    }
 }

@@ -1,3 +1,4 @@
+use rustradio::Complex;
 use thiserror::Error;
 
 use crate::fm;
@@ -32,6 +33,22 @@ pub type Result<T> = std::result::Result<T, ScannerError>;
 pub struct Peak {
     pub frequency_hz: f64,
     pub magnitude: f32,
+}
+
+/// Abstraction for sources of I/Q samples
+pub trait SampleSource {
+    /// Read samples into the provided buffer
+    /// Returns the number of samples actually read
+    fn read_samples(&mut self, buffer: &mut [Complex]) -> Result<usize>;
+
+    /// Get the configured sample rate
+    fn sample_rate(&self) -> f64;
+
+    /// Get the configured center frequency  
+    fn center_frequency(&self) -> f64;
+
+    /// Clean up resources when done
+    fn deactivate(&mut self) -> Result<()>;
 }
 
 pub enum Candidate {

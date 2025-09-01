@@ -9,6 +9,7 @@ mod fm;
 mod logging;
 mod mpsc;
 mod soapy;
+mod testing;
 mod types;
 use crate::types::{Candidate, Result, ScannerError};
 
