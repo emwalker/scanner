@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::fm;
+
 #[derive(Error, Debug)]
 pub enum ScannerError {
     #[error(transparent)]
@@ -30,11 +32,18 @@ pub struct Peak {
     pub magnitude: f32,
 }
 
-#[derive(Debug, Clone)]
-pub struct Candidate {
-    pub frequency_hz: f64,
-    pub peak_count: usize,
-    pub max_magnitude: f32,
-    pub avg_magnitude: f32,
-    pub signal_strength: String,
+pub enum Candidate {
+    Fm(fm::Candidate),
+}
+
+impl Candidate {
+    pub fn analyze(
+        &self,
+        config: &crate::ScanningConfig,
+        audio_tx: std::sync::mpsc::SyncSender<f32>,
+    ) -> Result<()> {
+        match self {
+            Candidate::Fm(candidate) => candidate.analyze(config, audio_tx),
+        }
+    }
 }

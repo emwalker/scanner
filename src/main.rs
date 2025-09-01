@@ -151,7 +151,7 @@ fn spawn_scanning_thread(
         println!("Scanning for transmissions ...");
 
         for candidate in candidate_rx {
-            fm::analyze_channel(candidate, &config, shared_audio_tx.clone())?;
+            candidate.analyze(&config, shared_audio_tx.clone())?;
 
             if config.exit_early {
                 println!("Early exit requested - stopping after first candidate.");

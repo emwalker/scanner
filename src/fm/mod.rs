@@ -3,7 +3,8 @@ use std::{thread, time::Duration};
 use crate::{
     fm::deemph::Deemphasis,
     mpsc::{MpscReceiverSource, MpscSenderSink, MpscSink},
-    types::{Candidate, Peak, Result},
+    types,
+    types::{Peak, Result},
 };
 use rustradio::graph::{Graph, GraphRunner};
 use rustradio::window::WindowType;
@@ -15,6 +16,84 @@ use rustradio::{
 };
 
 pub mod deemph;
+
+#[derive(Debug, Clone)]
+pub struct Candidate {
+    pub frequency_hz: f64,
+    pub peak_count: usize,
+    pub max_magnitude: f32,
+    pub avg_magnitude: f32,
+    pub signal_strength: String,
+}
+
+impl Candidate {
+    pub fn analyze(
+        &self,
+        config: &crate::ScanningConfig,
+        audio_tx: std::sync::mpsc::SyncSender<f32>,
+    ) -> Result<()> {
+        println!(
+            "Tuning into {:.1} MHz - {} signal ({} peaks, max: {:.1}, avg: {:.1})",
+            self.frequency_hz / 1e6,
+            self.signal_strength,
+            self.peak_count,
+            self.max_magnitude,
+            self.avg_magnitude
+        );
+        let lock = config.audo_mutex.lock().unwrap();
+
+        // Create a complete SDR -> DSP -> Audio pipeline for this candidate
+        let (sdr_tx, sdr_rx) = std::sync::mpsc::sync_channel::<rustradio::Complex>(16384);
+        let station_name = format!("{:.1}FM", self.frequency_hz / 1e6);
+
+        // Create DSP graph to process this candidate's frequency
+        let mut dsp_graph = create_station_graph(sdr_rx, config.samp_rate, audio_tx, station_name)?;
+        let dsp_cancel_token = dsp_graph.cancel_token();
+
+        // Create SDR graph to capture this frequency
+        let mut sdr_graph = Graph::new();
+        let sdr_graph_cancel_token = sdr_graph.cancel_token();
+
+        eprintln!(
+            "Frequency {}, sample rate {}",
+            self.frequency_hz, config.samp_rate
+        );
+
+        let dev = soapysdr::Device::new(config.driver.as_str())?;
+        let (sdr_source_block, sdr_output_stream) =
+            SoapySdrSource::builder(&dev, self.frequency_hz, config.samp_rate)
+                .igain(1 as _)
+                .build()?;
+
+        sdr_graph.add(Box::new(sdr_source_block));
+        sdr_graph.add(Box::new(MpscSenderSink::new(sdr_output_stream, sdr_tx)));
+
+        // Start DSP graph in a separate thread
+        let frequency_hz = self.frequency_hz;
+        thread::spawn(move || {
+            if let Err(e) = dsp_graph.run() {
+                eprintln!("DSP graph error for {}: {}", frequency_hz / 1e6, e);
+            }
+        });
+
+        // Set up timer thread
+        let duration = config.duration;
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(duration));
+            println!(
+                "Ran for {} seconds, continuing on to the next candidate",
+                duration
+            );
+            sdr_graph_cancel_token.cancel();
+            dsp_cancel_token.cancel();
+        });
+
+        sdr_graph.run()?;
+        drop(lock);
+
+        Ok(())
+    }
+}
 
 /// Collect RF peaks synchronously by directly interfacing with the SDR device
 /// This performs FFT analysis to detect spectral peaks above the threshold
@@ -208,7 +287,7 @@ pub fn find_candidates(
     peaks: &[Peak],
     config: &crate::ScanningConfig,
     center_freq: f64,
-    candidate_tx: &std::sync::mpsc::SyncSender<Candidate>,
+    candidate_tx: &std::sync::mpsc::SyncSender<types::Candidate>,
 ) {
     println!("Using spectral analysis for FM station detection with sidelobe discrimination...");
 
@@ -272,13 +351,13 @@ pub fn find_candidates(
             };
 
             candidate_tx
-                .send(Candidate {
+                .send(types::Candidate::Fm(Candidate {
                     frequency_hz: fm_freq * 1e6,
                     peak_count,
                     max_magnitude,
                     avg_magnitude,
                     signal_strength: signal_strength.to_string(),
-                })
+                }))
                 .expect("Failed to send candidate");
         }
 
@@ -351,74 +430,4 @@ pub fn create_station_graph(
     graph.add(Box::new(MpscSink::new(prev, audio_sender, channel_name)));
 
     Ok(graph)
-}
-
-pub fn analyze_channel(
-    candidate: Candidate,
-    config: &crate::ScanningConfig,
-    audio_tx: std::sync::mpsc::SyncSender<f32>,
-) -> Result<()> {
-    println!(
-        "Tuning into {:.1} MHz - {} signal ({} peaks, max: {:.1}, avg: {:.1})",
-        candidate.frequency_hz / 1e6,
-        candidate.signal_strength,
-        candidate.peak_count,
-        candidate.max_magnitude,
-        candidate.avg_magnitude
-    );
-    let lock = config.audo_mutex.lock().unwrap();
-
-    // Create a complete SDR -> DSP -> Audio pipeline for this candidate
-    let (sdr_tx, sdr_rx) = std::sync::mpsc::sync_channel::<rustradio::Complex>(16384);
-    let station_name = format!("{:.1}FM", candidate.frequency_hz / 1e6);
-
-    // Create DSP graph to process this candidate's frequency
-    let mut dsp_graph = create_station_graph(sdr_rx, config.samp_rate, audio_tx, station_name)?;
-    let dsp_cancel_token = dsp_graph.cancel_token();
-
-    // Create SDR graph to capture this frequency
-    let mut sdr_graph = Graph::new();
-    let sdr_graph_cancel_token = sdr_graph.cancel_token();
-
-    eprintln!(
-        "Frequency {}, sample rate {}",
-        candidate.frequency_hz, config.samp_rate
-    );
-
-    let dev = soapysdr::Device::new(config.driver.as_str())?;
-    let (sdr_source_block, sdr_output_stream) =
-        SoapySdrSource::builder(&dev, candidate.frequency_hz, config.samp_rate)
-            .igain(1 as _)
-            .build()?;
-
-    sdr_graph.add(Box::new(sdr_source_block));
-    sdr_graph.add(Box::new(MpscSenderSink::new(sdr_output_stream, sdr_tx)));
-
-    // Start DSP graph in a separate thread
-    thread::spawn(move || {
-        if let Err(e) = dsp_graph.run() {
-            eprintln!(
-                "DSP graph error for {}: {}",
-                candidate.frequency_hz / 1e6,
-                e
-            );
-        }
-    });
-
-    // Set up timer thread
-    let duration = config.duration;
-    thread::spawn(move || {
-        thread::sleep(Duration::from_secs(duration));
-        println!(
-            "Ran for {} seconds, continuing on to the next candidate",
-            duration
-        );
-        sdr_graph_cancel_token.cancel();
-        dsp_cancel_token.cancel();
-    });
-
-    sdr_graph.run()?;
-    drop(lock);
-
-    Ok(())
 }
