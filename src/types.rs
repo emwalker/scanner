@@ -37,6 +37,12 @@ pub enum Candidate {
 }
 
 impl Candidate {
+    pub fn frequency_hz(&self) -> f64 {
+        match self {
+            Candidate::Fm(candidate) => candidate.frequency_hz,
+        }
+    }
+
     pub fn analyze(
         &self,
         config: &crate::ScanningConfig,

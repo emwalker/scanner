@@ -12,6 +12,7 @@ clap = { version = "4.5.4", features = ["derive"] }
 cpal = "0.15"
 gag = "1.0"
 log = "0.4.27"
+phf = { version = "0.11", features = ["macros"] }
 rustfft = "6.4.0"
 rustradio = { path = "../../rustradio", features = ["soapysdr", "fast-math"] }
 soapysdr = "0.4.2"

@@ -7,6 +7,7 @@ use crate::{
     stdout, types,
     types::{Peak, Result},
 };
+use phf::phf_map;
 use rustradio::fir;
 use rustradio::graph::{Graph, GraphRunner};
 use rustradio::window::WindowType;
@@ -17,6 +18,12 @@ use rustradio::{
 };
 
 pub mod deemph;
+
+static PEAK_SCAN_DURATIONS: phf::Map<&'static str, f64> = phf_map! {
+    "driver=sdrplay" => 0.45,
+};
+
+const DEFAULT_PEAK_SCAN_DURATION: f64 = 0.5;
 
 #[derive(Debug, Clone)]
 pub struct Candidate {
@@ -102,10 +109,12 @@ pub fn collect_peaks(
     device_args: &str,
     center_freq: f64,
 ) -> Result<Vec<Peak>> {
-    println!(
-        "Starting peak detection scan for {} seconds...",
-        config.peak_scan_duration
-    );
+    let peak_scan_duration = config.peak_scan_duration.unwrap_or_else(|| {
+        *PEAK_SCAN_DURATIONS
+            .get(device_args)
+            .unwrap_or(&DEFAULT_PEAK_SCAN_DURATION)
+    });
+    println!("Starting peak detection scan for {peak_scan_duration} seconds...",);
     let lock = config.audo_mutex.lock().unwrap();
 
     // Initialize SDR device and stream
@@ -120,7 +129,7 @@ pub fn collect_peaks(
 
     // Calculate sampling parameters
     let samples_per_second = config.samp_rate as usize;
-    let total_samples_needed = samples_per_second * config.peak_scan_duration as usize;
+    let total_samples_needed = (samples_per_second as f64 * peak_scan_duration) as usize;
     let mut samples_collected = 0;
     let mut read_buffer = vec![Complex::default(); config.fft_size];
 

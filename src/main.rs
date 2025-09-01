@@ -174,17 +174,18 @@ pub struct Audio;
 
 #[derive(Clone)]
 pub struct ScanningConfig {
-    pub duration: u64,
+    pub audio_buffer_size: u32,
+    pub audio_sample_rate: u32,
+    pub audo_mutex: Arc<Mutex<Audio>>,
     pub band: Band,
-    pub samp_rate: f64,
     pub driver: String,
+    pub duration: u64,
     pub exit_early: bool,
     pub fft_size: usize,
     pub peak_detection_threshold: f32,
-    pub audio_sample_rate: u32,
-    pub audio_buffer_size: u32,
-    pub peak_scan_duration: u64,
-    pub audo_mutex: Arc<Mutex<Audio>>,
+    pub peak_scan_duration: Option<f64>,
+    pub print_candidates: bool,
+    pub samp_rate: f64,
 }
 
 const DEFAULT_DRIVER: &str = "driver=sdrplay";
@@ -258,7 +259,14 @@ fn spawn_scanning_thread(
         println!("Scanning for transmissions ...");
 
         for candidate in candidate_rx {
-            candidate.analyze(&config, shared_audio_tx.clone())?;
+            if config.print_candidates {
+                stdout!(
+                    "candidate found at {:.1} MHz",
+                    candidate.frequency_hz() / 1e6
+                );
+            } else {
+                candidate.analyze(&config, shared_audio_tx.clone())?;
+            }
 
             if config.exit_early {
                 println!("Early exit requested - stopping after first candidate.");
@@ -294,8 +302,8 @@ struct Args {
     duration: u64,
 
     /// Duration for peak detection scan (seconds)
-    #[arg(long, default_value_t = 1)]
-    peak_scan_duration: u64,
+    #[arg(long)]
+    peak_scan_duration: Option<f64>,
 
     /// Exit after analyzing the first candidate station
     #[arg(long)]
@@ -304,6 +312,10 @@ struct Args {
     /// Enable verbose output from libraries
     #[arg(long)]
     verbose: bool,
+
+    /// Print candidate stations instead of analyzing them
+    #[arg(long)]
+    print_candidates: bool,
 }
 
 fn main() -> Result<()> {
@@ -342,6 +354,7 @@ fn main() -> Result<()> {
         peak_scan_duration: args.peak_scan_duration,
         samp_rate,
         audo_mutex: Arc::new(Mutex::new(Audio)),
+        print_candidates: args.print_candidates,
     };
 
     // Configure SoapySDR logging (required by rustradio)
