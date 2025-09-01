@@ -1,6 +1,7 @@
 use crate::types::Result;
 use rustradio::Complex;
 use rustradio::blocks::SoapySdrSource;
+use tracing::debug;
 
 /// Our abstraction over SoapySDR device access
 /// Hides device instantiation details and provides a single point for device readiness checks
@@ -34,17 +35,17 @@ impl SdrSource {
             match soapysdr::enumerate(&*device_args) {
                 Ok(matching_devices) => {
                     if !matching_devices.is_empty() {
-                        println!("SDR device ready after {} attempt(s)", attempt);
+                        debug!("SDR device ready after {} attempt(s)", attempt);
                         return Ok(Self { device_args });
                     }
                 }
                 Err(e) => {
-                    println!("Device enumeration error on attempt {}: {:?}", attempt, e);
+                    debug!("Device enumeration error on attempt {}: {:?}", attempt, e);
                 }
             }
 
             if attempt < MAX_ATTEMPTS {
-                println!(
+                debug!(
                     "SDR device '{}' not ready, waiting {:?} before retry {} of {}",
                     device_args, RETRY_DELAY, attempt, MAX_ATTEMPTS
                 );

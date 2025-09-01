@@ -1,11 +1,9 @@
-use std::{thread, time::Duration};
-
 use crate::{
     fm::deemph::Deemphasis,
+    logging,
     mpsc::{MpscReceiverSource, MpscSenderSink, MpscSink},
     soapy::SdrSource,
-    stdout, types,
-    types::{Peak, Result},
+    types::{self, Peak, Result},
 };
 use phf::phf_map;
 use rustradio::fir;
@@ -16,6 +14,8 @@ use rustradio::{
     blocks::{FftFilter, QuadratureDemod, RationalResampler},
     fir::FirFilter,
 };
+use std::{thread, time::Duration};
+use tracing::{debug, info};
 
 pub mod deemph;
 
@@ -40,14 +40,19 @@ impl Candidate {
         config: &crate::ScanningConfig,
         audio_tx: std::sync::mpsc::SyncSender<f32>,
     ) -> Result<()> {
-        stdout!("found {:.1} MHz", self.frequency_hz / 1e6);
-        println!(
-            "Tuning into {:.1} MHz - {} signal ({} peaks, max: {:.1}, avg: {:.1})",
-            self.frequency_hz / 1e6,
-            self.signal_strength,
-            self.peak_count,
-            self.max_magnitude,
-            self.avg_magnitude
+        info!(
+            message = format!("found {:.1} MHz", self.frequency_hz / 1e6),
+            frequency_hz = self.frequency_hz
+        );
+        logging::flush();
+
+        debug!(
+            message = "Tuning into station",
+            fequency_hz = self.frequency_hz / 1e6,
+            signal_strength = self.signal_strength,
+            peak_count = self.peak_count,
+            self.max_magnitude = self.max_magnitude,
+            self.avg_magnitude = self.avg_magnitude
         );
         let lock = config.audo_mutex.lock().unwrap();
 
@@ -63,7 +68,7 @@ impl Candidate {
         let mut sdr_graph = Graph::new();
         let sdr_graph_cancel_token = sdr_graph.cancel_token();
 
-        eprintln!(
+        debug!(
             "Frequency {}, sample rate {}",
             self.frequency_hz, config.samp_rate
         );
@@ -79,7 +84,7 @@ impl Candidate {
         let frequency_hz = self.frequency_hz;
         thread::spawn(move || {
             if let Err(e) = dsp_graph.run() {
-                eprintln!("DSP graph error for {}: {}", frequency_hz / 1e6, e);
+                debug!("DSP graph error for {}: {}", frequency_hz / 1e6, e);
             }
         });
 
@@ -87,7 +92,7 @@ impl Candidate {
         let duration = config.duration;
         thread::spawn(move || {
             thread::sleep(Duration::from_secs(duration));
-            println!(
+            debug!(
                 "Ran for {} seconds, continuing on to the next candidate",
                 duration
             );
@@ -114,7 +119,7 @@ pub fn collect_peaks(
             .get(device_args)
             .unwrap_or(&DEFAULT_PEAK_SCAN_DURATION)
     });
-    println!("Starting peak detection scan for {peak_scan_duration} seconds...",);
+    debug!("Starting peak detection scan for {peak_scan_duration} seconds...",);
     let lock = config.audo_mutex.lock().unwrap();
 
     // Initialize SDR device and stream
@@ -173,7 +178,7 @@ pub fn collect_peaks(
                 samples_collected += samples_read;
             }
             Err(e) => {
-                eprintln!("Error reading from SDR: {}", e);
+                debug!("Error reading from SDR: {}", e);
                 break;
             }
         }
@@ -181,7 +186,8 @@ pub fn collect_peaks(
 
     raw_stream.deactivate()?;
     drop(lock);
-    println!("Peak detection scan complete. Found {} peaks.", peaks.len());
+    debug!("Peak detection scan complete. Found {} peaks.", peaks.len());
+
     Ok(peaks)
 }
 
@@ -297,14 +303,14 @@ pub fn find_candidates(
     center_freq: f64,
     candidate_tx: &std::sync::mpsc::SyncSender<types::Candidate>,
 ) {
-    println!("Using spectral analysis for FM station detection with sidelobe discrimination...");
+    debug!("Using spectral analysis for FM station detection with sidelobe discrimination...");
 
     // Calculate the frequency range we scanned based on center freq and sample rate
     let scan_range_mhz = config.samp_rate / 2e6; // Half sample rate in MHz (Nyquist)
     let freq_start_mhz = (center_freq / 1e6) - scan_range_mhz;
     let freq_end_mhz = (center_freq / 1e6) + scan_range_mhz;
 
-    println!(
+    debug!(
         "Analyzing spectral patterns in range: {:.1} - {:.1} MHz",
         freq_start_mhz, freq_end_mhz
     );
@@ -317,13 +323,13 @@ pub fn find_candidates(
     }
 
     while fm_freq <= freq_end_mhz {
-        print!("Analyzing {:.1} MHz... ", fm_freq);
+        debug!("Analyzing {:.1} MHz... ", fm_freq);
         std::io::Write::flush(&mut std::io::stdout()).unwrap();
 
         let (spectral_score, analysis_summary) =
             analyze_spectral_characteristics(peaks, fm_freq, config.samp_rate, center_freq);
 
-        println!("score: {:.3} ({})", spectral_score, analysis_summary);
+        debug!("score: {:.3} ({})", spectral_score, analysis_summary);
 
         // Only consider frequencies with significant spectral score
         if spectral_score > 0.3 {

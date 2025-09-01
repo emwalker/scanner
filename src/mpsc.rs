@@ -2,6 +2,7 @@ use rustradio::block::{Block, BlockEOF, BlockName, BlockRet};
 use rustradio::stream::{ReadStream, WriteStream};
 use rustradio::{Complex, Float, Result};
 use std::sync::mpsc;
+use tracing::debug;
 
 /// Rust Radio sink that pushes samples to an MPSC channel
 pub struct MpscSink {
@@ -46,7 +47,7 @@ impl rustradio::block::Block for MpscSink {
         for &sample in samples {
             if self.sender.send(sample).is_err() {
                 // Channel is full - this provides backpressure to the entire graph
-                println!(
+                debug!(
                     "MPSC channel full for {}, backpressuring graph",
                     self.channel_name
                 );

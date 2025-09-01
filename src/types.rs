@@ -22,6 +22,8 @@ pub enum ScannerError {
     RustRadio(#[from] rustradio::Error),
     #[error(transparent)]
     Stderr(#[from] log::SetLoggerError),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, ScannerError>;

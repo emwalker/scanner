@@ -1,53 +1,16 @@
 use clap::{Parser, ValueEnum};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
-use gag::Gag;
 use std::sync::{Arc, Mutex, mpsc::SyncSender};
 use std::thread;
+use tracing::{debug, info};
 
 mod fm;
+mod logging;
 mod mpsc;
 mod soapy;
 mod types;
 use crate::types::{Candidate, Result, ScannerError};
-
-// Macros to force output to console even when stdout/stderr are gagged
-#[macro_export]
-macro_rules! stdout {
-    ($($arg:tt)*) => {
-        {
-            use std::fs::OpenOptions;
-            use std::io::Write;
-            match OpenOptions::new().write(true).open("/dev/tty") {
-                Ok(mut tty) => {
-                    let _ = writeln!(tty, $($arg)*);
-                }
-                Err(_) => {
-                    println!($($arg)*);
-                }
-            }
-        }
-    };
-}
-
-#[allow(unused_macros)]
-#[macro_export]
-macro_rules! stderr {
-    ($($arg:tt)*) => {
-        {
-            use std::fs::OpenOptions;
-            use std::io::Write;
-            match OpenOptions::new().write(true).open("/dev/tty") {
-                Ok(mut tty) => {
-                    let _ = writeln!(tty, $($arg)*);
-                }
-                Err(_) => {
-                    eprintln!($($arg)*);
-                }
-            }
-        }
-    };
-}
 
 fn parse_stations(stations_str: &str) -> Result<Vec<f64>> {
     stations_str
@@ -66,7 +29,11 @@ fn scan_stations(
     _config: &ScanningConfig,
 ) -> Result<()> {
     let stations = parse_stations(stations_str)?;
-    println!("Scanning {} specified stations", stations.len());
+    debug!(
+        message = "Scanning stations",
+        stations = format!("{:?}", stations)
+    );
+
     for station_freq in stations {
         let candidate = Candidate::Fm(fm::Candidate {
             frequency_hz: station_freq,
@@ -77,6 +44,7 @@ fn scan_stations(
         });
         candidate_tx.send(candidate).unwrap();
     }
+
     Ok(())
 }
 
@@ -86,14 +54,14 @@ fn scan_band(
     candidate_tx: &SyncSender<Candidate>,
 ) -> Result<()> {
     let windows = config.band.windows(config.samp_rate);
-    println!(
+    debug!(
         "Scanning {} windows across {:?} band",
         windows.len(),
         config.band
     );
 
     for (i, center_freq) in windows.iter().enumerate() {
-        println!(
+        debug!(
             "Scanning window {} of {} at {:.1} MHz",
             i + 1,
             windows.len(),
@@ -103,10 +71,10 @@ fn scan_band(
         let peaks = fm::collect_peaks(config, driver, *center_freq)?;
 
         if !peaks.is_empty() {
-            println!("Found {} peaks in this window", peaks.len());
+            debug!("Found {} peaks in this window", peaks.len());
             fm::find_candidates(&peaks, config, *center_freq, candidate_tx);
         } else {
-            println!("No peaks detected in this window");
+            debug!("No peaks detected in this window");
         }
 
         if config.exit_early {
@@ -128,6 +96,23 @@ pub enum Band {
     Weather,
     /// Marine VHF band (156-162 MHz)
     Marine,
+}
+
+#[derive(ValueEnum, Copy, Clone, Debug)]
+pub enum Format {
+    /// JSON structured logging format
+    Json,
+    /// Simple text logging format
+    Text,
+}
+
+impl std::fmt::Display for Format {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Format::Json => write!(f, "json"),
+            Format::Text => write!(f, "text"),
+        }
+    }
 }
 
 impl std::fmt::Display for Band {
@@ -219,7 +204,7 @@ fn spawn_audio_thread(
         let mut stream_config: StreamConfig = supported_config.into();
         stream_config.buffer_size = cpal::BufferSize::Fixed(audio_buffer_size);
 
-        let err_fn = |err| eprintln!("Audio error: {}", err);
+        let err_fn = |err| debug!("Audio error: {}", err);
 
         let stream = match sample_format {
             SampleFormat::F32 => audio_device.build_output_stream(
@@ -242,7 +227,7 @@ fn spawn_audio_thread(
         stream.play()?;
 
         // Keep audio thread alive
-        println!("Audio system ready");
+        debug!("Audio system ready");
         thread::park();
         Ok(())
     });
@@ -256,11 +241,11 @@ fn spawn_scanning_thread(
     audio_handle: thread::JoinHandle<Result<()>>,
 ) -> Result<thread::JoinHandle<Result<()>>> {
     let handle = thread::spawn(move || -> Result<()> {
-        println!("Scanning for transmissions ...");
+        debug!("Scanning for transmissions ...");
 
         for candidate in candidate_rx {
             if config.print_candidates {
-                stdout!(
+                info!(
                     "candidate found at {:.1} MHz",
                     candidate.frequency_hz() / 1e6
                 );
@@ -269,12 +254,12 @@ fn spawn_scanning_thread(
             }
 
             if config.exit_early {
-                println!("Early exit requested - stopping after first candidate.");
+                debug!("Early exit requested - stopping after first candidate.");
                 break;
             }
         }
 
-        println!("All frequencies scanned.");
+        debug!("All frequencies scanned.");
         audio_handle.thread().unpark();
         let _ = audio_handle.join();
         Ok(())
@@ -316,33 +301,18 @@ struct Args {
     /// Print candidate stations instead of analyzing them
     #[arg(long)]
     print_candidates: bool,
+
+    /// Output format for logs
+    #[arg(long, default_value_t = Format::Text)]
+    format: Format,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-
-    // Suppress library output unless --verbose is specified
-    let _stdout_gag = if !args.verbose {
-        Some(
-            Gag::stdout()
-                .map_err(|_| ScannerError::Custom("Failed to suppress stdout".to_string()))?,
-        )
-    } else {
-        None
-    };
-    let _stderr_gag = if !args.verbose {
-        Some(
-            Gag::stderr()
-                .map_err(|_| ScannerError::Custom("Failed to suppress stderr".to_string()))?,
-        )
-    } else {
-        None
-    };
+    logging::init(args.verbose, args.format)?;
 
     let driver = args.device_args.unwrap_or(DEFAULT_DRIVER.into());
-    let samp_rate = 1_000_000.0f64;
-
-    let scanning_config = ScanningConfig {
+    let config = ScanningConfig {
         audio_buffer_size: 4096,
         audio_sample_rate: 48000,
         band: args.band,
@@ -352,49 +322,37 @@ fn main() -> Result<()> {
         fft_size: 1024,
         peak_detection_threshold: 1.0,
         peak_scan_duration: args.peak_scan_duration,
-        samp_rate,
+        samp_rate: 1_000_000.0f64,
         audo_mutex: Arc::new(Mutex::new(Audio)),
         print_candidates: args.print_candidates,
     };
 
     // Configure SoapySDR logging (required by rustradio)
     soapysdr::configure_logging();
-    stderrlog::new()
-        .module(module_path!())
-        .module("rustradio")
-        .quiet(false)
-        .verbosity(11)
-        .timestamp(stderrlog::Timestamp::Second)
-        .init()?;
+    info!("Scanning for stations ...");
 
-    stdout!("Scanning for stations ...");
-
-    // Create single shared audio channel - all candidates write to this
-    let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<f32>(48000); // 1 second buffer
-
-    // Create MPSC channel for candidate stations
+    // Single shared audio channel to which all candidates write
+    let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<f32>(config.samp_rate as _);
+    // MPSC channel for candidate stations
     let (candidate_tx, candidate_rx) = std::sync::mpsc::sync_channel::<Candidate>(100);
+    // Audio playback thread with simple blocking receive
+    let audio_handle = spawn_audio_thread(audio_rx, &config)?;
 
-    // Set up audio playback thread with simple blocking receive
-    let audio_handle = spawn_audio_thread(audio_rx, &scanning_config)?;
-
-    let scanning_thread = spawn_scanning_thread(
-        candidate_rx,
-        scanning_config.clone(),
-        audio_tx.clone(),
-        audio_handle,
-    )?;
+    let scanning_thread =
+        spawn_scanning_thread(candidate_rx, config.clone(), audio_tx.clone(), audio_handle)?;
 
     if let Some(stations_str) = args.stations {
-        scan_stations(&stations_str, &candidate_tx, &scanning_config)?;
+        scan_stations(&stations_str, &candidate_tx, &config)?;
     } else {
-        scan_band(&scanning_config, &driver, &candidate_tx)?;
+        scan_band(&config, &driver, &candidate_tx)?;
     }
 
     // Wait for scanning to complete
     drop(candidate_tx);
     let _ = scanning_thread.join();
 
-    stdout!("Scanning complete.");
+    info!("Scanning complete.");
+    logging::flush();
+
     Ok(())
 }
