@@ -1,4 +1,5 @@
 use crate::types::{Result, SampleSource};
+use phf::phf_map;
 use rustradio::Complex;
 use rustradio::blocks::SoapySdrSource;
 use tracing::debug;
@@ -143,23 +144,31 @@ impl RawStream for RawSdrStream {
 
 /// Hardware-based sample source using SoapySDR
 pub struct SdrSampleSource {
+    center_frequency: f64,
+    device_args: String,
     raw_stream: RawSdrStream,
     sample_rate: f64,
-    center_frequency: f64,
 }
 
 impl SdrSampleSource {
     pub fn new(device_args: String, center_freq: f64, sample_rate: f64) -> Result<Self> {
-        let sdr_source = SdrSource::when_ready(device_args)?;
+        let sdr_source = SdrSource::when_ready(device_args.clone())?;
         let raw_stream = sdr_source.create_raw_stream(center_freq, sample_rate)?;
 
         Ok(Self {
             raw_stream,
             sample_rate,
             center_frequency: center_freq,
+            device_args,
         })
     }
 }
+
+static PEAK_SCAN_DURATIONS: phf::Map<&'static str, f64> = phf_map! {
+    "driver=sdrplay" => 0.45,
+};
+
+const DEFAULT_PEAK_SCAN_DURATION: f64 = 0.5;
 
 impl SampleSource for SdrSampleSource {
     fn read_samples(&mut self, buffer: &mut [Complex]) -> Result<usize> {
@@ -176,5 +185,15 @@ impl SampleSource for SdrSampleSource {
 
     fn deactivate(&mut self) -> Result<()> {
         self.raw_stream.deactivate()
+    }
+
+    fn peak_scan_duration(&self) -> f64 {
+        *PEAK_SCAN_DURATIONS
+            .get(self.device_args())
+            .unwrap_or(&DEFAULT_PEAK_SCAN_DURATION)
+    }
+
+    fn device_args(&self) -> &str {
+        &self.device_args
     }
 }

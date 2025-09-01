@@ -5,7 +5,6 @@ use crate::{
     soapy::SdrSource,
     types::{self, Peak, Result},
 };
-use phf::phf_map;
 use rustradio::fir;
 use rustradio::graph::{Graph, GraphRunner};
 use rustradio::window::WindowType;
@@ -18,12 +17,6 @@ use std::{thread, time::Duration};
 use tracing::{debug, info};
 
 pub mod deemph;
-
-static PEAK_SCAN_DURATIONS: phf::Map<&'static str, f64> = phf_map! {
-    "driver=sdrplay" => 0.45,
-};
-
-const DEFAULT_PEAK_SCAN_DURATION: f64 = 0.5;
 
 #[derive(Debug, Clone)]
 pub struct Candidate {
@@ -129,17 +122,7 @@ pub fn collect_peaks(
             Box::new(sample_source)
         };
 
-    // Create a modified config with device-specific peak scan duration if not already set
-    let mut modified_config = config.clone();
-    if modified_config.peak_scan_duration.is_none() {
-        modified_config.peak_scan_duration = Some(
-            *PEAK_SCAN_DURATIONS
-                .get(device_args)
-                .unwrap_or(&DEFAULT_PEAK_SCAN_DURATION),
-        );
-    }
-
-    collect_peaks_from_source(&modified_config, &mut *final_source)
+    collect_peaks_from_source(config, &mut *final_source)
 }
 
 /// Extract peaks from FFT magnitudes
@@ -206,9 +189,7 @@ pub fn collect_peaks_from_source(
     config: &crate::ScanningConfig,
     sample_source: &mut dyn crate::types::SampleSource,
 ) -> Result<Vec<Peak>> {
-    let peak_scan_duration = config
-        .peak_scan_duration
-        .unwrap_or(DEFAULT_PEAK_SCAN_DURATION);
+    let peak_scan_duration = sample_source.peak_scan_duration();
     debug!("Starting peak detection scan for {peak_scan_duration} seconds...",);
     let lock = config.audo_mutex.lock().unwrap();
 
@@ -423,11 +404,11 @@ fn calculate_starting_fm_frequency(freq_start_mhz: f64) -> f64 {
 
 /// Detect FM radio stations using spectral analysis with main lobe vs sidelobe discrimination
 /// This approach analyzes spectral characteristics like peak width, density, and shape
-pub fn find_candidates<'a>(
-    peaks: &'a [Peak],
-    config: &'a crate::ScanningConfig,
+pub fn find_candidates(
+    peaks: &[Peak],
+    config: &crate::ScanningConfig,
     center_freq: f64,
-) -> impl Iterator<Item = types::Candidate> + 'a {
+) -> Vec<types::Candidate> {
     debug!("Using spectral analysis for FM station detection with sidelobe discrimination...");
 
     // Calculate the frequency range we scanned based on center freq and sample rate
@@ -440,28 +421,27 @@ pub fn find_candidates<'a>(
         freq_start_mhz, freq_end_mhz
     );
 
+    let mut candidates = Vec::new();
     let mut fm_freq = calculate_starting_fm_frequency(freq_start_mhz);
 
-    std::iter::from_fn(move || {
-        while fm_freq <= freq_end_mhz {
-            debug!("Analyzing {:.1} MHz... ", fm_freq);
-            std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    while fm_freq <= freq_end_mhz {
+        debug!("Analyzing {:.1} MHz... ", fm_freq);
+        std::io::Write::flush(&mut std::io::stdout()).unwrap();
 
-            let (spectral_score, analysis_summary) =
-                analyze_spectral_characteristics(peaks, fm_freq, config.samp_rate, center_freq);
+        let (spectral_score, analysis_summary) =
+            analyze_spectral_characteristics(peaks, fm_freq, config.samp_rate, center_freq);
 
-            debug!("score: {:.3} ({})", spectral_score, analysis_summary);
+        debug!("score: {:.3} ({})", spectral_score, analysis_summary);
 
-            let current_freq = fm_freq;
-            fm_freq = next_fm_frequency(fm_freq);
-
-            // Only consider frequencies with significant spectral score
-            if spectral_score > 0.3 {
-                return Some(create_fm_candidate(current_freq, peaks, spectral_score));
-            }
+        // Only consider frequencies with significant spectral score
+        if spectral_score > 0.3 {
+            candidates.push(create_fm_candidate(fm_freq, peaks, spectral_score));
         }
-        None
-    })
+
+        fm_freq = next_fm_frequency(fm_freq);
+    }
+
+    candidates
 }
 
 // Create rustradio graph for a station (matches the scanner example exactly)
@@ -601,6 +581,14 @@ mod tests {
         fn deactivate(&mut self) -> Result<()> {
             Ok(())
         }
+
+        fn device_args(&self) -> &str {
+            "test"
+        }
+
+        fn peak_scan_duration(&self) -> f64 {
+            1.0
+        }
     }
 
     #[test]
@@ -651,7 +639,6 @@ mod tests {
 
     #[test]
     fn test_fm_detection_from_iq_file() {
-        // Load both I/Q file and metadata in one call
         let (mut file_source, metadata) =
             crate::testing::load_iq_fixture("tests/data/fm_88.9_MHz_1s.iq")
                 .expect("Failed to load I/Q fixture");
@@ -662,9 +649,7 @@ mod tests {
             .expect("Failed to collect peaks from I/Q file");
         assert!(!peaks.is_empty(), "Expected to find peaks in the I/Q file");
 
-        // Find candidates from the peaks (use center frequency from metadata)
-        let candidates: Vec<_> =
-            find_candidates(&peaks, &config, metadata.center_frequency).collect();
+        let candidates = find_candidates(&peaks, &config, metadata.center_frequency);
         let candidate_freqs: Vec<f64> = candidates
             .iter()
             .map(|c| (c.frequency_hz() / 1e6 * 10.0).round() / 10.0)
@@ -684,6 +669,33 @@ mod tests {
         assert!(
             candidate_freqs.contains(&89.3),
             "Expected to find 89.3 MHz station"
+        );
+    }
+
+    #[test]
+    fn test_no_candidates_1() {
+        let (mut file_source, metadata) =
+            crate::testing::load_iq_fixture("tests/data/fm_88.5_MHz_1s.iq")
+                .expect("Failed to load I/Q fixture");
+        let mut config = crate::ScanningConfig::default();
+        config.driver = "test".to_string();
+
+        let peaks = collect_peaks_from_source(&config, &mut file_source)
+            .expect("Failed to collect peaks from I/Q file");
+
+        let candidates: Vec<_> = find_candidates(&peaks, &config, metadata.center_frequency);
+        let candidate_freqs: Vec<f64> = candidates
+            .iter()
+            .map(|c| (c.frequency_hz() / 1e6 * 10.0).round() / 10.0)
+            .collect();
+
+        assert_eq!(
+            candidates.len(),
+            metadata.expected_candidates.len(),
+            "Expected {} candidates as specified in metadata, but found {} candidates at: {:?}",
+            metadata.expected_candidates.len(),
+            candidates.len(),
+            candidate_freqs
         );
     }
 }

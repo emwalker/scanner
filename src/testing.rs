@@ -158,6 +158,14 @@ impl SampleSource for FileSampleSource {
         // Nothing to deactivate for file source
         Ok(())
     }
+
+    fn device_args(&self) -> &str {
+        ""
+    }
+
+    fn peak_scan_duration(&self) -> f64 {
+        1.0
+    }
 }
 
 /// Capturing wrapper that saves I/Q samples to a file while passing them through
@@ -291,5 +299,13 @@ impl SampleSource for CapturingSampleSource {
         }
 
         self.inner.deactivate()
+    }
+
+    fn device_args(&self) -> &str {
+        "test"
+    }
+
+    fn peak_scan_duration(&self) -> f64 {
+        1.0
     }
 }

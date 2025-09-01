@@ -1,0 +1,8 @@
+{
+  "sample_rate": 1000000.0,
+  "center_frequency": 88.5,
+  "capture_duration": 1.0,
+  "total_samples": 450048,
+  "format": "f32_le_complex",
+  "expected_candidates": [88200000.0, 88600000.0, 88800000.0, 89000000.0]
+}

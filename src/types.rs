@@ -53,6 +53,10 @@ pub trait SampleSource {
 
     /// Clean up resources when done
     fn deactivate(&mut self) -> Result<()>;
+
+    fn peak_scan_duration(&self) -> f64;
+
+    fn device_args(&self) -> &str;
 }
 
 pub enum Candidate {
