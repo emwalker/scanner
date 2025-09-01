@@ -7,6 +7,7 @@ use std::thread;
 
 mod fm;
 mod mpsc;
+mod soapy;
 mod types;
 use crate::types::{Candidate, Result, ScannerError};
 
@@ -17,8 +18,14 @@ macro_rules! stdout {
         {
             use std::fs::OpenOptions;
             use std::io::Write;
-            let mut tty = OpenOptions::new().write(true).open("/dev/tty").unwrap();
-            writeln!(tty, $($arg)*).unwrap();
+            match OpenOptions::new().write(true).open("/dev/tty") {
+                Ok(mut tty) => {
+                    let _ = writeln!(tty, $($arg)*);
+                }
+                Err(_) => {
+                    println!($($arg)*);
+                }
+            }
         }
     };
 }
@@ -30,8 +37,14 @@ macro_rules! stderr {
         {
             use std::fs::OpenOptions;
             use std::io::Write;
-            let mut tty = OpenOptions::new().write(true).open("/dev/tty").unwrap();
-            writeln!(tty, $($arg)*).unwrap();
+            match OpenOptions::new().write(true).open("/dev/tty") {
+                Ok(mut tty) => {
+                    let _ = writeln!(tty, $($arg)*);
+                }
+                Err(_) => {
+                    eprintln!($($arg)*);
+                }
+            }
         }
     };
 }

@@ -3,13 +3,14 @@ use std::{thread, time::Duration};
 use crate::{
     fm::deemph::Deemphasis,
     mpsc::{MpscReceiverSource, MpscSenderSink, MpscSink},
+    soapy::SdrSource,
     stdout, types,
     types::{Peak, Result},
 };
+use rustradio::fir;
 use rustradio::graph::{Graph, GraphRunner};
 use rustradio::window::WindowType;
 use rustradio::{Complex, Float, blockchain};
-use rustradio::{blocks::SoapySdrSource, fir};
 use rustradio::{
     blocks::{FftFilter, QuadratureDemod, RationalResampler},
     fir::FirFilter,
@@ -60,11 +61,9 @@ impl Candidate {
             self.frequency_hz, config.samp_rate
         );
 
-        let dev = soapysdr::Device::new(config.driver.as_str())?;
+        let sdr_source = SdrSource::when_ready(config.driver.clone())?;
         let (sdr_source_block, sdr_output_stream) =
-            SoapySdrSource::builder(&dev, self.frequency_hz, config.samp_rate)
-                .igain(1 as _)
-                .build()?;
+            sdr_source.create_source_block(self.frequency_hz, config.samp_rate)?;
 
         sdr_graph.add(Box::new(sdr_source_block));
         sdr_graph.add(Box::new(MpscSenderSink::new(sdr_output_stream, sdr_tx)));
@@ -110,9 +109,8 @@ pub fn collect_peaks(
     let lock = config.audo_mutex.lock().unwrap();
 
     // Initialize SDR device and stream
-    let dev = soapysdr::Device::new(device_args)?;
-    let mut rxstream = dev.rx_stream::<Complex>(&[0])?;
-    rxstream.activate(None)?;
+    let sdr_source = SdrSource::when_ready(device_args.to_string())?;
+    let mut raw_stream = sdr_source.create_raw_stream(center_freq, config.samp_rate)?;
 
     // Prepare FFT processing
     let mut peaks = Vec::new();
@@ -128,7 +126,7 @@ pub fn collect_peaks(
 
     // Collect samples and perform peak detection
     while samples_collected < total_samples_needed {
-        match rxstream.read(&mut [&mut read_buffer], 1000000) {
+        match raw_stream.read_stream(&mut [&mut read_buffer], 1000000) {
             Ok(samples_read) => {
                 if samples_read == 0 {
                     continue;
@@ -172,7 +170,7 @@ pub fn collect_peaks(
         }
     }
 
-    rxstream.deactivate(None)?;
+    raw_stream.deactivate()?;
     drop(lock);
     println!("Peak detection scan complete. Found {} peaks.", peaks.len());
     Ok(peaks)
