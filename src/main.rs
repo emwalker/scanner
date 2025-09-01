@@ -213,6 +213,56 @@ impl Default for ScanningConfig {
 
 const DEFAULT_DRIVER: &str = "driver=sdrplay";
 
+/// Configure audio device and find compatible configuration
+fn setup_audio_device(
+    audio_sample_rate: u32,
+) -> Result<(cpal::Device, cpal::SupportedStreamConfig)> {
+    let host = cpal::default_host();
+    let audio_device = host
+        .default_output_device()
+        .expect("no output device available");
+
+    let supported_configs_range = audio_device
+        .supported_output_configs()
+        .expect("error while querying configs");
+
+    let supported_config = supported_configs_range
+        .filter(|d| d.sample_format() == SampleFormat::F32)
+        .find(|d| {
+            d.min_sample_rate().0 <= audio_sample_rate && d.max_sample_rate().0 >= audio_sample_rate
+        })
+        .expect("no supported config found")
+        .with_sample_rate(cpal::SampleRate(audio_sample_rate));
+
+    Ok((audio_device, supported_config))
+}
+
+/// Create audio stream with callback for processing samples
+fn create_audio_stream(
+    device: &cpal::Device,
+    stream_config: &StreamConfig,
+    audio_rx: std::sync::mpsc::Receiver<f32>,
+) -> Result<cpal::Stream> {
+    let err_fn = |err| debug!("Audio error: {}", err);
+
+    let stream = device.build_output_stream(
+        stream_config,
+        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            // Simple: try to fill the entire buffer from the shared channel
+            for sample in data.iter_mut() {
+                match audio_rx.try_recv() {
+                    Ok(audio_sample) => *sample = audio_sample.clamp(-1.0, 1.0),
+                    Err(_) => *sample = 0.0, // Silence when no audio available
+                }
+            }
+        },
+        err_fn,
+        None,
+    )?;
+
+    Ok(stream)
+}
+
 fn spawn_audio_thread(
     audio_rx: std::sync::mpsc::Receiver<f32>,
     config: &ScanningConfig,
@@ -221,44 +271,16 @@ fn spawn_audio_thread(
     let audio_buffer_size = config.audio_buffer_size;
 
     let handle = thread::spawn(move || -> Result<()> {
-        // Set up CPAL audio
-        let host = cpal::default_host();
-        let audio_device = host
-            .default_output_device()
-            .expect("no output device available");
-        let supported_configs_range = audio_device
-            .supported_output_configs()
-            .expect("error while querying configs");
-        let supported_config = supported_configs_range
-            .filter(|d| d.sample_format() == SampleFormat::F32)
-            .find(|d| {
-                d.min_sample_rate().0 <= audio_sample_rate
-                    && d.max_sample_rate().0 >= audio_sample_rate
-            })
-            .expect("no supported config found")
-            .with_sample_rate(cpal::SampleRate(audio_sample_rate));
+        // Set up audio device and configuration
+        let (audio_device, supported_config) = setup_audio_device(audio_sample_rate)?;
 
         let sample_format = supported_config.sample_format();
         let mut stream_config: StreamConfig = supported_config.into();
         stream_config.buffer_size = cpal::BufferSize::Fixed(audio_buffer_size);
 
-        let err_fn = |err| debug!("Audio error: {}", err);
-
+        // Create and start audio stream
         let stream = match sample_format {
-            SampleFormat::F32 => audio_device.build_output_stream(
-                &stream_config,
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    // Simple: try to fill the entire buffer from the shared channel
-                    for sample in data.iter_mut() {
-                        match audio_rx.try_recv() {
-                            Ok(audio_sample) => *sample = audio_sample.clamp(-1.0, 1.0),
-                            Err(_) => *sample = 0.0, // Silence when no audio available
-                        }
-                    }
-                },
-                err_fn,
-                None,
-            )?,
+            SampleFormat::F32 => create_audio_stream(&audio_device, &stream_config, audio_rx)?,
             _ => return Err(ScannerError::Custom("Unsupported audio format".to_string())),
         };
 
