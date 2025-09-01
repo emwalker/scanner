@@ -18,11 +18,16 @@ pub mod deemph;
 
 /// Collect RF peaks synchronously by directly interfacing with the SDR device
 /// This performs FFT analysis to detect spectral peaks above the threshold
-pub fn collect_peaks(config: &crate::ScanningConfig, device_args: &str) -> Result<Vec<Peak>> {
+pub fn collect_peaks(
+    config: &crate::ScanningConfig,
+    device_args: &str,
+    center_freq: f64,
+) -> Result<Vec<Peak>> {
     println!(
         "Starting peak detection scan for {} seconds...",
         config.peak_scan_duration
     );
+    let lock = config.audo_mutex.lock().unwrap();
 
     // Initialize SDR device and stream
     let dev = soapysdr::Device::new(device_args)?;
@@ -69,7 +74,7 @@ pub fn collect_peaks(config: &crate::ScanningConfig, device_args: &str) -> Resul
                     {
                         // Convert FFT bin to frequency
                         let freq_offset = (i as f64 / config.fft_size as f64) * config.samp_rate;
-                        let freq_hz = config.center_freq - (config.samp_rate / 2.0) + freq_offset;
+                        let freq_hz = center_freq - (config.samp_rate / 2.0) + freq_offset;
 
                         peaks.push(Peak {
                             frequency_hz: freq_hz,
@@ -88,6 +93,7 @@ pub fn collect_peaks(config: &crate::ScanningConfig, device_args: &str) -> Resul
     }
 
     rxstream.deactivate(None)?;
+    drop(lock);
     println!("Peak detection scan complete. Found {} peaks.", peaks.len());
     Ok(peaks)
 }
@@ -201,14 +207,15 @@ fn analyze_spectral_characteristics(
 pub fn find_candidates(
     peaks: &[Peak],
     config: &crate::ScanningConfig,
+    center_freq: f64,
     candidate_tx: &std::sync::mpsc::SyncSender<Candidate>,
 ) {
     println!("Using spectral analysis for FM station detection with sidelobe discrimination...");
 
     // Calculate the frequency range we scanned based on center freq and sample rate
     let scan_range_mhz = config.samp_rate / 2e6; // Half sample rate in MHz (Nyquist)
-    let freq_start_mhz = (config.center_freq / 1e6) - scan_range_mhz;
-    let freq_end_mhz = (config.center_freq / 1e6) + scan_range_mhz;
+    let freq_start_mhz = (center_freq / 1e6) - scan_range_mhz;
+    let freq_end_mhz = (center_freq / 1e6) + scan_range_mhz;
 
     println!(
         "Analyzing spectral patterns in range: {:.1} - {:.1} MHz",
@@ -227,7 +234,7 @@ pub fn find_candidates(
         std::io::Write::flush(&mut std::io::stdout()).unwrap();
 
         let (spectral_score, analysis_summary) =
-            analyze_spectral_characteristics(peaks, fm_freq, config.samp_rate, config.center_freq);
+            analyze_spectral_characteristics(peaks, fm_freq, config.samp_rate, center_freq);
 
         println!("score: {:.3} ({})", spectral_score, analysis_summary);
 
@@ -352,13 +359,14 @@ pub fn analyze_channel(
     audio_tx: std::sync::mpsc::SyncSender<f32>,
 ) -> Result<()> {
     println!(
-        "[Candidate Processor] Received: {:.1} MHz - {} signal ({} peaks, max: {:.1}, avg: {:.1})",
+        "Tuning into {:.1} MHz - {} signal ({} peaks, max: {:.1}, avg: {:.1})",
         candidate.frequency_hz / 1e6,
         candidate.signal_strength,
         candidate.peak_count,
         candidate.max_magnitude,
         candidate.avg_magnitude
     );
+    let lock = config.audo_mutex.lock().unwrap();
 
     // Create a complete SDR -> DSP -> Audio pipeline for this candidate
     let (sdr_tx, sdr_rx) = std::sync::mpsc::sync_channel::<rustradio::Complex>(16384);
@@ -410,6 +418,7 @@ pub fn analyze_channel(
     });
 
     sdr_graph.run()?;
+    drop(lock);
 
     Ok(())
 }

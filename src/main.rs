@@ -1,6 +1,7 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 mod fm;
@@ -8,9 +9,66 @@ mod mpsc;
 mod types;
 use crate::types::{Candidate, Result, ScannerError};
 
+#[derive(ValueEnum, Copy, Clone, Debug)]
+pub enum Band {
+    /// FM broadcast band (88-108 MHz)
+    Fm,
+    /// VHF aircraft band (108-137 MHz)
+    Aircraft,
+    /// 2-meter amateur band (144-148 MHz)
+    Ham2m,
+    /// NOAA weather radio (162-163 MHz)
+    Weather,
+    /// Marine VHF band (156-162 MHz)
+    Marine,
+}
+
+impl std::fmt::Display for Band {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Band::Fm => write!(f, "fm"),
+            Band::Aircraft => write!(f, "aircraft"),
+            Band::Ham2m => write!(f, "ham2m"),
+            Band::Weather => write!(f, "weather"),
+            Band::Marine => write!(f, "marine"),
+        }
+    }
+}
+
+impl Band {
+    pub fn frequency_range(&self) -> (f64, f64) {
+        match self {
+            Band::Fm => (88.0e6, 108.0e6),
+            Band::Aircraft => (108.0e6, 137.0e6),
+            Band::Ham2m => (144.0e6, 148.0e6),
+            Band::Weather => (162.0e6, 163.0e6),
+            Band::Marine => (156.0e6, 162.0e6),
+        }
+    }
+
+    pub fn windows(&self, sample_rate: f64) -> Vec<f64> {
+        let (start_freq, end_freq) = self.frequency_range();
+        let usable_bandwidth = sample_rate * 0.8; // Use 80% of bandwidth to avoid edge effects
+        let step_size = usable_bandwidth * 0.9; // 10% overlap between windows
+
+        let mut windows = Vec::new();
+        let mut center_freq = start_freq + (usable_bandwidth / 2.0);
+
+        while center_freq - (usable_bandwidth / 2.0) < end_freq {
+            windows.push(center_freq);
+            center_freq += step_size;
+        }
+
+        windows
+    }
+}
+
+pub struct Audio;
+
+#[derive(Clone)]
 pub struct ScanningConfig {
     pub duration: u64,
-    pub center_freq: f64,
+    pub band: Band,
     pub samp_rate: f64,
     pub driver: String,
     pub exit_early: bool,
@@ -19,6 +77,7 @@ pub struct ScanningConfig {
     pub audio_sample_rate: u32,
     pub audio_buffer_size: u32,
     pub peak_scan_duration: u64,
+    pub audo_mutex: Arc<Mutex<Audio>>,
 }
 
 const DEFAULT_DRIVER: &str = "driver=sdrplay";
@@ -92,8 +151,8 @@ fn spawn_scanning_thread(
         println!("Scanning for transmissions ...");
 
         for candidate in candidate_rx {
-            // All candidates write to the same shared audio channel
             fm::analyze_channel(candidate, &config, shared_audio_tx.clone())?;
+
             if config.exit_early {
                 println!("Early exit requested - stopping after first candidate.");
                 break;
@@ -115,9 +174,9 @@ struct Args {
     #[arg(long)]
     device_args: Option<String>,
 
-    /// Center frequency to tune to in Hz (e.g., 88.9 MHz)
-    #[arg(long, default_value_t = 88.9e6)]
-    center_freq: f64,
+    /// Frequency band to scan
+    #[arg(long, default_value_t = Band::Fm)]
+    band: Band,
 
     /// Duration (for testing)
     #[arg(long, default_value_t = 3)]
@@ -138,16 +197,17 @@ fn main() -> Result<()> {
     let samp_rate = 1_000_000.0f64;
 
     let scanning_config = ScanningConfig {
-        duration: args.duration,
-        center_freq: args.center_freq,
-        samp_rate,
+        audio_buffer_size: 4096,
+        audio_sample_rate: 48000,
+        band: args.band,
         driver: driver.clone(),
+        duration: args.duration,
         exit_early: args.exit_early,
         fft_size: 1024,
         peak_detection_threshold: 1.0,
-        audio_sample_rate: 48000,
-        audio_buffer_size: 4096,
         peak_scan_duration: args.peak_scan_duration,
+        samp_rate,
+        audo_mutex: Arc::new(Mutex::new(Audio)),
     };
 
     // Configure SoapySDR logging (required by rustradio)
@@ -168,26 +228,52 @@ fn main() -> Result<()> {
     // Create MPSC channel for candidate stations
     let (candidate_tx, candidate_rx) = std::sync::mpsc::sync_channel::<Candidate>(100);
 
-    // Collect peaks synchronously before starting rustradio graph
-    let peaks = fm::collect_peaks(&scanning_config, &driver)?;
+    // Generate scanning windows for the selected band
+    let windows = scanning_config.band.windows(scanning_config.samp_rate);
 
-    // Analyze peaks to infer likely FM stations
-    if peaks.is_empty() {
-        println!("No peaks detected above threshold.");
-    } else {
-        fm::find_candidates(&peaks, &scanning_config, &candidate_tx.clone());
-        println!();
-    }
+    println!(
+        "Scanning {} windows across {:?} band",
+        windows.len(),
+        scanning_config.band
+    );
 
     // Set up audio playback thread with simple blocking receive
     let audio_handle = spawn_audio_thread(audio_rx, &scanning_config)?;
 
     let scanning_thread = spawn_scanning_thread(
         candidate_rx,
-        scanning_config,
+        scanning_config.clone(),
         audio_tx.clone(),
         audio_handle,
     )?;
+
+    for (i, center_freq) in windows.iter().enumerate() {
+        println!(
+            "Scanning window {} of {} at {:.1} MHz",
+            i + 1,
+            windows.len(),
+            center_freq / 1e6
+        );
+
+        // Collect peaks for this window
+        let peaks = fm::collect_peaks(&scanning_config, &driver, *center_freq)?;
+
+        if !peaks.is_empty() {
+            println!("Found {} peaks in this window", peaks.len());
+            fm::find_candidates(
+                &peaks,
+                &scanning_config,
+                *center_freq,
+                &candidate_tx.clone(),
+            );
+        } else {
+            println!("No peaks detected in this window");
+        }
+
+        if scanning_config.exit_early {
+            break;
+        }
+    }
 
     // Wait for scanning to complete
     drop(candidate_tx);
