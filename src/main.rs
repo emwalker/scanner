@@ -1,7 +1,7 @@
 use clap::{Parser, ValueEnum};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc::SyncSender};
 use std::thread;
 
 mod fm;
@@ -18,6 +18,62 @@ fn parse_stations(stations_str: &str) -> Result<Vec<f64>> {
                 .map_err(|_| ScannerError::Custom(format!("Invalid station frequency: {}", s)))
         })
         .collect()
+}
+
+fn scan_stations(
+    stations_str: &str,
+    candidate_tx: &SyncSender<Candidate>,
+    _config: &ScanningConfig,
+) -> Result<()> {
+    let stations = parse_stations(stations_str)?;
+    println!("Scanning {} specified stations", stations.len());
+    for station_freq in stations {
+        let candidate = Candidate::Fm(fm::Candidate {
+            frequency_hz: station_freq,
+            peak_count: 1,
+            max_magnitude: 0.0,
+            avg_magnitude: 0.0,
+            signal_strength: "Station".to_string(),
+        });
+        candidate_tx.send(candidate).unwrap();
+    }
+    Ok(())
+}
+
+fn scan_band(
+    config: &ScanningConfig,
+    driver: &str,
+    candidate_tx: &SyncSender<Candidate>,
+) -> Result<()> {
+    let windows = config.band.windows(config.samp_rate);
+    println!(
+        "Scanning {} windows across {:?} band",
+        windows.len(),
+        config.band
+    );
+
+    for (i, center_freq) in windows.iter().enumerate() {
+        println!(
+            "Scanning window {} of {} at {:.1} MHz",
+            i + 1,
+            windows.len(),
+            center_freq / 1e6
+        );
+
+        let peaks = fm::collect_peaks(config, driver, *center_freq)?;
+
+        if !peaks.is_empty() {
+            println!("Found {} peaks in this window", peaks.len());
+            fm::find_candidates(&peaks, config, *center_freq, candidate_tx);
+        } else {
+            println!("No peaks detected in this window");
+        }
+
+        if config.exit_early {
+            break;
+        }
+    }
+    Ok(())
 }
 
 #[derive(ValueEnum, Copy, Clone, Debug)]
@@ -254,55 +310,9 @@ fn main() -> Result<()> {
     )?;
 
     if let Some(stations_str) = args.stations {
-        let stations = parse_stations(&stations_str)?;
-        println!("Scanning {} specified stations", stations.len());
-        for station_freq in stations {
-            let candidate = Candidate::Fm(fm::Candidate {
-                frequency_hz: station_freq,
-                peak_count: 0,
-                max_magnitude: 0.0,
-                avg_magnitude: 0.0,
-                signal_strength: "Unknown".to_string(),
-            });
-            candidate_tx.send(candidate).unwrap();
-        }
+        scan_stations(&stations_str, &candidate_tx, &scanning_config)?;
     } else {
-        // Generate scanning windows for the selected band
-        let windows = scanning_config.band.windows(scanning_config.samp_rate);
-
-        println!(
-            "Scanning {} windows across {:?} band",
-            windows.len(),
-            scanning_config.band
-        );
-
-        for (i, center_freq) in windows.iter().enumerate() {
-            println!(
-                "Scanning window {} of {} at {:.1} MHz",
-                i + 1,
-                windows.len(),
-                center_freq / 1e6
-            );
-
-            // Collect peaks for this window
-            let peaks = fm::collect_peaks(&scanning_config, &driver, *center_freq)?;
-
-            if !peaks.is_empty() {
-                println!("Found {} peaks in this window", peaks.len());
-                fm::find_candidates(
-                    &peaks,
-                    &scanning_config,
-                    *center_freq,
-                    &candidate_tx.clone(),
-                );
-            } else {
-                println!("No peaks detected in this window");
-            }
-
-            if scanning_config.exit_early {
-                break;
-            }
-        }
+        scan_band(&scanning_config, &driver, &candidate_tx)?;
     }
 
     // Wait for scanning to complete
