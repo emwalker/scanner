@@ -1,5 +1,6 @@
 use crate::{
     fm::deemph::Deemphasis,
+    fm::squelch::SquelchBlock,
     logging,
     mpsc::{MpscReceiverSource, MpscSenderSink, MpscSink},
     soapy::SdrSource,
@@ -17,6 +18,7 @@ use std::{thread, time::Duration};
 use tracing::{debug, info};
 
 pub mod deemph;
+pub mod squelch;
 
 #[derive(Debug, Clone)]
 pub struct Candidate {
@@ -54,7 +56,8 @@ impl Candidate {
         let station_name = format!("{:.1}FM", self.frequency_hz / 1e6);
 
         // Create DSP graph to process this candidate's frequency
-        let mut dsp_graph = create_station_graph(sdr_rx, config.samp_rate, audio_tx, station_name)?;
+        let (mut dsp_graph, noise_detected) =
+            create_station_graph(sdr_rx, config.samp_rate, audio_tx, station_name)?;
         let dsp_cancel_token = dsp_graph.cancel_token();
 
         // Create SDR graph to capture this frequency
@@ -81,10 +84,26 @@ impl Candidate {
             }
         });
 
-        // Set up timer thread
+        // Set up timer thread with squelch monitoring
         let duration = config.duration;
+        let noise_detected_clone = noise_detected.clone();
         thread::spawn(move || {
-            thread::sleep(Duration::from_secs(duration));
+            let check_interval = Duration::from_millis(100);
+            let total_checks = (duration * 1000) / 100; // Total checks over duration in 100ms intervals
+
+            for _ in 0..total_checks {
+                thread::sleep(check_interval);
+
+                // Check if squelch detected noise
+                if noise_detected_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                    debug!("Squelch detected noise, exiting early");
+                    sdr_graph_cancel_token.cancel();
+                    dsp_cancel_token.cancel();
+                    return;
+                }
+            }
+
+            // Normal timeout
             debug!(
                 "Ran for {} seconds, continuing on to the next candidate",
                 duration
@@ -450,7 +469,7 @@ pub fn create_station_graph(
     samp_rate: f64,
     audio_sender: std::sync::mpsc::SyncSender<f32>,
     channel_name: String,
-) -> rustradio::Result<Graph> {
+) -> rustradio::Result<(Graph, std::sync::Arc<std::sync::atomic::AtomicBool>)> {
     let mut graph = Graph::new();
 
     // MPSC Source
@@ -505,10 +524,17 @@ pub fn create_station_graph(
             .build(prev)?
     ];
 
+    // Squelch block for audio detection
+    let learning_duration = 2.0; // 2 seconds to analyze if signal is audio or noise
+    let (squelch_block, squelch_output, noise_detected) =
+        SquelchBlock::new(prev, audio_rate as f32, learning_duration);
+    graph.add(Box::new(squelch_block));
+    let prev = squelch_output;
+
     // Our custom MPSC sink
     graph.add(Box::new(MpscSink::new(prev, audio_sender, channel_name)));
 
-    Ok(graph)
+    Ok((graph, noise_detected))
 }
 
 #[cfg(test)]
