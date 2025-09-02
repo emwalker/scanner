@@ -5,10 +5,12 @@ use std::sync::{Arc, Mutex, mpsc::SyncSender};
 use std::thread;
 use tracing::{debug, info};
 
+mod file;
 mod fm;
 mod logging;
 mod mpsc;
 mod soapy;
+#[cfg(test)]
 mod testing;
 mod types;
 use crate::types::{Candidate, Result, ScannerError};
@@ -178,6 +180,10 @@ pub struct ScanningConfig {
     pub audio_sample_rate: u32,
     pub audo_mutex: Arc<Mutex<Audio>>,
     pub band: Band,
+    pub capture_audio_duration: f64,
+    pub capture_audio: Option<String>,
+    pub capture_duration: f64,
+    pub capture_iq: Option<String>,
     pub driver: String,
     pub duration: u64,
     pub exit_early: bool,
@@ -186,8 +192,7 @@ pub struct ScanningConfig {
     pub peak_scan_duration: Option<f64>,
     pub print_candidates: bool,
     pub samp_rate: f64,
-    pub capture_iq: Option<String>,
-    pub capture_duration: f64,
+    pub squelch_learning_duration: f32,
 }
 
 impl Default for ScanningConfig {
@@ -207,6 +212,9 @@ impl Default for ScanningConfig {
             samp_rate: 1_000_000.0,
             capture_iq: None,
             capture_duration: 2.0,
+            capture_audio: None,
+            capture_audio_duration: 3.0,
+            squelch_learning_duration: 2.0,
         }
     }
 }
@@ -373,6 +381,14 @@ struct Args {
     /// Duration to capture I/Q samples (seconds)
     #[arg(long, default_value_t = 2.0)]
     capture_duration: f64,
+
+    /// Capture demodulated audio to file for squelch testing
+    #[arg(long)]
+    capture_audio: Option<String>,
+
+    /// Duration to capture audio samples (seconds)
+    #[arg(long, default_value_t = 3.0)]
+    capture_audio_duration: f64,
 }
 
 fn main() -> Result<()> {
@@ -383,18 +399,21 @@ fn main() -> Result<()> {
     let config = ScanningConfig {
         audio_buffer_size: 4096,
         audio_sample_rate: 48000,
+        audo_mutex: Arc::new(Mutex::new(Audio)),
         band: args.band,
+        capture_audio_duration: args.capture_audio_duration,
+        capture_audio: args.capture_audio,
+        capture_duration: args.capture_duration,
+        capture_iq: args.capture_iq,
         driver: driver.clone(),
         duration: args.duration,
         exit_early: args.exit_early,
         fft_size: 1024,
         peak_detection_threshold: 1.0,
         peak_scan_duration: args.peak_scan_duration,
-        samp_rate: 1_000_000.0f64,
-        audo_mutex: Arc::new(Mutex::new(Audio)),
         print_candidates: args.print_candidates,
-        capture_iq: args.capture_iq,
-        capture_duration: args.capture_duration,
+        samp_rate: 1_000_000.0f64,
+        squelch_learning_duration: 2.0,
     };
 
     // Configure SoapySDR logging (required by rustradio)

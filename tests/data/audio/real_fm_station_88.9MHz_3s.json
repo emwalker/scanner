@@ -1,0 +1,8 @@
+{
+  "sample_rate": 48000.0,
+  "duration": 3.0,
+  "total_samples": 144000,
+  "format": "f32_le",
+  "expected_squelch_decision": "audio",
+  "description": "Real FM station audio from 88.9 MHz - should be detected as audio"
+}

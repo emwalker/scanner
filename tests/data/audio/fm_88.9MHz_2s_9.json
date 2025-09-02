@@ -1,0 +1,8 @@
+{
+  "sample_rate": 48000.0,
+  "duration": 2.0,
+  "total_samples": 96000,
+  "format": "f32_le",
+  "expected_squelch_decision": "unknown",
+  "description": "Captured demodulated audio at 48000 Hz for 2 seconds"
+}

@@ -1,4 +1,5 @@
 use crate::{
+    file::AudioCaptureBlock,
     fm::deemph::Deemphasis,
     fm::squelch::SquelchBlock,
     logging,
@@ -35,12 +36,6 @@ impl Candidate {
         config: &crate::ScanningConfig,
         audio_tx: std::sync::mpsc::SyncSender<f32>,
     ) -> Result<()> {
-        info!(
-            message = format!("found {:.1} MHz", self.frequency_hz / 1e6),
-            frequency_hz = self.frequency_hz
-        );
-        logging::flush();
-
         debug!(
             message = "Tuning into station",
             fequency_hz = self.frequency_hz / 1e6,
@@ -56,8 +51,8 @@ impl Candidate {
         let station_name = format!("{:.1}FM", self.frequency_hz / 1e6);
 
         // Create DSP graph to process this candidate's frequency
-        let (mut dsp_graph, noise_detected) =
-            create_station_graph(sdr_rx, config.samp_rate, audio_tx, station_name)?;
+        let (mut dsp_graph, noise_detected, audio_started_playing) =
+            create_station_graph(sdr_rx, config.samp_rate, audio_tx, station_name, config)?;
         let dsp_cancel_token = dsp_graph.cancel_token();
 
         // Create SDR graph to capture this frequency
@@ -87,9 +82,12 @@ impl Candidate {
         // Set up timer thread with squelch monitoring
         let duration = config.duration;
         let noise_detected_clone = noise_detected.clone();
+        let audio_started_playing_clone = audio_started_playing.clone();
         thread::spawn(move || {
             let check_interval = Duration::from_millis(100);
             let total_checks = (duration * 1000) / 100; // Total checks over duration in 100ms intervals
+
+            let mut message_printed = false;
 
             for _ in 0..total_checks {
                 thread::sleep(check_interval);
@@ -101,9 +99,17 @@ impl Candidate {
                     dsp_cancel_token.cancel();
                     return;
                 }
+
+                // If audio has started playing and message hasn't been printed yet
+                if audio_started_playing_clone.load(std::sync::atomic::Ordering::Relaxed)
+                    && !message_printed
+                {
+                    info!("found {:.1} MHz", frequency_hz / 1e6);
+                    logging::flush();
+                    message_printed = true;
+                }
             }
 
-            // Normal timeout
             debug!(
                 "Ran for {} seconds, continuing on to the next candidate",
                 duration
@@ -132,7 +138,7 @@ pub fn collect_peaks(
     // Wrap with capturing source if requested
     let mut final_source: Box<dyn crate::types::SampleSource> =
         if let Some(ref capture_file) = config.capture_iq {
-            Box::new(crate::testing::CapturingSampleSource::new(
+            Box::new(crate::file::SampleCaptureSink::new(
                 Box::new(sample_source),
                 capture_file,
                 config.capture_duration,
@@ -164,8 +170,11 @@ fn extract_peaks_from_magnitudes(
             let freq_hz = sample_source.center_frequency() - (sample_source.sample_rate() / 2.0)
                 + freq_offset;
 
+            // Round to nearest kHz to eliminate floating point precision errors
+            let freq_hz_rounded = (freq_hz / 1000.0).round() * 1000.0;
+
             peaks.push(Peak {
-                frequency_hz: freq_hz,
+                frequency_hz: freq_hz_rounded,
                 magnitude: magnitudes[i],
             });
         }
@@ -469,7 +478,12 @@ pub fn create_station_graph(
     samp_rate: f64,
     audio_sender: std::sync::mpsc::SyncSender<f32>,
     channel_name: String,
-) -> rustradio::Result<(Graph, std::sync::Arc<std::sync::atomic::AtomicBool>)> {
+    config: &crate::ScanningConfig,
+) -> rustradio::Result<(
+    Graph,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+)> {
     let mut graph = Graph::new();
 
     // MPSC Source
@@ -524,17 +538,37 @@ pub fn create_station_graph(
             .build(prev)?
     ];
 
-    // Squelch block for audio detection
-    let learning_duration = 2.0; // 2 seconds to analyze if signal is audio or noise
-    let (squelch_block, squelch_output, noise_detected) =
-        SquelchBlock::new(prev, audio_rate as f32, learning_duration);
+    // Audio capture block (captures samples while passing them through)
+    // Create audio capturer if requested
+    let audio_capturer = if let Some(ref capture_file) = config.capture_audio {
+        match crate::file::AudioCaptureSink::new(
+            capture_file,
+            audio_rate as f32,
+            config.capture_audio_duration,
+        ) {
+            Ok(capturer) => Some(capturer),
+            Err(e) => {
+                debug!("Failed to create audio capturer: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let (audio_capture_block, audio_capture_output) = AudioCaptureBlock::new(prev, audio_capturer);
+    graph.add(Box::new(audio_capture_block));
+    let prev = audio_capture_output;
+
+    let (squelch_block, squelch_output, noise_detected, audio_started_playing) =
+        SquelchBlock::new(prev, audio_rate as f32, config.squelch_learning_duration);
     graph.add(Box::new(squelch_block));
     let prev = squelch_output;
 
     // Our custom MPSC sink
     graph.add(Box::new(MpscSink::new(prev, audio_sender, channel_name)));
 
-    Ok((graph, noise_detected))
+    Ok((graph, noise_detected, audio_started_playing))
 }
 
 #[cfg(test)]
@@ -624,6 +658,10 @@ mod tests {
             audio_sample_rate: 48000,
             audo_mutex: std::sync::Arc::new(std::sync::Mutex::new(crate::Audio)),
             band: crate::Band::Fm,
+            capture_audio_duration: 3.0,
+            capture_audio: None,
+            capture_duration: 2.0,
+            capture_iq: None,
             driver: "test".to_string(),
             duration: 1,
             exit_early: false,
@@ -632,8 +670,7 @@ mod tests {
             peak_scan_duration: Some(0.1),  // Short duration for testing
             print_candidates: false,
             samp_rate: 1000000.0,
-            capture_iq: None,
-            capture_duration: 2.0,
+            squelch_learning_duration: 2.0,
         };
 
         // Create mock source with a signal at +100kHz offset from center
@@ -666,7 +703,7 @@ mod tests {
     #[test]
     fn test_fm_detection_from_iq_file() {
         let (mut file_source, metadata) =
-            crate::testing::load_iq_fixture("tests/data/fm_88.9_MHz_1s.iq")
+            crate::testing::load_iq_fixture("tests/data/iq/fm_88.9_MHz_1s.iq")
                 .expect("Failed to load I/Q fixture");
         let mut config = crate::ScanningConfig::default();
         config.driver = "test".to_string();
@@ -701,7 +738,7 @@ mod tests {
     #[test]
     fn test_no_candidates_1() {
         let (mut file_source, metadata) =
-            crate::testing::load_iq_fixture("tests/data/fm_88.5_MHz_1s.iq")
+            crate::testing::load_iq_fixture("tests/data/iq/fm_88.5_MHz_1s.iq")
                 .expect("Failed to load I/Q fixture");
         let mut config = crate::ScanningConfig::default();
         config.driver = "test".to_string();

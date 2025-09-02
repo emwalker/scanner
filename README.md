@@ -7,7 +7,7 @@ $ cargo run -- --duration 60 --stations 88.9e6 # 88.9 MHz
 $ cargo run -- --band fm
 $ cargo run -- --verbose --print-candidates # Print out possible stations
 $ cargo run -- --stations 88.9e6 --verbose --format json
-$ cargo run -- --stations 88.5e6 --capture-iq tests/data/fm_88.5_MHz_1s.iq --capture-duration 1
+$ cargo run -- --stations 88.5e6 --capture-iq tests/data/iq/fm_88.5_MHz_1s.iq --capture-duration 1
 ```
 
 At the moment, only very basic FM demodulation is working, and many false positives are incorrectly identified as stations.
