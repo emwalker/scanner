@@ -110,22 +110,26 @@ impl SquelchBlock {
         );
 
         // Audio detection based on captured fixture measurements:
-        // Real audio: RMS ~0.003, Variance ~0.000005, ZC ~0.019
-        // Noise: RMS ~0.125, Variance ~0.015, ZC ~0.069
+        // Real audio: RMS ~0.003-0.327, Variance ~0.000005-0.106980, ZC ~0.011-0.071
+        // Noise: RMS ~0.125-0.131, Variance ~0.013974-0.014869, ZC ~0.061-0.069
         let has_sufficient_power = rms > self.min_rms_threshold;
         let reasonable_zero_crossings = zero_crossing_rate >= self.min_zero_crossing_rate
             && zero_crossing_rate <= self.max_zero_crossing_rate;
 
-        // Audio has lower variance and lower zero-crossing rate than noise
-        let is_audio = has_sufficient_power
-            && reasonable_zero_crossings
-            && !(0.013..=0.015).contains(&variance);
+        // Use multiple discriminators to classify audio vs noise
+        // Noise tends to have: high RMS (~0.125+), high ZC rate (~0.06+), variance ~0.014
+        // Audio can vary widely but differs in at least one key metric
+        let likely_noise =
+            rms > 0.120 && zero_crossing_rate > 0.060 && (0.013..=0.015).contains(&variance);
+
+        let is_audio = has_sufficient_power && reasonable_zero_crossings && !likely_noise;
 
         debug!(
-            "Squelch decision: {} (power: {}, crossings: {})",
+            "Squelch decision: {} (power: {}, crossings: {}, likely_noise: {})",
             if is_audio { "AUDIO" } else { "NOISE" },
             has_sufficient_power,
-            reasonable_zero_crossings
+            reasonable_zero_crossings,
+            likely_noise
         );
 
         is_audio
@@ -302,6 +306,7 @@ mod tests {
         assert_squelch_decison("tests/data/audio/fm_88.9MHz_2s_8.audio", "audio");
         assert_squelch_decison("tests/data/audio/fm_88.9MHz_2s_9.audio", "audio");
         assert_squelch_decison("tests/data/audio/fm_88.9MHz_2s_10.audio", "audio");
+        assert_squelch_decison("tests/data/audio/fm_88.9MHz_2s_11.audio", "audio");
     }
 
     #[test]
