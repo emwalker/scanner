@@ -7,6 +7,7 @@ use tracing::{debug, info};
 
 mod file;
 mod fm;
+mod freq_xlating_fir;
 mod logging;
 mod mpsc;
 mod soapy;

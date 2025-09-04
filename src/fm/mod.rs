@@ -2,6 +2,7 @@ use crate::{
     file::AudioCaptureBlock,
     fm::deemph::Deemphasis,
     fm::squelch::SquelchBlock,
+    freq_xlating_fir::FreqXlatingFir,
     logging,
     mpsc::{MpscReceiverSource, MpscSenderSink, MpscSink},
     soapy::SdrSource,
@@ -12,7 +13,7 @@ use rustradio::graph::{Graph, GraphRunner};
 use rustradio::window::WindowType;
 use rustradio::{Complex, Float, blockchain};
 use rustradio::{
-    blocks::{FftFilter, QuadratureDemod, RationalResampler},
+    blocks::{QuadratureDemod, RationalResampler},
     fir::FirFilter,
 };
 use std::{thread, time::Duration};
@@ -51,8 +52,16 @@ impl Candidate {
         let station_name = format!("{:.1}FM", self.frequency_hz / 1e6);
 
         // Create DSP graph to process this candidate's frequency
-        let (mut dsp_graph, noise_detected, audio_started_playing) =
-            create_station_graph(sdr_rx, config.samp_rate, audio_tx, station_name, config)?;
+        // Since we tune the SDR directly to the station frequency, center_freq = tune_freq (offset = 0)
+        let (mut dsp_graph, noise_detected, audio_started_playing) = create_station_graph(
+            sdr_rx,
+            config.samp_rate,
+            audio_tx,
+            station_name,
+            config,
+            self.frequency_hz,
+            self.frequency_hz,
+        )?;
         let dsp_cancel_token = dsp_graph.cancel_token();
 
         // Create SDR graph to capture this frequency
@@ -472,13 +481,15 @@ pub fn find_candidates(
     candidates
 }
 
-// Create rustradio graph for a station (matches the scanner example exactly)
+// Create rustradio graph for a station with frequency translating filter
 pub fn create_station_graph(
     source_receiver: std::sync::mpsc::Receiver<rustradio::Complex>,
     samp_rate: f64,
     audio_sender: std::sync::mpsc::SyncSender<f32>,
     channel_name: String,
     config: &crate::ScanningConfig,
+    center_freq: f64,
+    tune_freq: f64,
 ) -> rustradio::Result<(
     Graph,
     std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -490,40 +501,52 @@ pub fn create_station_graph(
     let (mpsc_source_block, prev) = MpscReceiverSource::new(source_receiver);
     graph.add(Box::new(mpsc_source_block));
 
-    // RF Filter
-    let taps = fir::low_pass_complex(
-        samp_rate as _,
-        120_000.0f32,
-        25_000.0f32,
+    // Calculate frequency offset for translating filter
+    let frequency_offset = tune_freq - center_freq;
+
+    // Frequency Translating FIR Filter with reduced computational load
+    // Use wider transition width and smaller bandwidth for fewer taps
+    let channel_bandwidth = 150_000.0f32; // Reduced from 200 kHz
+    let transition_width = 75_000.0f32; // Increased from 50 kHz for fewer taps
+    let taps = fir::low_pass(
+        samp_rate as f32,
+        channel_bandwidth / 2.0,
+        transition_width,
         &WindowType::Hamming,
     );
-    let prev = blockchain![graph, prev, FftFilter::new(prev, taps)];
 
-    // Resample to 100kHz
-    let quad_rate = 240_000.0;
-    let prev = blockchain![
-        graph,
+    let decimation = 6; // Reduce decimation to improve quality (was 8)
+    let (freq_xlating_block, prev) = FreqXlatingFir::with_real_taps(
         prev,
-        RationalResampler::<rustradio::Complex>::builder()
-            .deci(samp_rate as usize)
-            .interp(quad_rate as usize)
-            .build(prev)?
-    ];
+        &taps,
+        frequency_offset as f32,
+        samp_rate as f32,
+        decimation,
+    );
+    graph.add(Box::new(freq_xlating_block));
 
-    // Quadrature demodulation
-    let prev = blockchain![graph, prev, QuadratureDemod::new(prev, 1.0)];
+    // Update effective sample rate after decimation
+    let decimated_samp_rate = samp_rate / decimation as f64;
+
+    // Skip additional resampling if we're already close to desired quad rate
+    let quad_rate = decimated_samp_rate as f32; // Use decimated rate directly to avoid extra resampling
+
+    // Quadrature demodulation with reduced gain to prevent distortion
+    // FM deviation for broadcast is 75kHz, so gain should account for sample rate
+    let fm_gain = (quad_rate / (2.0 * 75_000.0)) * 0.8; // 0.8 factor to prevent overload
+    let prev = blockchain![graph, prev, QuadratureDemod::new(prev, fm_gain)];
 
     // FM Deemphasis
     let (deemphasis_block, deemphasis_output_stream) = Deemphasis::new(prev, quad_rate, 75.0);
     graph.add(Box::new(deemphasis_block));
     let prev = deemphasis_output_stream;
 
-    // Audio filter
+    // Audio filter - optimized for better quality without more computation
     let taps = fir::low_pass(
         quad_rate,
-        15_000.0f32,
-        5_000.0f32,
-        &WindowType::BlackmanHarris,
+        12_000.0f32,          // Slightly reduce cutoff to improve stopband rejection
+        8_000.0f32,           // Wider transition for fewer taps but better quality
+        &WindowType::Hamming, // Hamming has less computation than BlackmanHarris
     );
     let prev = blockchain![graph, prev, FirFilter::new(prev, &taps)];
 
