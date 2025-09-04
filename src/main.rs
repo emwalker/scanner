@@ -69,6 +69,15 @@ fn scan_stations(
             signal_strength: "Station".to_string(),
         });
 
+        if config.debug_pipeline {
+            debug!(
+                message = "Station mode candidate created",
+                station_frequency_mhz = station_freq / 1e6,
+                sdr_center_frequency_mhz = station_freq / 1e6,
+                frequency_offset_khz = 0.0
+            );
+        }
+
         candidate_tx
             .send((candidate, sdr_rx, station_freq))
             .unwrap();
@@ -111,7 +120,41 @@ fn scan_band(
 
         if !peaks.is_empty() {
             debug!("Found {} peaks in this window", peaks.len());
+
+            if config.debug_pipeline {
+                debug!(
+                    message = "Band scanning window analysis",
+                    window_number = i + 1,
+                    window_center_mhz = center_freq / 1e6,
+                    peaks_found = peaks.len()
+                );
+
+                for (peak_idx, peak) in peaks.iter().enumerate() {
+                    debug!(
+                        message = "Peak detected",
+                        window_number = i + 1,
+                        peak_index = peak_idx,
+                        frequency_mhz = peak.frequency_hz / 1e6,
+                        magnitude = peak.magnitude
+                    );
+                }
+            }
+
             for candidate in fm::find_candidates(&peaks, config, *center_freq) {
+                if config.debug_pipeline {
+                    let frequency_offset = candidate.frequency_hz() - center_freq;
+                    debug!(
+                        message = "Candidate created",
+                        candidate_frequency_mhz = candidate.frequency_hz() / 1e6,
+                        window_center_mhz = center_freq / 1e6,
+                        frequency_offset_khz = frequency_offset / 1e3,
+                        signal_strength = match &candidate {
+                            crate::types::Candidate::Fm(fm_candidate) =>
+                                &fm_candidate.signal_strength,
+                        }
+                    );
+                }
+
                 let sdr_rx = sdr_manager.set_active_candidate()?;
                 sdr_manager.start()?;
 
@@ -121,6 +164,14 @@ fn scan_band(
             }
         } else {
             debug!("No peaks detected in this window");
+            if config.debug_pipeline {
+                debug!(
+                    message = "Band scanning window analysis",
+                    window_number = i + 1,
+                    window_center_mhz = center_freq / 1e6,
+                    peaks_found = 0
+                );
+            }
         }
 
         if config.exit_early {
@@ -216,6 +267,7 @@ pub struct ScanningConfig {
     pub capture_audio: Option<String>,
     pub capture_duration: f64,
     pub capture_iq: Option<String>,
+    pub debug_pipeline: bool,
     pub driver: String,
     pub duration: u64,
     pub exit_early: bool,
@@ -234,6 +286,11 @@ impl Default for ScanningConfig {
             audio_sample_rate: 48000,
             audo_mutex: Arc::new(Mutex::new(Audio)),
             band: Band::Fm,
+            capture_audio: None,
+            capture_audio_duration: 3.0,
+            capture_duration: 2.0,
+            capture_iq: None,
+            debug_pipeline: false,
             driver: "driver=sdrplay".to_string(),
             duration: 3,
             exit_early: false,
@@ -242,10 +299,6 @@ impl Default for ScanningConfig {
             peak_scan_duration: None,
             print_candidates: false,
             samp_rate: 1_000_000.0,
-            capture_iq: None,
-            capture_duration: 2.0,
-            capture_audio: None,
-            capture_audio_duration: 3.0,
             squelch_learning_duration: 2.0,
         }
     }
@@ -402,6 +455,10 @@ struct Args {
     #[arg(long)]
     verbose: bool,
 
+    /// Enable pipeline debugging (shows detailed processing steps)
+    #[arg(long)]
+    debug_pipeline: bool,
+
     /// Print candidate stations instead of analyzing them
     #[arg(long)]
     print_candidates: bool,
@@ -441,6 +498,7 @@ fn main() -> Result<()> {
         capture_audio: args.capture_audio,
         capture_duration: args.capture_duration,
         capture_iq: args.capture_iq,
+        debug_pipeline: args.debug_pipeline,
         driver: driver.clone(),
         duration: args.duration,
         exit_early: args.exit_early,

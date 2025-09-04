@@ -124,23 +124,18 @@ impl Block for FreqXlatingFir {
         let mut freq_shifted = vec![Complex::default(); need];
 
         // Step 1: Apply frequency translation to input samples
-        // Optimize for zero offset case (most common)
-        if self.phase_increment.abs() < 1e-6 {
-            // No frequency shift needed, just copy samples
-            freq_shifted[..need].copy_from_slice(&input.slice()[..need]);
-        } else {
-            for (i, &sample) in input.slice()[..need].iter().enumerate() {
-                // Frequency translation - multiply by complex exponential
-                freq_shifted[i] = sample * Complex::new(self.phase.cos(), self.phase.sin());
+        // Always use the same complex multiplication path for both zero and non-zero offsets
+        for (i, &sample) in input.slice()[..need].iter().enumerate() {
+            // Frequency translation - multiply by complex exponential
+            freq_shifted[i] = sample * Complex::new(self.phase.cos(), self.phase.sin());
 
-                // Update phase for next sample
-                self.phase += self.phase_increment;
-                // Use more efficient phase wrapping
-                if self.phase > PI {
-                    self.phase -= 2.0 * PI;
-                } else if self.phase < -PI {
-                    self.phase += 2.0 * PI;
-                }
+            // Update phase for next sample
+            self.phase += self.phase_increment;
+            // Use more efficient phase wrapping
+            if self.phase > PI {
+                self.phase -= 2.0 * PI;
+            } else if self.phase < -PI {
+                self.phase += 2.0 * PI;
             }
         }
 
@@ -165,7 +160,6 @@ impl Block for FreqXlatingFir {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_freq_xlating_fir_creation() {

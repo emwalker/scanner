@@ -59,6 +59,7 @@ pub trait SampleSource {
     fn device_args(&self) -> &str;
 }
 
+#[derive(Debug)]
 pub enum Candidate {
     Fm(fm::Candidate),
 }
