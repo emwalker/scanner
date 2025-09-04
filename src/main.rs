@@ -29,7 +29,11 @@ fn parse_stations(stations_str: &str) -> Result<Vec<f64>> {
 
 fn scan_stations(
     stations_str: &str,
-    candidate_tx: &SyncSender<Candidate>,
+    candidate_tx: &SyncSender<(
+        Candidate,
+        std::sync::mpsc::Receiver<rustradio::Complex>,
+        f64,
+    )>,
     config: &ScanningConfig,
 ) -> Result<()> {
     let stations = parse_stations(stations_str)?;
@@ -38,7 +42,13 @@ fn scan_stations(
         stations = format!("{:?}", stations)
     );
 
+    // Create single SDR manager for all stations
+    let mut sdr_manager = fm::SdrManager::new(config.driver.clone(), config.samp_rate)?;
+
     for station_freq in stations {
+        // Set center frequency to the station frequency
+        sdr_manager.set_center_frequency(station_freq)?;
+
         // If I/Q capture is requested, perform peak collection to trigger capture
         if config.capture_iq.is_some() {
             debug!(
@@ -48,6 +58,9 @@ fn scan_stations(
             let _peaks = fm::collect_peaks(config, &config.driver, station_freq)?;
         }
 
+        let sdr_rx = sdr_manager.set_active_candidate()?;
+        sdr_manager.start()?;
+
         let candidate = Candidate::Fm(fm::Candidate {
             frequency_hz: station_freq,
             peak_count: 1,
@@ -55,7 +68,10 @@ fn scan_stations(
             avg_magnitude: 0.0,
             signal_strength: "Station".to_string(),
         });
-        candidate_tx.send(candidate).unwrap();
+
+        candidate_tx
+            .send((candidate, sdr_rx, station_freq))
+            .unwrap();
     }
 
     Ok(())
@@ -64,7 +80,11 @@ fn scan_stations(
 fn scan_band(
     config: &ScanningConfig,
     driver: &str,
-    candidate_tx: &SyncSender<Candidate>,
+    candidate_tx: &SyncSender<(
+        Candidate,
+        std::sync::mpsc::Receiver<rustradio::Complex>,
+        f64,
+    )>,
 ) -> Result<()> {
     let windows = config.band.windows(config.samp_rate);
     debug!(
@@ -72,6 +92,9 @@ fn scan_band(
         windows.len(),
         config.band
     );
+
+    // Create single SDR manager for all windows
+    let mut sdr_manager = fm::SdrManager::new(config.driver.clone(), config.samp_rate)?;
 
     for (i, center_freq) in windows.iter().enumerate() {
         debug!(
@@ -81,12 +104,20 @@ fn scan_band(
             center_freq / 1e6
         );
 
+        // Set SDR center frequency for this window
+        sdr_manager.set_center_frequency(*center_freq)?;
+
         let peaks = fm::collect_peaks(config, driver, *center_freq)?;
 
         if !peaks.is_empty() {
             debug!("Found {} peaks in this window", peaks.len());
             for candidate in fm::find_candidates(&peaks, config, *center_freq) {
-                candidate_tx.send(candidate).unwrap();
+                let sdr_rx = sdr_manager.set_active_candidate()?;
+                sdr_manager.start()?;
+
+                candidate_tx
+                    .send((candidate, sdr_rx, *center_freq))
+                    .unwrap();
             }
         } else {
             debug!("No peaks detected in this window");
@@ -304,7 +335,11 @@ fn spawn_audio_thread(
 }
 
 fn spawn_scanning_thread(
-    candidate_rx: std::sync::mpsc::Receiver<Candidate>,
+    candidate_rx: std::sync::mpsc::Receiver<(
+        Candidate,
+        std::sync::mpsc::Receiver<rustradio::Complex>,
+        f64,
+    )>,
     config: ScanningConfig,
     shared_audio_tx: std::sync::mpsc::SyncSender<f32>,
     audio_handle: thread::JoinHandle<Result<()>>,
@@ -312,14 +347,14 @@ fn spawn_scanning_thread(
     let handle = thread::spawn(move || -> Result<()> {
         debug!("Scanning for transmissions ...");
 
-        for candidate in candidate_rx {
+        for (candidate, sdr_rx, center_freq) in candidate_rx {
             if config.print_candidates {
                 info!(
                     "candidate found at {:.1} MHz",
                     candidate.frequency_hz() / 1e6
                 );
             } else {
-                candidate.analyze(&config, shared_audio_tx.clone())?;
+                candidate.analyze(&config, shared_audio_tx.clone(), sdr_rx, center_freq)?;
             }
 
             if config.exit_early {
@@ -423,8 +458,12 @@ fn main() -> Result<()> {
 
     // Single shared audio channel to which all candidates write
     let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<f32>(config.samp_rate as _);
-    // MPSC channel for candidate stations
-    let (candidate_tx, candidate_rx) = std::sync::mpsc::sync_channel::<Candidate>(100);
+    // MPSC channel for candidate stations with their SDR receivers
+    let (candidate_tx, candidate_rx) = std::sync::mpsc::sync_channel::<(
+        Candidate,
+        std::sync::mpsc::Receiver<rustradio::Complex>,
+        f64,
+    )>(100);
     // Audio playback thread with simple blocking receive
     let audio_handle = spawn_audio_thread(audio_rx, &config)?;
 

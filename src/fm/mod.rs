@@ -22,6 +22,81 @@ use tracing::{debug, info};
 pub mod deemph;
 pub mod squelch;
 
+/// Manages a single SDR source with a single active candidate sink
+pub struct SdrManager {
+    sdr_source: SdrSource,
+    current_center_freq: f64,
+    samp_rate: f64,
+    current_sink: Option<std::sync::mpsc::SyncSender<rustradio::Complex>>,
+    sdr_graph: Option<Graph>,
+}
+
+impl SdrManager {
+    pub fn new(driver: String, samp_rate: f64) -> Result<Self> {
+        let sdr_source = SdrSource::when_ready(driver)?;
+        Ok(Self {
+            sdr_source,
+            current_center_freq: 0.0,
+            samp_rate,
+            current_sink: None,
+            sdr_graph: None,
+        })
+    }
+
+    pub fn set_center_frequency(&mut self, center_freq: f64) -> Result<()> {
+        if (self.current_center_freq - center_freq).abs() > 1000.0 {
+            // Only change if different by more than 1kHz
+            self.current_center_freq = center_freq;
+            self.rebuild_sdr_graph()?;
+        }
+        Ok(())
+    }
+
+    pub fn set_active_candidate(
+        &mut self,
+    ) -> Result<std::sync::mpsc::Receiver<rustradio::Complex>> {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<rustradio::Complex>(16384);
+        self.current_sink = Some(tx);
+        self.rebuild_sdr_graph()?;
+        Ok(rx)
+    }
+
+    fn rebuild_sdr_graph(&mut self) -> Result<()> {
+        if let Some(graph) = self.sdr_graph.take() {
+            graph.cancel_token().cancel();
+        }
+
+        if let Some(tx) = &self.current_sink {
+            let mut new_graph = Graph::new();
+            let (sdr_source_block, sdr_output_stream) = self
+                .sdr_source
+                .create_source_block(self.current_center_freq, self.samp_rate)?;
+
+            new_graph.add(Box::new(sdr_source_block));
+            new_graph.add(Box::new(MpscSenderSink::new(sdr_output_stream, tx.clone())));
+
+            self.sdr_graph = Some(new_graph);
+        }
+        Ok(())
+    }
+
+    pub fn start(&mut self) -> Result<()> {
+        if let Some(ref mut graph) = self.sdr_graph {
+            let _graph_handle = std::thread::spawn({
+                let mut graph = std::mem::replace(graph, Graph::new());
+                move || {
+                    if let Err(e) = graph.run() {
+                        debug!("SDR graph error: {}", e);
+                    }
+                }
+            });
+            // Note: We're not storing the handle, which means the graph runs detached
+            // This matches the current architecture where SDR graphs run independently
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub frequency_hz: f64,
@@ -36,6 +111,8 @@ impl Candidate {
         &self,
         config: &crate::ScanningConfig,
         audio_tx: std::sync::mpsc::SyncSender<f32>,
+        sdr_rx: std::sync::mpsc::Receiver<rustradio::Complex>,
+        center_freq: f64,
     ) -> Result<()> {
         debug!(
             message = "Tuning into station",
@@ -47,38 +124,26 @@ impl Candidate {
         );
         let lock = config.audo_mutex.lock().unwrap();
 
-        // Create a complete SDR -> DSP -> Audio pipeline for this candidate
-        let (sdr_tx, sdr_rx) = std::sync::mpsc::sync_channel::<rustradio::Complex>(16384);
         let station_name = format!("{:.1}FM", self.frequency_hz / 1e6);
 
         // Create DSP graph to process this candidate's frequency
-        // Since we tune the SDR directly to the station frequency, center_freq = tune_freq (offset = 0)
+        // Use the provided center_freq and this candidate's tune frequency for the FreqXlatingFir
         let (mut dsp_graph, noise_detected, audio_started_playing) = create_station_graph(
             sdr_rx,
             config.samp_rate,
             audio_tx,
             station_name,
             config,
-            self.frequency_hz,
+            center_freq,
             self.frequency_hz,
         )?;
         let dsp_cancel_token = dsp_graph.cancel_token();
 
-        // Create SDR graph to capture this frequency
-        let mut sdr_graph = Graph::new();
-        let sdr_graph_cancel_token = sdr_graph.cancel_token();
-
         debug!(
-            "Frequency {}, sample rate {}",
-            self.frequency_hz, config.samp_rate
+            "Processing candidate at {:.1} MHz with center freq {:.1} MHz",
+            self.frequency_hz / 1e6,
+            center_freq / 1e6
         );
-
-        let sdr_source = SdrSource::when_ready(config.driver.clone())?;
-        let (sdr_source_block, sdr_output_stream) =
-            sdr_source.create_source_block(self.frequency_hz, config.samp_rate)?;
-
-        sdr_graph.add(Box::new(sdr_source_block));
-        sdr_graph.add(Box::new(MpscSenderSink::new(sdr_output_stream, sdr_tx)));
 
         // Start DSP graph in a separate thread
         let frequency_hz = self.frequency_hz;
@@ -104,7 +169,6 @@ impl Candidate {
                 // Check if squelch detected noise
                 if noise_detected_clone.load(std::sync::atomic::Ordering::Relaxed) {
                     debug!("Squelch detected noise, exiting early");
-                    sdr_graph_cancel_token.cancel();
                     dsp_cancel_token.cancel();
                     return;
                 }
@@ -123,11 +187,11 @@ impl Candidate {
                 "Ran for {} seconds, continuing on to the next candidate",
                 duration
             );
-            sdr_graph_cancel_token.cancel();
             dsp_cancel_token.cancel();
         });
 
-        sdr_graph.run()?;
+        // Wait for DSP to complete (the timer thread will cancel it)
+        thread::sleep(Duration::from_secs(duration));
         drop(lock);
 
         Ok(())

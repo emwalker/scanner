@@ -74,9 +74,11 @@ impl Candidate {
         &self,
         config: &crate::ScanningConfig,
         audio_tx: std::sync::mpsc::SyncSender<f32>,
+        sdr_rx: std::sync::mpsc::Receiver<rustradio::Complex>,
+        center_freq: f64,
     ) -> Result<()> {
         match self {
-            Candidate::Fm(candidate) => candidate.analyze(config, audio_tx),
+            Candidate::Fm(candidate) => candidate.analyze(config, audio_tx, sdr_rx, center_freq),
         }
     }
 }
