@@ -1,9 +1,11 @@
+use crate::types::Signal;
 use rustradio::block::{Block, BlockEOF, BlockName, BlockRet};
-use rustradio::stream::{ReadStream, WriteStream};
+use rustradio::stream::ReadStream;
 use rustradio::{Float, Result};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
+    mpsc::SyncSender,
 };
 use tracing::debug;
 
@@ -18,7 +20,6 @@ pub enum SquelchState {
 /// audio or just noise. If noise is detected, blocks output and triggers early exit.
 pub struct SquelchBlock {
     input: ReadStream<Float>,
-    output: WriteStream<Float>,
     state: SquelchState,
     noise_detected: Arc<AtomicBool>,
     audio_started_playing: Arc<AtomicBool>,
@@ -29,6 +30,11 @@ pub struct SquelchBlock {
     samples_analyzed: usize,
     learning_samples_needed: usize,
     analysis_completed: bool,
+
+    // Signal detection
+    signal_tx: Option<SyncSender<Signal>>,
+    frequency_hz: f64,
+    detection_center_freq: f64,
 
     // Detection algorithm state
     sample_buffer: Vec<f32>,
@@ -47,15 +53,16 @@ impl SquelchBlock {
         input: ReadStream<Float>,
         sample_rate: f32,
         learning_duration: f32,
-    ) -> (Self, ReadStream<Float>, Arc<AtomicBool>, Arc<AtomicBool>) {
-        let (output, output_stream) = WriteStream::new();
+        signal_tx: Option<SyncSender<Signal>>,
+        frequency_hz: f64,
+        center_freq: f64,
+    ) -> (Self, Arc<AtomicBool>, Arc<AtomicBool>) {
         let learning_samples_needed = (sample_rate * learning_duration) as usize;
         let noise_detected = Arc::new(AtomicBool::new(false));
         let audio_started_playing = Arc::new(AtomicBool::new(false));
 
         let block = Self {
             input,
-            output,
             state: SquelchState::Learning,
             noise_detected: noise_detected.clone(),
             audio_started_playing: audio_started_playing.clone(),
@@ -64,6 +71,9 @@ impl SquelchBlock {
             samples_analyzed: 0,
             learning_samples_needed,
             analysis_completed: false,
+            signal_tx,
+            frequency_hz,
+            detection_center_freq: center_freq,
             sample_buffer: Vec::with_capacity(learning_samples_needed),
             rms_accumulator: 0.0,
             zero_crossings: 0,
@@ -77,7 +87,7 @@ impl SquelchBlock {
             min_zero_crossing_rate: 0.01, // Very low minimum
         };
 
-        (block, output_stream, noise_detected, audio_started_playing)
+        (block, noise_detected, audio_started_playing)
     }
 
     fn analyze_audio_content(&self) -> bool {
@@ -160,6 +170,30 @@ impl SquelchBlock {
                 debug!("Squelch: Audio detected, enabling passthrough");
                 self.state = SquelchState::PassThrough;
                 self.audio_started_playing.store(true, Ordering::Relaxed);
+
+                // Calculate signal strength from RMS
+                let rms = (self.rms_accumulator / self.sample_buffer.len() as f32).sqrt();
+                let signal_strength = rms; // Use RMS as signal strength measure
+
+                // Push signal to queue if channel is available
+                if let Some(ref tx) = self.signal_tx {
+                    let signal = Signal::new_fm(
+                        self.frequency_hz,
+                        signal_strength,
+                        200_000.0, // Standard FM channel bandwidth
+                        self._sample_rate as u32,
+                        (self._learning_duration * 1000.0) as u32, // Convert to ms
+                        self.detection_center_freq,
+                    );
+
+                    match tx.try_send(signal) {
+                        Ok(()) => debug!(
+                            "Signal queued for frequency {:.1} MHz",
+                            self.frequency_hz / 1e6
+                        ),
+                        Err(e) => debug!("Failed to queue signal: {}", e),
+                    }
+                }
             } else {
                 debug!("Squelch: Noise detected, blocking output and signaling early exit");
                 self.state = SquelchState::Blocked;
@@ -206,15 +240,10 @@ impl Block for SquelchBlock {
             }
 
             SquelchState::PassThrough => {
-                // Audio detected, pass through all samples
-                let mut output_buf = self.output.write_buf()?;
-                let to_copy = input_samples.len().min(output_buf.len());
-
-                output_buf.slice()[..to_copy].copy_from_slice(&input_samples[..to_copy]);
-
-                input_buf.consume(to_copy);
-                output_buf.produce(to_copy, &[]);
-
+                // Audio detected, consume samples but don't produce output (terminal)
+                // The signal was already queued when we transitioned to PassThrough state
+                let sample_count = input_samples.len();
+                input_buf.consume(sample_count);
                 Ok(BlockRet::Again)
             }
 
@@ -254,10 +283,13 @@ mod tests {
 
     fn create_squelch_with_samples(samples: Vec<f32>, sample_rate: f32) -> SquelchBlock {
         let (_input_stream, input_read_stream) = WriteStream::new();
-        let (mut squelch, _, _, _) = SquelchBlock::new(
+        let (mut squelch, _, _) = SquelchBlock::new(
             input_read_stream,
             sample_rate,
-            0.1, // short learning duration for test
+            0.1,          // short learning duration for test
+            None,         // no signal channel for tests
+            88_900_000.0, // test frequency
+            88_900_000.0, // center frequency (same as signal for test)
         );
 
         // Populate analysis state

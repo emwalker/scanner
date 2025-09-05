@@ -64,6 +64,56 @@ pub enum Candidate {
     Fm(fm::Candidate),
 }
 
+/// Represents a successfully detected and demodulated signal
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct Signal {
+    /// Center frequency of the signal in Hz
+    pub frequency_hz: f64,
+    /// Signal strength/power measurement
+    pub signal_strength: f32,
+    /// Estimated bandwidth of the signal in Hz
+    pub bandwidth_hz: f32,
+    /// Type of modulation detected
+    pub modulation: ModulationType,
+    /// Audio sample rate for this signal
+    pub audio_sample_rate: u32,
+    /// Timestamp when signal was detected
+    pub detected_at: std::time::SystemTime,
+    /// Duration of analysis period that led to detection
+    pub analysis_duration_ms: u32,
+    /// Center frequency used by SDR during detection (needed for audio processing offset calculation)
+    pub detection_center_freq: f64,
+}
+
+#[derive(Debug, Clone)]
+pub enum ModulationType {
+    Fm,
+    // Future: Am, Digital, etc.
+}
+
+impl Signal {
+    pub fn new_fm(
+        frequency_hz: f64,
+        signal_strength: f32,
+        bandwidth_hz: f32,
+        audio_sample_rate: u32,
+        analysis_duration_ms: u32,
+        detection_center_freq: f64,
+    ) -> Self {
+        Self {
+            frequency_hz,
+            signal_strength,
+            bandwidth_hz,
+            modulation: ModulationType::Fm,
+            audio_sample_rate,
+            detected_at: std::time::SystemTime::now(),
+            analysis_duration_ms,
+            detection_center_freq,
+        }
+    }
+}
+
 impl Candidate {
     pub fn frequency_hz(&self) -> f64 {
         match self {
@@ -74,12 +124,12 @@ impl Candidate {
     pub fn analyze(
         &self,
         config: &crate::ScanningConfig,
-        audio_tx: std::sync::mpsc::SyncSender<f32>,
         sdr_rx: std::sync::mpsc::Receiver<rustradio::Complex>,
         center_freq: f64,
+        signal_tx: std::sync::mpsc::SyncSender<Signal>,
     ) -> Result<()> {
         match self {
-            Candidate::Fm(candidate) => candidate.analyze(config, audio_tx, sdr_rx, center_freq),
+            Candidate::Fm(candidate) => candidate.analyze(config, sdr_rx, center_freq, signal_tx),
         }
     }
 }

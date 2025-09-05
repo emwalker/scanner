@@ -1,3 +1,4 @@
+pub mod broadcast;
 pub mod file;
 pub mod fm;
 pub mod freq_xlating_fir;
@@ -12,7 +13,6 @@ pub use crate::types::{Candidate, Peak, Result, SampleSource, ScannerError};
 
 // Re-export main types for testing
 use clap::ValueEnum;
-use std::sync::{Arc, Mutex};
 
 #[derive(ValueEnum, Copy, Clone, Debug)]
 pub enum Band {
@@ -88,13 +88,10 @@ impl Band {
     }
 }
 
-pub struct Audio;
-
 #[derive(Clone)]
 pub struct ScanningConfig {
     pub audio_buffer_size: u32,
     pub audio_sample_rate: u32,
-    pub audo_mutex: Arc<Mutex<Audio>>,
     pub band: Band,
     pub capture_audio_duration: f64,
     pub capture_audio: Option<String>,
@@ -117,7 +114,6 @@ impl Default for ScanningConfig {
         Self {
             audio_buffer_size: 4096,
             audio_sample_rate: 48000,
-            audo_mutex: Arc::new(Mutex::new(Audio)),
             band: Band::Fm,
             capture_audio: None,
             capture_audio_duration: 3.0,

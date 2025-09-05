@@ -3,9 +3,7 @@ use crate::{
     fm::deemph::Deemphasis,
     fm::squelch::SquelchBlock,
     freq_xlating_fir::FreqXlatingFir,
-    logging,
-    mpsc::{MpscReceiverSource, MpscSenderSink, MpscSink},
-    soapy::SdrSource,
+    mpsc::MpscReceiverSource,
     types::{self, Peak, Result},
 };
 use rustradio::fir;
@@ -22,81 +20,6 @@ use tracing::{debug, info};
 pub mod deemph;
 pub mod squelch;
 
-/// Manages a single SDR source with a single active candidate sink
-pub struct SdrManager {
-    sdr_source: SdrSource,
-    current_center_freq: f64,
-    samp_rate: f64,
-    current_sink: Option<std::sync::mpsc::SyncSender<rustradio::Complex>>,
-    sdr_graph: Option<Graph>,
-}
-
-impl SdrManager {
-    pub fn new(driver: String, samp_rate: f64) -> Result<Self> {
-        let sdr_source = SdrSource::when_ready(driver)?;
-        Ok(Self {
-            sdr_source,
-            current_center_freq: 0.0,
-            samp_rate,
-            current_sink: None,
-            sdr_graph: None,
-        })
-    }
-
-    pub fn set_center_frequency(&mut self, center_freq: f64) -> Result<()> {
-        if (self.current_center_freq - center_freq).abs() > 1000.0 {
-            // Only change if different by more than 1kHz
-            self.current_center_freq = center_freq;
-            self.rebuild_sdr_graph()?;
-        }
-        Ok(())
-    }
-
-    pub fn set_active_candidate(
-        &mut self,
-    ) -> Result<std::sync::mpsc::Receiver<rustradio::Complex>> {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<rustradio::Complex>(16384);
-        self.current_sink = Some(tx);
-        self.rebuild_sdr_graph()?;
-        Ok(rx)
-    }
-
-    fn rebuild_sdr_graph(&mut self) -> Result<()> {
-        if let Some(graph) = self.sdr_graph.take() {
-            graph.cancel_token().cancel();
-        }
-
-        if let Some(tx) = &self.current_sink {
-            let mut new_graph = Graph::new();
-            let (sdr_source_block, sdr_output_stream) = self
-                .sdr_source
-                .create_source_block(self.current_center_freq, self.samp_rate)?;
-
-            new_graph.add(Box::new(sdr_source_block));
-            new_graph.add(Box::new(MpscSenderSink::new(sdr_output_stream, tx.clone())));
-
-            self.sdr_graph = Some(new_graph);
-        }
-        Ok(())
-    }
-
-    pub fn start(&mut self) -> Result<()> {
-        if let Some(ref mut graph) = self.sdr_graph {
-            let _graph_handle = std::thread::spawn({
-                let mut graph = std::mem::replace(graph, Graph::new());
-                move || {
-                    if let Err(e) = graph.run() {
-                        debug!("SDR graph error: {}", e);
-                    }
-                }
-            });
-            // Note: We're not storing the handle, which means the graph runs detached
-            // This matches the current architecture where SDR graphs run independently
-        }
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub frequency_hz: f64,
@@ -110,9 +33,9 @@ impl Candidate {
     pub fn analyze(
         &self,
         config: &crate::ScanningConfig,
-        audio_tx: std::sync::mpsc::SyncSender<f32>,
         sdr_rx: std::sync::mpsc::Receiver<rustradio::Complex>,
         center_freq: f64,
+        signal_tx: std::sync::mpsc::SyncSender<crate::types::Signal>,
     ) -> Result<()> {
         debug!(
             message = "Tuning into station",
@@ -122,8 +45,6 @@ impl Candidate {
             self.max_magnitude = self.max_magnitude,
             self.avg_magnitude = self.avg_magnitude
         );
-        let lock = config.audo_mutex.lock().unwrap();
-
         let station_name = format!("{:.1}FM", self.frequency_hz / 1e6);
 
         // Create DSP graph to process this candidate's frequency
@@ -131,11 +52,11 @@ impl Candidate {
         let (mut dsp_graph, noise_detected, audio_started_playing) = create_station_graph(
             sdr_rx,
             config.samp_rate,
-            audio_tx,
             station_name,
             config,
             center_freq,
             self.frequency_hz,
+            Some(signal_tx.clone()), // Pass signal channel to squelch
         )?;
         let dsp_cancel_token = dsp_graph.cancel_token();
 
@@ -178,8 +99,11 @@ impl Candidate {
                     && !message_printed
                 {
                     info!("found {:.1} MHz", frequency_hz / 1e6);
-                    logging::flush();
+                    crate::logging::flush();
                     message_printed = true;
+                    // Note: Signal detection happens in SquelchBlock and is queued
+                    // to signal_tx channel. DSP graph continues running to provide
+                    // audio until duration expires or noise is detected.
                 }
             }
 
@@ -189,10 +113,6 @@ impl Candidate {
             );
             dsp_cancel_token.cancel();
         });
-
-        // Wait for DSP to complete (the timer thread will cancel it)
-        thread::sleep(Duration::from_secs(duration));
-        drop(lock);
 
         Ok(())
     }
@@ -292,7 +212,6 @@ pub fn collect_peaks_from_source(
 ) -> Result<Vec<Peak>> {
     let peak_scan_duration = sample_source.peak_scan_duration();
     debug!("Starting peak detection scan for {peak_scan_duration} seconds...",);
-    let lock = config.audo_mutex.lock().unwrap();
 
     // Prepare FFT processing
     use std::collections::BTreeMap;
@@ -346,7 +265,6 @@ pub fn collect_peaks_from_source(
     let peaks: Vec<Peak> = peaks_map.into_values().collect();
 
     sample_source.deactivate()?;
-    drop(lock);
     debug!("Peak detection scan complete. Found {} peaks.", peaks.len());
 
     Ok(peaks)
@@ -558,14 +476,15 @@ pub fn find_candidates(
 }
 
 // Create rustradio graph for a station with frequency translating filter
+#[allow(clippy::too_many_arguments)]
 pub fn create_station_graph(
     source_receiver: std::sync::mpsc::Receiver<rustradio::Complex>,
     samp_rate: f64,
-    audio_sender: std::sync::mpsc::SyncSender<f32>,
-    channel_name: String,
+    _channel_name: String,
     config: &crate::ScanningConfig,
     center_freq: f64,
     tune_freq: f64,
+    signal_tx: Option<std::sync::mpsc::SyncSender<crate::types::Signal>>,
 ) -> rustradio::Result<(
     Graph,
     std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -669,13 +588,17 @@ pub fn create_station_graph(
     graph.add(Box::new(audio_capture_block));
     let prev = audio_capture_output;
 
-    let (squelch_block, squelch_output, noise_detected, audio_started_playing) =
-        SquelchBlock::new(prev, audio_rate as f32, config.squelch_learning_duration);
+    let (squelch_block, noise_detected, audio_started_playing) = SquelchBlock::new(
+        prev,
+        audio_rate as f32,
+        config.squelch_learning_duration,
+        signal_tx,
+        tune_freq,
+        center_freq,
+    );
     graph.add(Box::new(squelch_block));
-    let prev = squelch_output;
 
-    // Our custom MPSC sink
-    graph.add(Box::new(MpscSink::new(prev, audio_sender, channel_name)));
+    // No MPSC sink needed - squelch block is terminal
 
     Ok((graph, noise_detected, audio_started_playing))
 }
@@ -754,7 +677,6 @@ mod tests {
         let config = crate::ScanningConfig {
             audio_buffer_size: 4096,
             audio_sample_rate: 48000,
-            audo_mutex: std::sync::Arc::new(std::sync::Mutex::new(crate::Audio)),
             band: crate::Band::Fm,
             capture_audio_duration: 3.0,
             capture_audio: None,

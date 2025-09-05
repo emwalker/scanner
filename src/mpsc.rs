@@ -66,39 +66,54 @@ impl rustradio::block::Block for MpscSink {
     }
 }
 
-pub struct MpscSenderSink {
-    input: ReadStream<Complex>,
-    sender: mpsc::SyncSender<Complex>,
+/// Rust Radio sink that pushes samples to an MPSC channel
+pub struct ComplexMpscSink {
+    src: ReadStream<Complex>,
+    sender: std::sync::mpsc::SyncSender<Complex>,
+    channel_name: String,
 }
 
-impl MpscSenderSink {
-    pub fn new(input: ReadStream<Complex>, sender: mpsc::SyncSender<Complex>) -> Self {
-        MpscSenderSink { input, sender }
+impl ComplexMpscSink {
+    pub fn new(
+        src: ReadStream<Complex>,
+        sender: std::sync::mpsc::SyncSender<Complex>,
+        channel_name: String,
+    ) -> Self {
+        Self {
+            src,
+            sender,
+            channel_name,
+        }
     }
 }
 
-impl BlockName for MpscSenderSink {
+impl rustradio::block::BlockName for ComplexMpscSink {
     fn block_name(&self) -> &str {
-        "MpscSenderSink"
+        "ComplexMpscSink"
     }
 }
 
-impl BlockEOF for MpscSenderSink {
+impl rustradio::block::BlockEOF for ComplexMpscSink {
     fn eof(&mut self) -> bool {
-        self.input.eof()
+        self.src.eof()
     }
 }
 
-impl Block for MpscSenderSink {
-    fn work(&mut self) -> Result<BlockRet<'_>> {
-        let (input_buf, _) = self.input.read_buf()?;
+impl rustradio::block::Block for ComplexMpscSink {
+    fn work(&mut self) -> rustradio::Result<rustradio::block::BlockRet<'_>> {
+        let (input_buf, _) = self.src.read_buf()?;
         let samples = input_buf.slice();
 
+        // Send samples to MPSC channel
         let mut consumed = 0;
         for &sample in samples {
             if self.sender.send(sample).is_err() {
-                // Receiver disconnected, so we should stop
-                return Ok(BlockRet::EOF);
+                // Channel is full - this provides backpressure to the entire graph
+                debug!(
+                    "MPSC channel full for {}, backpressuring graph",
+                    self.channel_name
+                );
+                break;
             }
             consumed += 1;
         }
@@ -106,9 +121,9 @@ impl Block for MpscSenderSink {
         input_buf.consume(consumed);
 
         if consumed > 0 {
-            Ok(BlockRet::Again)
+            Ok(rustradio::block::BlockRet::Again)
         } else {
-            Ok(BlockRet::WaitForStream(&self.input, 1))
+            Ok(rustradio::block::BlockRet::WaitForStream(&self.src, 1))
         }
     }
 }
