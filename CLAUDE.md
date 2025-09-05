@@ -32,7 +32,7 @@ This is a Software Defined Radio (SDR) scanner application written in Rust that 
    - Creates and manages RX streams for IQ sample data
 
 2. **DspProcessor** - Implements professional-grade FM demodulation
-   - Pre-demodulation IIR low-pass filtering for FM channel bandwidth (~100 kHz cutoff)  
+   - Pre-demodulation IIR low-pass filtering for FM channel bandwidth (~100 kHz cutoff)
    - FM quadrature demodulation with phase unwrapping
    - Post-demodulation audio filtering (15 kHz bandwidth for FM broadcast)
    - Decimation from SDR sample rate to audio sample rate (960 kHz → 48 kHz)
@@ -58,7 +58,7 @@ This is a Software Defined Radio (SDR) scanner application written in Rust that 
 
 ### Key Constants
 - FM_MAX_DEVIATION_HZ: 75,000 (75 kHz max deviation for FM broadcast)
-- FM_CHANNEL_BANDWIDTH_HZ: 200,000 (200 kHz FM channel bandwidth) 
+- FM_CHANNEL_BANDWIDTH_HZ: 200,000 (200 kHz FM channel bandwidth)
 - AUDIO_BANDWIDTH_HZ: 15,000 (15 kHz audio bandwidth)
 
 ## Device and Signal Information
