@@ -3,7 +3,10 @@ use rustradio::Complex;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use crate::{file::IqFileMetadata, types::Result};
+use crate::{
+    file::IqFileMetadata,
+    types::{Result, ScanningConfig},
+};
 use std::io::Read;
 use std::{fs::File, io::BufReader};
 
@@ -11,28 +14,38 @@ use std::{fs::File, io::BufReader};
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AudioFileMetadata {
     pub sample_rate: f32,
-    pub duration: f32,
+    pub squelch_learning_duration: f32, // Renamed from duration for clarity
     pub total_samples: usize,
     pub format: String,                    // e.g., "f32_le"
     pub expected_squelch_decision: String, // "audio" or "noise"
     pub description: String,
+    pub frequency_hz: f64, // The frequency being monitored
+    pub center_freq: f64,  // The SDR center frequency
+    pub driver: String,    // SDR driver used (e.g., "driver=sdrplay")
 }
 
 impl AudioFileMetadata {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sample_rate: f32,
-        duration: f32,
+        squelch_learning_duration: f32,
         total_samples: usize,
         expected_squelch_decision: String,
         description: String,
+        frequency_hz: f64,
+        center_freq: f64,
+        driver: String,
     ) -> Self {
         Self {
             sample_rate,
-            duration,
+            squelch_learning_duration,
             total_samples,
             format: "f32_le".to_string(),
             expected_squelch_decision,
             description,
+            frequency_hz,
+            center_freq,
+            driver,
         }
     }
 
@@ -424,7 +437,7 @@ pub fn create_test_candidate(freq: f64, center_freq: f64) -> (crate::fm::Candida
 pub fn test_peak_detection_isolated(
     iq_file_path: &str,
     expected_peaks: &[f64],
-    config: &crate::ScanningConfig,
+    config: &ScanningConfig,
     debug: bool,
 ) -> crate::types::Result<TestPeakResult> {
     let (mut sample_source, metadata) = load_iq_fixture(iq_file_path)?;
@@ -540,7 +553,7 @@ pub fn test_complete_pipeline_debug(
     iq_file_path: &str,
     expected_station_freq: f64,
     scanning_mode: ScanningMode,
-    config: &crate::ScanningConfig,
+    config: &ScanningConfig,
 ) -> crate::types::Result<PipelineTestResult> {
     info!("\n=== Complete Pipeline Debug Test ===");
 
@@ -714,7 +727,7 @@ pub fn test_complete_pipeline_with_logs(
     iq_file_path: &str,
     expected_station_freq: f64,
     scanning_mode: ScanningMode,
-    config: &crate::ScanningConfig,
+    config: &ScanningConfig,
 ) -> crate::types::Result<(PipelineTestResult, String)> {
     with_captured_logs(true, crate::Format::Json, || {
         test_complete_pipeline_debug(
@@ -731,7 +744,7 @@ pub fn compare_scanning_modes_with_logs(
     iq_file_path: &str,
     station_freq: f64,
     window_center_freq: f64,
-    config: &crate::ScanningConfig,
+    config: &ScanningConfig,
 ) -> crate::types::Result<(PipelineTestResult, PipelineTestResult, String, String)> {
     // Test stations mode
     let (stations_result, stations_logs) = test_complete_pipeline_with_logs(

@@ -1,0 +1,12 @@
+{
+  "sample_rate": 2000000.0,
+  "center_frequency": 88800000.0,
+  "capture_duration": 1.0,
+  "total_samples": 2000000,
+  "format": "f32_le_complex",
+  "expected_candidates": [],
+  "fft_size": 1024,
+  "peak_detection_threshold": 1.0,
+  "peak_scan_duration": null,
+  "driver": "driver=sdrplay"
+}

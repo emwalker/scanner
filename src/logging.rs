@@ -1,30 +1,14 @@
-use crate::types::{Result, ScannerError};
+use crate::types::Result;
 use gag::Gag;
 use std::io::{self, Write};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 use tracing_subscriber::fmt::MakeWriter;
 
 pub use crate::Format;
 
-// Macros to force output to console even when stdout/stderr are gagged
-macro_rules! stdout {
-    ($($arg:tt)*) => {
-        {
-            use std::fs::OpenOptions;
-            use std::io::Write;
-            match OpenOptions::new().write(true).open("/dev/tty") {
-                Ok(mut tty) => {
-                    let _ = write!(tty, $($arg)*);
-                }
-                Err(_) => {
-                    print!($($arg)*);
-                }
-            }
-        }
-    };
-}
+// Immediate flush logging - writes directly to tty/stdout
 
 /// This is a shared, thread-safe buffer for captured logs.
 /// We use `Arc<Mutex<...>>` to allow safe, concurrent access from different threads.
@@ -41,21 +25,44 @@ impl LogBuffer {
     }
 }
 
-/// A custom writer that writes to our shared `LogBuffer`.
+/// A custom writer that can either buffer logs for testing or write directly for immediate output
 pub struct TestWriter {
-    buffer: LogBuffer,
+    buffer: Option<LogBuffer>,
 }
 
 impl TestWriter {
     pub fn new(buffer: LogBuffer) -> Self {
-        Self { buffer }
+        Self {
+            buffer: Some(buffer),
+        }
+    }
+
+    /// Create a writer that outputs immediately (for main application)
+    pub fn new_immediate() -> Self {
+        Self { buffer: None }
     }
 }
 
 impl Write for &TestWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut buffer = self.buffer.0.lock().unwrap();
-        buffer.extend_from_slice(buf);
+        if let Some(buffer) = &self.buffer {
+            // Buffer for tests
+            let mut buffer = buffer.0.lock().unwrap();
+            buffer.extend_from_slice(buf);
+        } else {
+            // Write directly to tty/stdout for immediate output
+            use std::fs::OpenOptions;
+            match OpenOptions::new().write(true).open("/dev/tty") {
+                Ok(mut tty) => {
+                    tty.write(buf)?;
+                    tty.flush()?;
+                }
+                Err(_) => {
+                    io::stdout().write(buf)?;
+                    io::stdout().flush()?;
+                }
+            }
+        }
         Ok(buf.len())
     }
 
@@ -66,8 +73,24 @@ impl Write for &TestWriter {
 
 impl Write for TestWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut buffer = self.buffer.0.lock().unwrap();
-        buffer.extend_from_slice(buf);
+        if let Some(buffer) = &self.buffer {
+            // Buffer for tests
+            let mut buffer = buffer.0.lock().unwrap();
+            buffer.extend_from_slice(buf);
+        } else {
+            // Write directly to tty/stdout for immediate output
+            use std::fs::OpenOptions;
+            match OpenOptions::new().write(true).open("/dev/tty") {
+                Ok(mut tty) => {
+                    tty.write(buf)?;
+                    tty.flush()?;
+                }
+                Err(_) => {
+                    io::stdout().write(buf)?;
+                    io::stdout().flush()?;
+                }
+            }
+        }
         Ok(buf.len())
     }
 
@@ -90,18 +113,32 @@ impl<'a> MakeWriter<'a> for LogBuffer {
     }
 }
 
-static BUFFER: OnceLock<LogBuffer> = OnceLock::new();
+/// Immediate writer for main application (no buffering)
+pub struct ImmediateWriter;
+
+impl<'a> MakeWriter<'a> for ImmediateWriter {
+    type Writer = TestWriter;
+
+    fn make_writer(&self) -> Self::Writer {
+        TestWriter::new_immediate()
+    }
+
+    fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Self::Writer {
+        let _ = meta;
+        self.make_writer()
+    }
+}
 
 pub fn init(verbose: bool, format: Format) -> Result<()> {
     let level = if verbose { Level::DEBUG } else { Level::INFO };
-    let captured_logs = LogBuffer::default();
+    let immediate_writer = ImmediateWriter;
 
     match format {
         Format::Json => {
             let subscriber = FmtSubscriber::builder()
                 .json()
                 .with_max_level(level)
-                .with_writer(captured_logs.clone())
+                .with_writer(immediate_writer)
                 .finish();
             tracing::subscriber::set_global_default(subscriber)
                 .expect("setting default subscriber failed");
@@ -109,7 +146,7 @@ pub fn init(verbose: bool, format: Format) -> Result<()> {
         Format::Text => {
             let subscriber = FmtSubscriber::builder()
                 .with_max_level(level)
-                .with_writer(captured_logs.clone())
+                .with_writer(immediate_writer)
                 .without_time()
                 .with_target(false)
                 .with_level(false)
@@ -120,17 +157,13 @@ pub fn init(verbose: bool, format: Format) -> Result<()> {
         Format::Log => {
             let subscriber = FmtSubscriber::builder()
                 .with_max_level(level)
-                .with_writer(captured_logs.clone())
+                .with_writer(immediate_writer)
                 .with_target(false)
                 .finish();
             tracing::subscriber::set_global_default(subscriber)
                 .expect("setting default subscriber failed");
         }
     }
-
-    BUFFER
-        .set(captured_logs)
-        .map_err(|_| ScannerError::Custom("Failed to set global log buffer".to_string()))?;
 
     // Suppress library output unless --verbose is specified
     let _stdout_gag = if verbose { None } else { Some(Gag::stdout()?) };
@@ -139,11 +172,4 @@ pub fn init(verbose: bool, format: Format) -> Result<()> {
     Ok(())
 }
 
-pub fn flush() {
-    if let Some(buffer) = BUFFER.get() {
-        let logs = buffer.get_string();
-        if !logs.is_empty() {
-            stdout!("{}", logs);
-        }
-    }
-}
+// flush() function removed - logging now flushes immediately

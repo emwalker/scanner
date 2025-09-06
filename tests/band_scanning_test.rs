@@ -13,7 +13,7 @@ fn test_band_scanning_window_calculation() {
     };
 
     let band = Band::Fm;
-    let windows = band.windows(config.samp_rate);
+    let windows = band.windows(config.samp_rate, config.window_overlap);
 
     info!("=== Band Scanning Window Analysis ===");
     info!("Sample rate: {:.1} MHz", config.samp_rate / 1e6);

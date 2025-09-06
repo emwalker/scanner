@@ -15,15 +15,26 @@ pub struct IqFileMetadata {
     pub total_samples: usize,
     pub format: String,                // e.g., "f32_le_complex"
     pub expected_candidates: Vec<f64>, // Expected station frequencies in Hz
+
+    // Peak detection parameters used during scanning
+    pub fft_size: usize,
+    pub peak_detection_threshold: f32,
+    pub peak_scan_duration: Option<f64>,
+    pub driver: String, // SDR driver used (e.g., "driver=sdrplay")
 }
 
 #[allow(dead_code)]
 impl IqFileMetadata {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sample_rate: f64,
         center_frequency: f64,
         capture_duration: f64,
         total_samples: usize,
+        fft_size: usize,
+        peak_detection_threshold: f32,
+        peak_scan_duration: Option<f64>,
+        driver: String,
     ) -> Self {
         Self {
             sample_rate,
@@ -32,6 +43,10 @@ impl IqFileMetadata {
             total_samples,
             format: "f32_le_complex".to_string(),
             expected_candidates: Vec::new(),
+            fft_size,
+            peak_detection_threshold,
+            peak_scan_duration,
+            driver,
         }
     }
 
@@ -50,6 +65,10 @@ pub struct AudioCaptureSink {
     sample_rate: f32,
     output_file: String,
     capture_duration: f64,
+    squelch_learning_duration: f32,
+    frequency_hz: f64,
+    center_freq: f64,
+    driver: String,
     writer: Option<BufWriter<File>>,
 }
 
@@ -58,6 +77,10 @@ impl AudioCaptureSink {
         output_file: &str,
         sample_rate: f32,
         capture_duration: f64,
+        squelch_learning_duration: f32,
+        frequency_hz: f64,
+        center_freq: f64,
+        driver: String,
     ) -> crate::types::Result<Self> {
         let max_samples = (sample_rate * capture_duration as f32) as usize;
 
@@ -78,6 +101,10 @@ impl AudioCaptureSink {
             sample_rate,
             output_file: output_file.to_string(),
             capture_duration,
+            squelch_learning_duration,
+            frequency_hz,
+            center_freq,
+            driver,
             writer: Some(writer),
         })
     }
@@ -103,13 +130,16 @@ impl AudioCaptureSink {
     fn save_metadata(&self) -> crate::types::Result<()> {
         let metadata = AudioFileMetadata::new(
             self.sample_rate,
-            self.capture_duration as f32,
+            self.squelch_learning_duration, // Use squelch learning duration, not capture duration
             self.samples_captured,
             "unknown".to_string(), // Will need to be set by caller based on squelch decision
             format!(
                 "Captured demodulated audio at {} Hz for {} seconds",
                 self.sample_rate, self.capture_duration
             ),
+            self.frequency_hz,
+            self.center_freq,
+            self.driver.clone(),
         );
 
         let metadata_path = self.output_file.replace(".audio", ".json");
@@ -150,6 +180,12 @@ pub struct SampleCaptureSink {
     center_frequency: f64,
     output_file: String,
     capture_duration: f64,
+
+    // Peak detection parameters from scanning config
+    fft_size: usize,
+    peak_detection_threshold: f32,
+    peak_scan_duration: Option<f64>,
+    driver: String,
 }
 
 #[allow(dead_code)]
@@ -158,6 +194,10 @@ impl SampleCaptureSink {
         inner: Box<dyn SampleSource>,
         output_file: &str,
         capture_duration: f64,
+        fft_size: usize,
+        peak_detection_threshold: f32,
+        peak_scan_duration: Option<f64>,
+        driver: String,
     ) -> Result<Self> {
         let sample_rate = inner.sample_rate();
         let center_frequency = inner.center_frequency();
@@ -183,6 +223,10 @@ impl SampleCaptureSink {
             center_frequency,
             output_file: output_file.to_string(),
             capture_duration,
+            fft_size,
+            peak_detection_threshold,
+            peak_scan_duration,
+            driver,
         })
     }
 
@@ -193,6 +237,10 @@ impl SampleCaptureSink {
             self.center_frequency,
             self.capture_duration,
             self.samples_captured,
+            self.fft_size,
+            self.peak_detection_threshold,
+            self.peak_scan_duration,
+            self.driver.clone(),
         );
 
         let metadata_path = self.output_file.replace(".iq", ".json");

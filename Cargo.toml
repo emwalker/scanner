@@ -15,6 +15,10 @@ path = "tests/integration_test.rs"
 name = "band_scanning_test"
 path = "tests/band_scanning_test.rs"
 
+[[test]]
+name = "frequency_detection_test"
+path = "tests/frequency_detection_test.rs"
+
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
 cpal = "0.15"

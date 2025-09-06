@@ -4,21 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Common Commands
 
+### Rust code
+- Add mimimal comments. Infrequent comments are ok, but in general we don't need them.
+- When adding or modifying a debug! log statement, use the json key value style: `debug!(key1 = value1, key2 = value2, ...)`
+- When adding debug output, prefer `debug!` to `eprintln!` or `println!`.
+- The `info!` macro is used for user-facing output, so don't use it.
+- Prefer reader methods without the `get_` prefix: `refined_frequency` instead of `get_refined_frequency`
+
 ### Building and Checking
 - `cargo check` - Check for syntax errors and basic correctness
 - `cargo build` - Build the project
-- `cargo run -- --format json --exit-early --stations 88.9e6` - Run tuned to specific frequency (88.9 MHz)
+- `cargo run -- --stations 88.9e6 --duration 1 --json --scanning-windows 2` - Run tuned to specific frequency (88.9 MHz)
 - `make lint` - Format code and run clippy with fixes
+- When checking `--band fm`, use a timeout command with a suitable timeout
 
 # Committing to Git
-- Let's use one-line commit messages
+- Use one-line commit messages
 - Run `make lint` and fix all warnings. We should not create a commit with linter warnings.
 - In commit messages, omit the "Generated with" line
 - In commit messages, omit the "Co-Authored-By" line
-
-### Testing the Application
-- Test with known good signal: `cargo run -- --center-freq 88.9e6 --exit-early` (88.9 MHz has confirmed strong FM signal)
-- The application will output DSP debug information showing signal processing stats
 
 ## Architecture Overview
 
@@ -83,3 +87,4 @@ This is a Software Defined Radio (SDR) scanner application written in Rust that 
 
 ## Rust Toolchain
 This project uses nightly Rust (via rust-toolchain.toml) to enable rustradio's SIMD feature for improved DSP performance.
+- When adding a debug statement to Rust code, prefer `debug!` over `eprintln!`, and use key value pairs.

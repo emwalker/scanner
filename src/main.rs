@@ -1,14 +1,17 @@
 use clap::{Parser, ValueEnum};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
-use std::sync::{Arc, Mutex, mpsc::SyncSender};
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 use tracing::{debug, info};
 
 mod broadcast;
 mod file;
 mod fm;
 mod freq_xlating_fir;
+mod frequency_tracking;
+mod iq_capture;
 mod logging;
 mod mpsc;
 mod sdr;
@@ -16,8 +19,184 @@ mod soapy;
 mod testing;
 mod types;
 use crate::broadcast::BroadcastSource;
-use crate::types::{Candidate, Result, ScannerError};
+use crate::types::{Band, Candidate, Result, ScannerError, ScanningConfig};
 use rustradio::graph::GraphRunner;
+
+/// Represents a frequency window for band scanning with complete lifecycle management
+struct Window {
+    center_freq: f64,
+    window_num: usize,
+    total_windows: usize,
+}
+
+impl Window {
+    fn new(center_freq: f64, window_num: usize, total_windows: usize) -> Self {
+        Self {
+            center_freq,
+            window_num,
+            total_windows,
+        }
+    }
+
+    /// Process this window completely: tune SDR, find candidates, run detection/audio, wait for completion
+    fn process(
+        &self,
+        config: &ScanningConfig,
+        signal_tx: &std::sync::mpsc::SyncSender<types::Signal>,
+        sdr_manager: &Arc<Mutex<sdr::SdrManager>>,
+    ) -> Result<()> {
+        debug!(
+            "Scanning window {} of {} at {:.1} MHz",
+            self.window_num,
+            self.total_windows,
+            self.center_freq / 1e6
+        );
+
+        // Tune SDR to this window's center frequency
+        sdr_manager
+            .lock()
+            .unwrap()
+            .set_frequency(self.center_freq)?;
+        let sdr_rx = sdr_manager.lock().unwrap().get_audio_subscriber();
+
+        // Find candidates in this window
+        let peaks = crate::fm::collect_peaks(config, sdr_rx, self.center_freq)?;
+        let mut candidates = Vec::new();
+
+        if !peaks.is_empty() {
+            debug!("Found {} peaks in this window", peaks.len());
+
+            if config.debug_pipeline {
+                debug!(
+                    message = "Band scanning window analysis",
+                    window_number = self.window_num,
+                    window_center_mhz = self.center_freq / 1e6,
+                    peaks_found = peaks.len()
+                );
+
+                for (peak_idx, peak) in peaks.iter().enumerate() {
+                    debug!(
+                        message = "Peak detected",
+                        window_number = self.window_num,
+                        peak_index = peak_idx,
+                        frequency_mhz = peak.frequency_hz / 1e6,
+                        magnitude = peak.magnitude
+                    );
+                }
+            }
+
+            for candidate in crate::fm::find_candidates(&peaks, config, self.center_freq) {
+                if config.debug_pipeline {
+                    let frequency_offset = candidate.frequency_hz() - self.center_freq;
+                    debug!(
+                        message = "Candidate created",
+                        candidate_frequency_mhz = candidate.frequency_hz() / 1e6,
+                        window_center_mhz = self.center_freq / 1e6,
+                        frequency_offset_khz = frequency_offset / 1e3,
+                        signal_strength = match &candidate {
+                            crate::types::Candidate::Fm(fm_candidate) =>
+                                &fm_candidate.signal_strength,
+                        }
+                    );
+                }
+
+                candidates.push(candidate);
+            }
+        } else {
+            debug!("No peaks detected in this window");
+            if config.debug_pipeline {
+                debug!(
+                    message = "Band scanning window analysis",
+                    window_number = self.window_num,
+                    window_center_mhz = self.center_freq / 1e6,
+                    peaks_found = 0
+                );
+            }
+        }
+
+        // Process all candidates in this window and wait for completion
+        if !candidates.is_empty() {
+            let candidate_count = candidates.len();
+            let mut candidate_threads = Vec::new();
+
+            for candidate in candidates {
+                if config.print_candidates {
+                    info!(
+                        "candidate found at {:.1} MHz",
+                        candidate.frequency_hz() / 1e6
+                    );
+                    continue; // Skip analysis in print-only mode
+                }
+
+                // Get fresh SDR receiver for each candidate
+                let sdr_rx = sdr_manager.lock().unwrap().get_audio_subscriber();
+                let signal_tx_clone = signal_tx.clone();
+                let config_clone = config.clone();
+                let center_freq = self.center_freq;
+
+                // Spawn thread for this candidate's detection and audio processing
+                let handle = thread::spawn(move || -> Result<()> {
+                    candidate.analyze(&config_clone, sdr_rx, center_freq, signal_tx_clone)
+                });
+
+                candidate_threads.push(handle);
+            }
+
+            // Wait for all candidate threads to complete with timeout
+            let window_timeout = Duration::from_secs(60); // Generous timeout per window
+            let threads_completed =
+                self.wait_for_threads_with_timeout(candidate_threads, window_timeout);
+
+            debug!(
+                "Window {} at {:.1} MHz: {}/{} candidates completed processing",
+                self.window_num,
+                self.center_freq / 1e6,
+                threads_completed,
+                candidate_count
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Wait for threads to complete with a timeout, returns number of threads that completed
+    fn wait_for_threads_with_timeout(
+        &self,
+        threads: Vec<thread::JoinHandle<Result<()>>>,
+        timeout: Duration,
+    ) -> usize {
+        use std::time::Instant;
+
+        let start_time = Instant::now();
+        let mut completed = 0;
+
+        for (i, handle) in threads.into_iter().enumerate() {
+            let remaining_time = timeout.saturating_sub(start_time.elapsed());
+
+            if remaining_time.is_zero() {
+                debug!("Thread {} timed out, not waiting for completion", i + 1);
+                break;
+            }
+
+            // Try to join the thread
+            match handle.join() {
+                Ok(Ok(())) => {
+                    completed += 1;
+                    debug!("Thread {} completed successfully", i + 1);
+                }
+                Ok(Err(e)) => {
+                    completed += 1;
+                    debug!("Thread {} completed with error: {}", i + 1, e);
+                }
+                Err(_) => {
+                    debug!("Thread {} panicked", i + 1);
+                }
+            }
+        }
+
+        completed
+    }
+}
 
 fn parse_stations(stations_str: &str) -> Result<Vec<f64>> {
     stations_str
@@ -32,8 +211,8 @@ fn parse_stations(stations_str: &str) -> Result<Vec<f64>> {
 
 fn scan_stations(
     stations_str: &str,
-    candidate_tx: &SyncSender<(Candidate, f64)>,
     config: &ScanningConfig,
+    signal_tx: &std::sync::mpsc::SyncSender<types::Signal>,
     sdr_manager: &Arc<Mutex<sdr::SdrManager>>,
 ) -> Result<()> {
     let stations = parse_stations(stations_str)?;
@@ -62,7 +241,15 @@ fn scan_stations(
             );
         }
 
-        candidate_tx.send((candidate, station_freq)).unwrap();
+        if config.print_candidates {
+            info!(
+                "candidate found at {:.1} MHz",
+                candidate.frequency_hz() / 1e6
+            );
+        } else {
+            let sdr_rx = sdr_manager.lock().unwrap().get_audio_subscriber();
+            candidate.analyze(config, sdr_rx, station_freq, signal_tx.clone())?;
+        }
     }
 
     Ok(())
@@ -70,94 +257,29 @@ fn scan_stations(
 
 fn scan_band(
     config: &ScanningConfig,
-    candidate_tx: &SyncSender<(Candidate, f64)>,
+    signal_tx: &std::sync::mpsc::SyncSender<types::Signal>,
     sdr_manager: &Arc<Mutex<sdr::SdrManager>>,
 ) -> Result<()> {
-    let windows = config.band.windows(config.samp_rate);
+    // Clear any previously processed frequencies from earlier scans
+    fm::clear_processed_frequencies();
+
+    let window_centers = config.band.windows(config.samp_rate, config.window_overlap);
     debug!(
         "Scanning {} windows across {:?} band",
-        windows.len(),
+        window_centers.len(),
         config.band
     );
 
-    for (i, center_freq) in windows.iter().enumerate() {
-        debug!(
-            "Scanning window {} of {} at {:.1} MHz",
-            i + 1,
-            windows.len(),
-            center_freq / 1e6
-        );
+    let windows_to_process = match config.scanning_windows {
+        Some(n) => n.min(window_centers.len()),
+        None => window_centers.len(),
+    };
 
-        sdr_manager.lock().unwrap().set_frequency(*center_freq)?;
-        let sdr_rx = sdr_manager.lock().unwrap().get_audio_subscriber();
-
-        let peaks = fm::collect_peaks(config, sdr_rx, *center_freq)?;
-
-        if !peaks.is_empty() {
-            debug!("Found {} peaks in this window", peaks.len());
-
-            if config.debug_pipeline {
-                debug!(
-                    message = "Band scanning window analysis",
-                    window_number = i + 1,
-                    window_center_mhz = center_freq / 1e6,
-                    peaks_found = peaks.len()
-                );
-
-                for (peak_idx, peak) in peaks.iter().enumerate() {
-                    debug!(
-                        message = "Peak detected",
-                        window_number = i + 1,
-                        peak_index = peak_idx,
-                        frequency_mhz = peak.frequency_hz / 1e6,
-                        magnitude = peak.magnitude
-                    );
-                }
-            }
-
-            for candidate in fm::find_candidates(&peaks, config, *center_freq) {
-                if config.debug_pipeline {
-                    let frequency_offset = candidate.frequency_hz() - center_freq;
-                    debug!(
-                        message = "Candidate created",
-                        candidate_frequency_mhz = candidate.frequency_hz() / 1e6,
-                        window_center_mhz = center_freq / 1e6,
-                        frequency_offset_khz = frequency_offset / 1e3,
-                        signal_strength = match &candidate {
-                            crate::types::Candidate::Fm(fm_candidate) =>
-                                &fm_candidate.signal_strength,
-                        }
-                    );
-                }
-
-                candidate_tx.send((candidate, *center_freq)).unwrap();
-            }
-        } else {
-            debug!("No peaks detected in this window");
-            if config.debug_pipeline {
-                debug!(
-                    message = "Band scanning window analysis",
-                    window_number = i + 1,
-                    window_center_mhz = center_freq / 1e6,
-                    peaks_found = 0
-                );
-            }
-        }
-
-        if config.exit_early {
-            break;
-        }
+    for (i, center_freq) in window_centers.iter().enumerate().take(windows_to_process) {
+        let window = Window::new(*center_freq, i + 1, window_centers.len());
+        window.process(config, signal_tx, sdr_manager)?;
     }
     Ok(())
-}
-
-#[derive(ValueEnum, Copy, Clone, Debug)]
-pub enum Band {
-    Fm,
-    Aircraft,
-    Ham2m,
-    Weather,
-    Marine,
 }
 
 #[derive(ValueEnum, Copy, Clone, Debug)]
@@ -177,92 +299,7 @@ impl std::fmt::Display for Format {
     }
 }
 
-impl std::fmt::Display for Band {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Band::Fm => write!(f, "fm"),
-            Band::Aircraft => write!(f, "aircraft"),
-            Band::Ham2m => write!(f, "ham2m"),
-            Band::Weather => write!(f, "weather"),
-            Band::Marine => write!(f, "marine"),
-        }
-    }
-}
-
-impl Band {
-    pub fn frequency_range(&self) -> (f64, f64) {
-        match self {
-            Band::Fm => (88.0e6, 108.0e6),
-            Band::Aircraft => (108.0e6, 137.0e6),
-            Band::Ham2m => (144.0e6, 148.0e6),
-            Band::Weather => (162.0e6, 163.0e6),
-            Band::Marine => (156.0e6, 162.0e6),
-        }
-    }
-
-    pub fn windows(&self, sample_rate: f64) -> Vec<f64> {
-        let (start_freq, end_freq) = self.frequency_range();
-        let usable_bandwidth = sample_rate * 0.8;
-        let step_size = usable_bandwidth * 0.9;
-
-        let mut windows = Vec::new();
-        let mut center_freq = start_freq + (usable_bandwidth / 2.0);
-
-        while center_freq - (usable_bandwidth / 2.0) < end_freq {
-            windows.push(center_freq);
-            center_freq += step_size;
-        }
-
-        windows
-    }
-}
-
 pub struct Audio;
-
-#[derive(Clone)]
-pub struct ScanningConfig {
-    pub audio_buffer_size: u32,
-    pub audio_sample_rate: u32,
-    pub band: Band,
-    pub capture_audio_duration: f64,
-    pub capture_audio: Option<String>,
-    pub capture_duration: f64,
-    pub capture_iq: Option<String>,
-    pub debug_pipeline: bool,
-    pub driver: String,
-    pub duration: u64,
-    pub exit_early: bool,
-    pub fft_size: usize,
-    pub peak_detection_threshold: f32,
-    pub peak_scan_duration: Option<f64>,
-    pub print_candidates: bool,
-    pub samp_rate: f64,
-    pub squelch_learning_duration: f32,
-}
-
-impl Default for ScanningConfig {
-    fn default() -> Self {
-        Self {
-            audio_buffer_size: 8192, // Increased from 4K to 8K samples for better buffering
-            audio_sample_rate: 48000,
-            band: Band::Fm,
-            capture_audio: None,
-            capture_audio_duration: 3.0,
-            capture_duration: 2.0,
-            capture_iq: None,
-            debug_pipeline: false,
-            driver: "driver=sdrplay".to_string(),
-            duration: 3,
-            exit_early: false,
-            fft_size: 1024,
-            peak_detection_threshold: 1.0,
-            peak_scan_duration: None,
-            print_candidates: false,
-            samp_rate: 2_000_000.0,
-            squelch_learning_duration: 2.0,
-        }
-    }
-}
 
 const DEFAULT_DRIVER: &str = "driver=sdrplay";
 
@@ -511,73 +548,108 @@ fn spawn_audio_thread(
         // Shutdown flag for interruptible audio processing
         let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
+        // Priority queue to collect and sort signals by frequency
+        use std::cmp::Ordering;
+        use std::collections::BinaryHeap;
+
+        #[derive(Debug)]
+        struct OrderedSignal {
+            signal: types::Signal,
+            priority: std::cmp::Reverse<i64>, // Reverse for min-heap (lowest frequency first)
+        }
+
+        impl PartialEq for OrderedSignal {
+            fn eq(&self, other: &Self) -> bool {
+                self.priority == other.priority
+            }
+        }
+
+        impl Eq for OrderedSignal {}
+
+        impl PartialOrd for OrderedSignal {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        impl Ord for OrderedSignal {
+            fn cmp(&self, other: &Self) -> Ordering {
+                self.priority.cmp(&other.priority)
+            }
+        }
+
+        let mut signal_queue: BinaryHeap<OrderedSignal> = BinaryHeap::new();
+        let mut collection_timeout = std::time::Instant::now();
+        let collection_window = std::time::Duration::from_millis(2000); // Collect signals for 2 seconds
+
         loop {
             // Use timeout to allow periodic checking for shutdown
             match signal_rx.recv_timeout(std::time::Duration::from_millis(100)) {
                 Ok(signal) => {
-                    debug!(
-                        "Processing signal for audio: {:.1} MHz, strength: {:.3}, modulation: {:?}",
-                        signal.frequency_hz / 1e6,
-                        signal.signal_strength,
-                        signal.modulation
-                    );
-                    let sdr_rx = sdr_manager.lock().unwrap().get_audio_subscriber();
+                    // Add signal to priority queue
+                    let ordered_signal = OrderedSignal {
+                        priority: std::cmp::Reverse(signal.frequency_hz as i64),
+                        signal,
+                    };
+                    signal_queue.push(ordered_signal);
 
-                    if let Err(e) = process_signal_for_audio(
-                        &signal,
-                        sdr_rx,
-                        audio_tx.clone(),
-                        &config,
-                        shutdown_flag.clone(),
-                    ) {
-                        debug!("Error processing signal for audio: {}", e);
-                    }
+                    // Reset collection timeout when we get a new signal
+                    collection_timeout = std::time::Instant::now();
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    // Timeout - continue loop to check for more signals
+                    // Check if collection window has expired and we have signals to play
+                    if collection_timeout.elapsed() >= collection_window && !signal_queue.is_empty()
+                    {
+                        // Play all collected signals in frequency order
+                        while let Some(ordered_signal) = signal_queue.pop() {
+                            let signal = ordered_signal.signal;
+                            info!("playing {:.1} MHz", signal.frequency_hz / 1e6);
+                            let sdr_rx = sdr_manager.lock().unwrap().get_audio_subscriber();
+
+                            if let Err(e) = process_signal_for_audio(
+                                &signal,
+                                sdr_rx,
+                                audio_tx.clone(),
+                                &config,
+                                shutdown_flag.clone(),
+                            ) {
+                                debug!("Error processing signal for audio: {}", e);
+                            }
+                        }
+                        // Reset timeout for next collection window
+                        collection_timeout = std::time::Instant::now();
+                    }
                     continue;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    debug!("Signal channel disconnected, audio thread exiting");
+                    debug!(
+                        "Signal channel disconnected, playing remaining {} queued signals",
+                        signal_queue.len()
+                    );
+
+                    // Play any remaining signals in the queue before exiting
+                    while let Some(ordered_signal) = signal_queue.pop() {
+                        let signal = ordered_signal.signal;
+                        info!("playing {:.1} MHz", signal.frequency_hz / 1e6);
+                        let sdr_rx = sdr_manager.lock().unwrap().get_audio_subscriber();
+
+                        if let Err(e) = process_signal_for_audio(
+                            &signal,
+                            sdr_rx,
+                            audio_tx.clone(),
+                            &config,
+                            shutdown_flag.clone(),
+                        ) {
+                            debug!("Error processing signal for audio: {}", e);
+                        }
+                    }
+
                     shutdown_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                     break;
                 }
             }
         }
 
-        Ok(())
-    });
-    Ok(handle)
-}
-
-fn spawn_scanning_thread(
-    candidate_rx: std::sync::mpsc::Receiver<(Candidate, f64)>,
-    config: ScanningConfig,
-    signal_tx: std::sync::mpsc::SyncSender<types::Signal>,
-    sdr_manager: Arc<Mutex<sdr::SdrManager>>,
-) -> Result<thread::JoinHandle<Result<()>>> {
-    let handle = thread::spawn(move || -> Result<()> {
-        debug!("Scanning for transmissions ...");
-
-        for (candidate, center_freq) in candidate_rx {
-            if config.print_candidates {
-                info!(
-                    "candidate found at {:.1} MHz",
-                    candidate.frequency_hz() / 1e6
-                );
-            } else {
-                let sdr_rx = sdr_manager.lock().unwrap().get_audio_subscriber();
-                candidate.analyze(&config, sdr_rx, center_freq, signal_tx.clone())?;
-            }
-
-            if config.exit_early {
-                debug!("Early exit requested - stopping after first candidate.");
-                break;
-            }
-        }
-
-        debug!("All frequencies scanned.");
-        drop(signal_tx);
         Ok(())
     });
     Ok(handle)
@@ -601,8 +673,9 @@ struct Args {
     #[arg(long)]
     peak_scan_duration: Option<f64>,
 
+    /// Maximum number of scanning windows to process (default: all windows)
     #[arg(long)]
-    exit_early: bool,
+    scanning_windows: Option<usize>,
 
     #[arg(long)]
     verbose: bool,
@@ -613,8 +686,17 @@ struct Args {
     #[arg(long)]
     print_candidates: bool,
 
-    #[arg(long, default_value_t = Format::Text)]
-    format: Format,
+    /// Output format: plain text (default)
+    #[arg(long, group = "output_format")]
+    text: bool,
+
+    /// Output format: JSON
+    #[arg(long, group = "output_format")]
+    json: bool,
+
+    /// Output format: structured logging
+    #[arg(long, group = "output_format")]
+    log: bool,
 
     #[arg(long)]
     capture_iq: Option<String>,
@@ -627,11 +709,49 @@ struct Args {
 
     #[arg(long, default_value_t = 3.0)]
     capture_audio_duration: f64,
+
+    /// Duration in seconds for squelch to analyze audio vs noise
+    #[arg(long, default_value_t = 2.0)]
+    learning_duration: f32,
+
+    /// Frequency tracking method (pll, spectral, correlation)
+    #[arg(long, default_value = "pll")]
+    frequency_tracking: String,
+
+    /// Required accuracy for frequency tracking convergence (Hz)
+    #[arg(long, default_value_t = 5000.0)]
+    tracking_accuracy: f64,
+
+    /// Disable frequency tracking (use FFT estimates directly)
+    #[arg(long)]
+    disable_frequency_tracking: bool,
+
+    /// Minimum spectral score threshold for candidate creation (0.0-1.0)
+    #[arg(long, default_value_t = 0.2)]
+    spectral_threshold: f32,
+
+    /// AGC settling time in seconds before peak scanning begins
+    #[arg(long, default_value_t = 3.0)]
+    agc_settling_time: f64,
+
+    /// Window overlap percentage for band scanning (0.0-1.0, where 0.75 = 75% overlap)
+    #[arg(long, default_value_t = 0.75)]
+    window_overlap: f64,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    logging::init(args.verbose, args.format)?;
+
+    // Determine format from flags (default to Text if none specified)
+    let format = if args.json {
+        Format::Json
+    } else if args.log {
+        Format::Log
+    } else {
+        Format::Text // Default when no format specified or when --text is used
+    };
+
+    logging::init(args.verbose, format)?;
 
     let driver = args.device_args.unwrap_or(DEFAULT_DRIVER.into());
     let config = ScanningConfig {
@@ -645,41 +765,42 @@ fn main() -> Result<()> {
         debug_pipeline: args.debug_pipeline,
         driver: driver.clone(),
         duration: args.duration,
-        exit_early: args.exit_early,
+        scanning_windows: args.scanning_windows,
         fft_size: 1024,
         peak_detection_threshold: 1.0,
         peak_scan_duration: args.peak_scan_duration,
         print_candidates: args.print_candidates,
         samp_rate: 2_000_000.0f64,
-        squelch_learning_duration: 2.0,
+        squelch_learning_duration: args.learning_duration,
+
+        // Frequency tracking configuration
+        frequency_tracking_method: args.frequency_tracking,
+        tracking_accuracy: args.tracking_accuracy,
+        disable_frequency_tracking: args.disable_frequency_tracking,
+
+        // Spectral analysis configuration
+        spectral_threshold: args.spectral_threshold,
+
+        // AGC and window configuration
+        agc_settling_time: args.agc_settling_time,
+        window_overlap: args.window_overlap,
     };
 
     soapysdr::configure_logging();
     info!("Scanning for stations ...");
 
-    let (candidate_tx, candidate_rx) = std::sync::mpsc::sync_channel::<(Candidate, f64)>(100);
     let (signal_tx, signal_rx) = std::sync::mpsc::sync_channel::<types::Signal>(100);
 
-    let sdr_manager = sdr::SdrManager::new(config.driver.clone(), config.samp_rate)?;
+    let sdr_manager = sdr::SdrManager::new(&config)?;
     let sdr_manager_arc = Arc::new(Mutex::new(sdr_manager));
 
     let audio_handle = spawn_audio_thread(signal_rx, Arc::clone(&sdr_manager_arc), config.clone())?;
 
-    let scanning_thread = spawn_scanning_thread(
-        candidate_rx,
-        config.clone(),
-        signal_tx.clone(),
-        Arc::clone(&sdr_manager_arc),
-    )?;
-
     if let Some(stations_str) = args.stations {
-        scan_stations(&stations_str, &candidate_tx, &config, &sdr_manager_arc)?;
+        scan_stations(&stations_str, &config, &signal_tx, &sdr_manager_arc)?;
     } else {
-        scan_band(&config, &candidate_tx, &sdr_manager_arc)?;
+        scan_band(&config, &signal_tx, &sdr_manager_arc)?;
     }
-
-    drop(candidate_tx);
-    scanning_thread.join().unwrap()?;
 
     // Drop signal_tx to disconnect the signal channel and allow audio thread to exit
     drop(signal_tx);
@@ -688,7 +809,6 @@ fn main() -> Result<()> {
     sdr_manager_arc.lock().unwrap().stop()?;
 
     info!("Scanning complete.");
-    logging::flush();
 
     Ok(())
 }

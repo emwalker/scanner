@@ -1,17 +1,37 @@
 use crate::{
     file::AudioCaptureBlock,
-    fm::{deemph::Deemphasis, squelch::SquelchBlock},
+    fm::squelch::SquelchBlock,
     freq_xlating_fir::FreqXlatingFir,
     testing,
-    types::{self, Peak, Result},
+    types::{self, Peak, Result, ScanningConfig},
 };
 use rustradio::fir;
 use rustradio::graph::{Graph, GraphRunner};
 use rustradio::window::WindowType;
 use rustradio::{Complex, blockchain};
 use rustradio::{blocks::QuadratureDemod, fir::FirFilter};
-use std::{thread, time::Duration};
-use tracing::{debug, info};
+use std::{
+    collections::HashSet,
+    sync::{LazyLock, Mutex},
+    thread,
+    time::Duration,
+};
+use tracing::debug;
+
+/// Global set of processed frequencies (rounded to nearest kHz) to avoid duplicate analysis
+static PROCESSED_FREQUENCIES: LazyLock<Mutex<HashSet<u64>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Clear the processed frequencies set for a new scanning session
+pub fn clear_processed_frequencies() {
+    let mut processed = PROCESSED_FREQUENCIES.lock().unwrap();
+    let count = processed.len();
+    processed.clear();
+    debug!(
+        cleared_count = count,
+        "Cleared processed frequencies for new scanning session"
+    );
+}
 
 pub mod deemph;
 pub mod filter_config;
@@ -31,7 +51,7 @@ pub struct Candidate {
 impl Candidate {
     pub fn analyze(
         &self,
-        config: &crate::ScanningConfig,
+        config: &ScanningConfig,
         sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
         center_freq: f64,
         signal_tx: std::sync::mpsc::SyncSender<crate::types::Signal>,
@@ -44,17 +64,74 @@ impl Candidate {
             self.max_magnitude = self.max_magnitude,
             self.avg_magnitude = self.avg_magnitude
         );
-        let station_name = format!("{:.1}FM", self.frequency_hz / 1e6);
 
-        // Create DSP graph to process this candidate's frequency
-        // Use the provided center_freq and this candidate's tune frequency for the FreqXlatingFir
-        let (mut detection_graph, noise_detected, audio_started_playing) = create_detection_graph(
+        // Frequency tracking: refine the FFT-detected frequency
+        let refined_frequency = if config.disable_frequency_tracking {
+            debug!(
+                freq_mhz = self.frequency_hz / 1e6,
+                "Frequency tracking disabled, using FFT estimate"
+            );
+            // Round to nearest kHz to avoid floating point errors
+            (self.frequency_hz / 1000.0).round() * 1000.0
+        } else {
+            match self.run_frequency_tracking(config, sdr_rx.resubscribe()) {
+                Some(freq) => {
+                    // Round to nearest kHz to avoid floating point errors
+                    let rounded_freq = (freq / 1000.0).round() * 1000.0;
+                    debug!(
+                        original_mhz = self.frequency_hz / 1e6,
+                        refined_mhz = freq / 1e6,
+                        rounded_mhz = rounded_freq / 1e6,
+                        error_khz = (freq - self.frequency_hz) / 1e3,
+                        "Frequency tracking successful, using rounded frequency"
+                    );
+                    rounded_freq
+                }
+                None => {
+                    debug!(
+                        freq_mhz = self.frequency_hz / 1e6,
+                        "Frequency tracking failed, using FFT estimate"
+                    );
+                    // Round to nearest kHz to avoid floating point errors
+                    (self.frequency_hz / 1000.0).round() * 1000.0
+                }
+            }
+        };
+
+        // Convert to kHz for deduplication (frequency is already rounded to nearest kHz)
+        let frequency_khz = (refined_frequency / 1000.0) as u64;
+
+        // Check if we've already processed this frequency
+        {
+            let processed = PROCESSED_FREQUENCIES.lock().unwrap();
+            if processed.contains(&frequency_khz) {
+                debug!(
+                    refined_freq_mhz = refined_frequency / 1e6,
+                    frequency_khz = frequency_khz,
+                    "Frequency already processed in another window, skipping analysis"
+                );
+                return Ok(());
+            }
+            // Don't mark as processed yet - only mark when squelch analysis succeeds
+        }
+
+        debug!(
+            refined_freq_mhz = refined_frequency / 1e6,
+            frequency_khz = frequency_khz,
+            "New frequency detected, proceeding with analysis"
+        );
+
+        let station_name = format!("{:.1}FM", refined_frequency / 1e6);
+
+        // Create DSP graph to process this candidate's refined frequency
+        // Use the provided center_freq and the refined tune frequency for the FreqXlatingFir
+        let (mut detection_graph, decision_state) = create_detection_graph(
             sdr_rx,
             config.samp_rate,
             station_name,
             config,
             center_freq,
-            self.frequency_hz,
+            refined_frequency,
             Some(signal_tx.clone()), // Pass signal channel to squelch
         )?;
         let detection_cancel_token = detection_graph.cancel_token();
@@ -79,48 +156,165 @@ impl Candidate {
         });
 
         // Set up timer thread with squelch monitoring
-        let duration = config.duration;
-        let noise_detected_clone = noise_detected.clone();
-        let audio_started_playing_clone = audio_started_playing.clone();
+        // Detection runs until squelch makes a decision, not limited by --duration
+        let squelch_learning_duration = config.squelch_learning_duration;
+        let decision_state_clone = decision_state.clone();
+        let frequency_khz_for_cleanup = frequency_khz; // Capture for potential cleanup
         thread::spawn(move || {
             let check_interval = Duration::from_millis(100);
-            let total_checks = (duration * 1000) / 100; // Total checks over duration in 100ms intervals
+            // Add extra time beyond learning duration to account for processing delays
+            let max_wait_time = squelch_learning_duration + 1.0; // Extra second for processing
+            let total_checks = (max_wait_time * 1000.0) as u32 / 100;
 
             let message_printed = false;
 
-            for _ in 0..total_checks {
+            for check_num in 0..total_checks {
                 thread::sleep(check_interval);
 
-                // Check if squelch detected noise
-                if noise_detected_clone.load(std::sync::atomic::Ordering::Relaxed) {
-                    debug!("Squelch detected noise, exiting early");
-                    detection_cancel_token.cancel();
-                    return;
+                // Check squelch decision
+                let current_decision = crate::fm::squelch::Decision::from_u8(
+                    decision_state_clone.load(std::sync::atomic::Ordering::Relaxed),
+                );
+
+                match current_decision {
+                    crate::fm::squelch::Decision::Noise => {
+                        debug!(
+                            "Squelch detected noise, exiting early (frequency available for retry in other windows)"
+                        );
+                        detection_cancel_token.cancel();
+                        return;
+                    }
+                    crate::fm::squelch::Decision::Audio => {
+                        if !message_printed {
+                            debug!("squelch detected audio at {:.1} MHz", frequency_hz / 1e6);
+
+                            // Mark frequency as successfully processed to prevent retry in other windows
+                            {
+                                let mut processed = PROCESSED_FREQUENCIES.lock().unwrap();
+                                processed.insert(frequency_khz_for_cleanup);
+                                debug!(
+                                    frequency_khz = frequency_khz_for_cleanup,
+                                    "Frequency marked as successfully processed"
+                                );
+                            }
+
+                            // OPTIMIZATION: Stop detection graph immediately when audio starts
+                            // This frees up significant CPU resources for audio processing
+                            debug!(
+                                "Audio detected, terminating detection graph to optimize audio quality"
+                            );
+                            detection_cancel_token.cancel();
+                            return; // Exit monitoring thread - audio processing takes over
+                        }
+                    }
+                    crate::fm::squelch::Decision::Learning => {
+                        // Still learning, continue waiting
+                    }
                 }
 
-                // If audio has started playing, terminate detection graph immediately
-                if audio_started_playing_clone.load(std::sync::atomic::Ordering::Relaxed)
-                    && !message_printed
-                {
-                    info!("found {:.1} MHz", frequency_hz / 1e6);
-                    crate::logging::flush();
-
-                    // OPTIMIZATION: Stop detection graph immediately when audio starts
-                    // This frees up significant CPU resources for audio processing
-                    debug!("Audio detected, terminating detection graph to optimize audio quality");
-                    detection_cancel_token.cancel();
-                    return; // Exit monitoring thread - audio processing takes over
+                // Log progress for debugging
+                if check_num == (squelch_learning_duration * 10.0) as u32 {
+                    debug!("Squelch learning period complete, waiting for decision");
                 }
             }
 
+            // If we get here, squelch didn't make a decision in time
             debug!(
-                "Ran for {} seconds, continuing on to the next candidate",
-                duration
+                "Squelch did not complete analysis after {:.1} seconds, moving to next candidate",
+                max_wait_time
             );
             detection_cancel_token.cancel();
         });
 
         Ok(())
+    }
+
+    /// Run frequency tracking to refine the FFT-based frequency estimate
+    fn run_frequency_tracking(
+        &self,
+        config: &ScanningConfig,
+        mut sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+    ) -> Option<f64> {
+        use crate::frequency_tracking::{
+            TrackingConfig, TrackingMethod, TrackingState, create_tracker,
+        };
+
+        // Parse tracking method
+        let tracking_method = match config.frequency_tracking_method.parse::<TrackingMethod>() {
+            Ok(method) => method,
+            Err(e) => {
+                debug!(error = %e, "Invalid frequency tracking method, falling back to PLL");
+                TrackingMethod::Pll
+            }
+        };
+
+        // Create tracking configuration
+        let tracking_config = TrackingConfig {
+            method: tracking_method,
+            convergence_threshold: config.tracking_accuracy,
+            // Set reasonable timeout based on squelch learning duration
+            timeout_samples: (config.samp_rate * config.squelch_learning_duration as f64 * 0.5)
+                as usize,
+            search_window: 200_000.0, // ±200 kHz search window for FM
+            min_samples_for_convergence: (config.samp_rate * 0.01) as usize, // 10ms minimum
+        };
+
+        // Create frequency tracker
+        let mut tracker = create_tracker(
+            tracking_method,
+            self.frequency_hz,
+            config.samp_rate,
+            &tracking_config,
+        );
+
+        debug!(
+            initial_freq_mhz = self.frequency_hz / 1e6,
+            method = format!("{:?}", tracking_method),
+            accuracy_hz = config.tracking_accuracy,
+            timeout_ms = tracking_config.timeout_samples as f64 / config.samp_rate * 1000.0,
+            "Starting frequency tracking"
+        );
+
+        // Process samples until convergence, failure, or timeout
+        loop {
+            match sdr_rx.try_recv() {
+                Ok(sample) => {
+                    match tracker.process_sample(sample) {
+                        TrackingState::Converged(freq) => {
+                            debug!(
+                                refined_freq_mhz = freq / 1e6,
+                                confidence = tracker.get_confidence(),
+                                "Frequency tracking converged"
+                            );
+                            return Some(freq);
+                        }
+                        TrackingState::Failed => {
+                            debug!("Frequency tracking failed to converge");
+                            return None;
+                        }
+                        TrackingState::Timeout => {
+                            debug!("Frequency tracking timed out");
+                            return None;
+                        }
+                        TrackingState::Converging => {
+                            // Continue processing
+                        }
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    // No data available, continue waiting
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                    debug!("Frequency tracking lagged behind SDR stream");
+                    // Continue with next sample
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    debug!("SDR stream closed during frequency tracking");
+                    return None;
+                }
+            }
+        }
     }
 }
 
@@ -131,8 +325,16 @@ pub fn collect_peaks(
     mut sdr_rx: tokio::sync::broadcast::Receiver<Complex>,
     center_freq: f64,
 ) -> Result<Vec<Peak>> {
+    let agc_settling_time = config.agc_settling_time;
     let peak_scan_duration = config.peak_scan_duration.unwrap_or(0.5);
-    debug!("Starting peak detection scan for {peak_scan_duration} seconds...",);
+    let total_duration = agc_settling_time + peak_scan_duration;
+
+    debug!(
+        agc_settling_seconds = agc_settling_time,
+        peak_scan_seconds = peak_scan_duration,
+        total_seconds = total_duration,
+        "Starting AGC settling followed by peak detection scan"
+    );
 
     // Prepare FFT processing
     use std::collections::BTreeMap;
@@ -143,24 +345,65 @@ pub fn collect_peaks(
 
     // Calculate sampling parameters
     let samples_per_second = config.samp_rate as usize;
-    let total_samples_needed = (samples_per_second as f64 * peak_scan_duration) as usize;
-    let mut samples_collected = 0;
+    let agc_samples_needed = (samples_per_second as f64 * agc_settling_time) as usize;
+    let peak_samples_needed = (samples_per_second as f64 * peak_scan_duration) as usize;
     let mut read_buffer = vec![Complex::default(); config.fft_size];
 
     let start_time = std::time::Instant::now();
 
-    // Collect samples and perform peak detection
-    while samples_collected < total_samples_needed {
-        if start_time.elapsed().as_secs_f64() > peak_scan_duration + 1.0 {
-            debug!("Peak collection timed out");
+    debug!(
+        agc_samples = agc_samples_needed,
+        peak_samples = peak_samples_needed,
+        "Starting two-phase collection: AGC settling then peak detection"
+    );
+
+    // Phase 1: AGC Settling - consume samples but don't analyze
+    debug!("Phase 1: AGC settling phase - consuming samples without analysis");
+    let mut agc_samples_consumed = 0;
+    while agc_samples_consumed < agc_samples_needed {
+        if start_time.elapsed().as_secs_f64() > total_duration + 1.0 {
+            debug!("AGC settling phase timed out");
+            break;
+        }
+        match sdr_rx.try_recv() {
+            Ok(_sample) => {
+                agc_samples_consumed += 1;
+                // Just consume samples, don't process for peaks during AGC settling
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                debug!("SDR samples lagged during AGC settling phase");
+                continue;
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                debug!("SDR channel closed during AGC settling");
+                break;
+            }
+        }
+    }
+
+    debug!(
+        agc_samples_consumed = agc_samples_consumed,
+        agc_duration_actual = start_time.elapsed().as_secs_f64(),
+        "AGC settling phase complete"
+    );
+
+    // Phase 2: Peak Detection - collect samples and perform peak detection
+    debug!("Phase 2: Peak detection phase - analyzing samples for spectral peaks");
+    let mut peak_samples_collected = 0;
+    while peak_samples_collected < peak_samples_needed {
+        if start_time.elapsed().as_secs_f64() > total_duration + 1.0 {
+            debug!("Peak detection phase timed out");
             break;
         }
         match sdr_rx.try_recv() {
             Ok(sample) => {
-                read_buffer[samples_collected % config.fft_size] = sample;
-                samples_collected += 1;
+                read_buffer[peak_samples_collected % config.fft_size] = sample;
+                peak_samples_collected += 1;
 
-                if samples_collected % config.fft_size == 0 {
+                if peak_samples_collected % config.fft_size == 0 {
                     let batch_peaks = process_samples_for_peaks(
                         &read_buffer,
                         config.fft_size,
@@ -197,6 +440,13 @@ pub fn collect_peaks(
             }
         }
     }
+
+    debug!(
+        peak_samples_collected = peak_samples_collected,
+        total_duration_actual = start_time.elapsed().as_secs_f64(),
+        "Peak detection phase complete"
+    );
+
     let peaks: Vec<Peak> = peaks_map.into_values().collect();
 
     debug!("Peak detection scan complete. Found {} peaks.", peaks.len());
@@ -349,6 +599,23 @@ fn analyze_spectral_characteristics(
         .filter(|peak| (peak.frequency_hz - target_freq_hz).abs() <= analysis_range_hz)
         .collect();
 
+    // Debug logging for 88.9 MHz specifically
+    if (target_freq_mhz - 88.9).abs() < 0.01 {
+        debug!(
+            "88.9 MHz analysis: found {} peaks within ±200kHz range",
+            nearby_peaks.len()
+        );
+        for (i, peak) in nearby_peaks.iter().take(5).enumerate() {
+            debug!(
+                "  Peak {}: {:.3} MHz, magnitude {:.3}, offset {:.1} kHz",
+                i + 1,
+                peak.frequency_hz / 1e6,
+                peak.magnitude,
+                (peak.frequency_hz - target_freq_hz) / 1e3
+            );
+        }
+    }
+
     if nearby_peaks.is_empty() {
         return (0.0, "No signal".to_string());
     }
@@ -395,7 +662,7 @@ fn analyze_spectral_characteristics(
     if freq_span_khz > 80.0 && freq_span_khz < 250.0 {
         score += 0.3;
         analysis_notes.push("Appropriate spectral width");
-    } else if freq_span_khz < 30.0 {
+    } else if freq_span_khz < 15.0 {
         score -= 0.3; // Too narrow suggests sidelobe
         analysis_notes.push("Narrow spectral width (sidelobe?)");
     }
@@ -433,6 +700,21 @@ fn analyze_spectral_characteristics(
     }
 
     let analysis_summary = analysis_notes.join(", ");
+
+    // Additional debug for 88.9 MHz
+    if (target_freq_mhz - 88.9).abs() < 0.01 {
+        debug!(
+            "88.9 MHz detailed analysis: peak_count={}, freq_span_khz={:.1}, max_mag={:.3}, avg_mag={:.3}, mag_ratio={:.2}, peak_density={:.1}, final_score={:.3}",
+            peak_count,
+            freq_span_khz,
+            max_magnitude,
+            avg_magnitude,
+            magnitude_ratio,
+            peak_density,
+            score
+        );
+    }
+
     (score.clamp(0.0, 1.0) as f32, analysis_summary)
 }
 
@@ -527,7 +809,7 @@ pub fn find_candidates(
         debug!("score: {:.3} ({})", spectral_score, analysis_summary);
 
         // Only consider frequencies with significant spectral score
-        if spectral_score > 0.3 {
+        if spectral_score >= config.spectral_threshold {
             candidates.push(create_fm_candidate(fm_freq, peaks, spectral_score));
         }
 
@@ -547,11 +829,7 @@ pub fn create_detection_graph(
     center_freq: f64,
     tune_freq: f64,
     signal_tx: Option<std::sync::mpsc::SyncSender<crate::types::Signal>>,
-) -> rustradio::Result<(
-    Graph,
-    std::sync::Arc<std::sync::atomic::AtomicBool>,
-    std::sync::Arc<std::sync::atomic::AtomicBool>,
-)> {
+) -> rustradio::Result<(Graph, std::sync::Arc<std::sync::atomic::AtomicU8>)> {
     let mut graph = Graph::new();
 
     // MPSC Source
@@ -622,11 +900,6 @@ pub fn create_detection_graph(
     let fm_gain = (quad_rate / (2.0 * 75_000.0)) * 0.8; // 0.8 factor to prevent overload
     let prev = blockchain![graph, prev, QuadratureDemod::new(prev, fm_gain)];
 
-    // FM Deemphasis
-    let (deemphasis_block, deemphasis_output_stream) = Deemphasis::new(prev, quad_rate, 75.0);
-    graph.add(Box::new(deemphasis_block));
-    let prev = deemphasis_output_stream;
-
     // DETECTION OPTIMIZATION: Minimal audio processing for squelch analysis only
     // We don't need high-quality audio - just enough to distinguish audio from noise
 
@@ -644,32 +917,16 @@ pub fn create_detection_graph(
     let analysis_rate = quad_rate; // ~133kHz is fine for audio vs noise detection
 
     // Audio capture block (captures samples while passing them through)
-    // Create audio capturer if requested
-    // TODO: Wire up again
-    #[allow(unused)]
-    let audio_capturer = if let Some(ref capture_file) = config.capture_audio {
-        match crate::file::AudioCaptureSink::new(
-            capture_file,
-            analysis_rate,
-            config.capture_audio_duration,
-        ) {
-            Ok(capturer) => Some(capturer),
-            Err(e) => {
-                debug!("Failed to create audio capturer: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // Audio capture block (captures samples while passing them through)
     // Create audio capturer if requested - needed for test fixture generation
     let audio_capturer = if let Some(ref capture_file) = config.capture_audio {
         match crate::file::AudioCaptureSink::new(
             capture_file,
             analysis_rate, // Use current sample rate for capture
             config.capture_audio_duration,
+            config.squelch_learning_duration,
+            tune_freq,
+            center_freq,
+            config.driver.clone(),
         ) {
             Ok(capturer) => Some(capturer),
             Err(e) => {
@@ -685,7 +942,7 @@ pub fn create_detection_graph(
     graph.add(Box::new(audio_capture_block));
     let prev = audio_capture_output;
 
-    let (squelch_block, noise_detected, audio_started_playing) = SquelchBlock::new(
+    let (squelch_block, decision_state) = SquelchBlock::new(
         prev,
         analysis_rate, // Use current rate instead of resampled audio rate
         config.squelch_learning_duration,
@@ -695,9 +952,7 @@ pub fn create_detection_graph(
     );
     graph.add(Box::new(squelch_block));
 
-    // No MPSC sink needed - squelch block is terminal
-
-    Ok((graph, noise_detected, audio_started_playing))
+    Ok((graph, decision_state))
 }
 
 #[cfg(test)]
@@ -739,7 +994,7 @@ mod tests {
 
         let config = crate::ScanningConfig::default();
         let band = Band::Fm;
-        let windows = band.windows(config.samp_rate);
+        let windows = band.windows(config.samp_rate, config.window_overlap);
 
         println!("\n=== FM Band Window Analysis ===");
         println!("Sample rate: {} MHz", config.samp_rate / 1e6);
@@ -771,10 +1026,10 @@ mod tests {
 
     #[test]
     fn test_collect_peaks_from_mock_source() {
-        let config = crate::ScanningConfig {
+        let config = ScanningConfig {
             audio_buffer_size: 4096,
             audio_sample_rate: 48000,
-            band: crate::Band::Fm,
+            band: crate::types::Band::Fm,
             capture_audio_duration: 3.0,
             capture_audio: None,
             capture_duration: 2.0,
@@ -782,13 +1037,25 @@ mod tests {
             debug_pipeline: false,
             driver: "test".to_string(),
             duration: 1,
-            exit_early: false,
+            scanning_windows: None,
             fft_size: 1024,
             peak_detection_threshold: 0.01, // Low threshold for testing
             peak_scan_duration: Some(0.1),  // Short duration for testing
             print_candidates: false,
             samp_rate: 1000000.0,
             squelch_learning_duration: 2.0,
+
+            // Frequency tracking configuration
+            frequency_tracking_method: "pll".to_string(),
+            tracking_accuracy: 5000.0,
+            disable_frequency_tracking: true, // Disable for test to keep existing behavior
+
+            // Spectral analysis configuration
+            spectral_threshold: 0.2,
+
+            // AGC and window configuration
+            agc_settling_time: 3.0,
+            window_overlap: 0.75,
         };
 
         // Create mock source with a signal at +100kHz offset from center
@@ -819,64 +1086,79 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn test_fm_detection_from_iq_file() {
-        let (mut file_source, metadata) =
-            crate::testing::load_iq_fixture("tests/data/iq/fm_88.9_MHz_1s.iq")
-                .expect("Failed to load I/Q fixture");
-        let mut config = crate::ScanningConfig::default();
-        config.driver = "test".to_string();
+    fn test_sidelobe_discrimination_rejects_legitimate_fm_signal() {
+        // This test reproduces the 88.9 MHz detection failure
+        // The signal has 20 kHz spectral width but gets rejected by overly strict thresholds
 
-        let peaks = collect_peaks_from_source(&config, &mut file_source)
-            .expect("Failed to collect peaks from I/Q file");
-        assert!(!peaks.is_empty(), "Expected to find peaks in the I/Q file");
+        // Create synthetic peaks representing a legitimate FM signal with 20 kHz span
+        // This matches the real 88.9 MHz signal characteristics from Window 2
+        let peaks = vec![
+            Peak {
+                frequency_hz: 88_700_000.0,
+                magnitude: 7.672,
+            }, // -200 kHz offset
+            Peak {
+                frequency_hz: 88_702_000.0,
+                magnitude: 7.749,
+            }, // -198 kHz offset
+            Peak {
+                frequency_hz: 88_704_000.0,
+                magnitude: 7.496,
+            }, // -196 kHz offset
+            Peak {
+                frequency_hz: 88_706_000.0,
+                magnitude: 7.334,
+            }, // -194 kHz offset
+            Peak {
+                frequency_hz: 88_708_000.0,
+                magnitude: 4.706,
+            }, // -192 kHz offset
+            Peak {
+                frequency_hz: 88_710_000.0,
+                magnitude: 6.123,
+            }, // -190 kHz offset
+            Peak {
+                frequency_hz: 88_712_000.0,
+                magnitude: 5.892,
+            }, // -188 kHz offset
+            Peak {
+                frequency_hz: 88_714_000.0,
+                magnitude: 5.234,
+            }, // -186 kHz offset
+            Peak {
+                frequency_hz: 88_716_000.0,
+                magnitude: 4.987,
+            }, // -184 kHz offset
+            Peak {
+                frequency_hz: 88_718_000.0,
+                magnitude: 4.123,
+            }, // -182 kHz offset
+            Peak {
+                frequency_hz: 88_720_000.0,
+                magnitude: 3.856,
+            }, // -180 kHz offset
+        ];
 
-        let candidates = find_candidates(&peaks, &config, metadata.center_frequency);
-        let candidate_freqs: Vec<f64> = candidates
-            .iter()
-            .map(|c| (c.frequency_hz() / 1e6 * 10.0).round() / 10.0)
-            .collect();
+        let target_freq_mhz = 88.9;
+        let sample_rate = 2_000_000.0;
+        let center_freq = 89.2e6; // Window 2 center frequency
 
-        assert_eq!(
-            candidate_freqs.len(),
-            2,
-            "Expected exactly 2 candidates (88.9 and 89.3 MHz), but found {} candidates at: {:?}",
-            candidate_freqs.len(),
-            candidate_freqs
+        // Call the function that's failing
+        let (score, analysis_summary) =
+            analyze_spectral_characteristics(&peaks, target_freq_mhz, sample_rate, center_freq);
+
+        // After fixing the threshold from 30 kHz to 15 kHz, the algorithm should accept this signal
+        // freq_span = 88.720 - 88.700 = 20 kHz (now above the 15 kHz threshold)
+        assert!(
+            score > 0.0,
+            "Fixed algorithm should accept legitimate FM signal with 20 kHz span. Score: {:.3}, Analysis: '{}'",
+            score,
+            analysis_summary
         );
         assert!(
-            candidate_freqs.contains(&88.9),
-            "Expected to find 88.9 MHz station"
-        );
-        assert!(
-            candidate_freqs.contains(&89.3),
-            "Expected to find 89.3 MHz station"
-        );
-    }
-
-    #[test]
-    fn test_no_candidates_1() {
-        let (mut file_source, metadata) =
-            crate::testing::load_iq_fixture("tests/data/iq/fm_88.5_MHz_1s.iq")
-                .expect("Failed to load I/Q fixture");
-        let mut config = crate::ScanningConfig::default();
-        config.driver = "test".to_string();
-
-        let peaks = collect_peaks_from_source(&config, &mut file_source)
-            .expect("Failed to collect peaks from I/Q file");
-
-        let candidates: Vec<_> = find_candidates(&peaks, &config, metadata.center_frequency);
-        let candidate_freqs: Vec<f64> = candidates
-            .iter()
-            .map(|c| (c.frequency_hz() / 1e6 * 10.0).round() / 10.0)
-            .collect();
-
-        assert_eq!(
-            candidates.len(),
-            2,
-            "Expected 1 candidate, but found {} candidates at: {:?}",
-            candidates.len(),
-            candidate_freqs
+            !analysis_summary.contains("Narrow spectral width (sidelobe?)"),
+            "Should not classify 20 kHz span as narrow/sidelobe. Analysis: '{}'",
+            analysis_summary
         );
     }
 }

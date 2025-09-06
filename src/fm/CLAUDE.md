@@ -331,3 +331,96 @@ Filter isolation: Excellent - no crosstalk issues
 - **Benefit**: Standard FM compatibility at high CPU cost
 
 **Conclusion**: Multi-channel processing completely changes filter requirements. The 2 MHz + wide spacing approach provides optimal scanning performance while maintaining the CPU efficiency benefits of wide filter transitions.
+
+## Window Overlap Optimization for Band Scanning
+
+### Research-Based Findings on Optimal Overlap
+
+Based on comprehensive research into SDR frequency scanning with overlapping windows, the following industry best practices have been identified:
+
+#### **Optimal Overlap Percentages:**
+- **75% overlap** is widely recommended as optimal for spectrum analysis applications
+- **50% overlap** is the minimum for proper signal reconstruction with window functions
+- **Higher overlap (75-97%)** provides better signal quality but increases computational load 4x vs 50%
+
+#### **Why Window Overlap is Critical:**
+- **Window function tapering**: Window functions (Hanning, Hamming, etc.) taper to zero at edges, attenuating signals
+- **Signal loss prevention**: Without overlap, signals falling near window boundaries can be severely attenuated or missed
+- **Artifact reduction**: Higher overlap reduces clicks, pops, and other processing artifacts
+- **Transient capture**: Better detection of brief signals that might fall on window boundaries
+
+#### **SDR-Specific Considerations:**
+- **Filter rolloff effects**: Signals beyond ±768 kHz from center frequency start rolling off due to IF filter limitations
+- **Usable bandwidth**: Research shows typically only 80% of total bandwidth is usable due to filter edge effects
+- **DC spike avoidance**: Signals should be positioned away from center frequency to avoid DC offset issues
+
+### **Current Implementation Analysis**
+
+**Our current 30% overlap (70% step size) is suboptimal** based on research findings:
+- **Research recommends**: 75% overlap (25% step size) for optimal results
+- **Our current approach**: 1.6 MHz window, 1.12 MHz steps → 30% overlap
+- **Optimal approach**: 1.6 MHz window, 0.4 MHz steps → 75% overlap
+
+### **Computational Trade-offs**
+
+**Current Configuration (30% overlap):**
+- Step size: 1.12 MHz
+- Windows for 20 MHz FM band: ~18 windows
+- Processing load: ~1.33x samples processed per frequency point
+
+**Optimal Configuration (75% overlap):**
+- Step size: 0.4 MHz  
+- Windows for 20 MHz FM band: ~50 windows
+- Processing load: ~4x samples processed per frequency point
+- **Benefit**: Dramatically improved signal detection at frequency boundaries
+
+### **AGC Settling Time Considerations**
+
+Research reveals that **AGC settling time** is critical for overlapping window approaches:
+- **Minimum settling time**: 1-3 seconds per frequency for proper AGC adaptation
+- **Current peak scan duration**: 0.5 seconds (too short for optimal AGC performance)
+- **Recommended**: 2-3 seconds per window for reliable signal strength measurements
+- **Impact**: Proper AGC settling prevents false "weak signal" classifications
+
+### **Practical Implementation Recommendations**
+
+#### **Phase 1: Immediate Improvements**
+- **Increase peak scan duration**: From 0.5s to 2-3s for better AGC settling
+- **Current overlap sufficient**: 30% overlap acceptable as intermediate solution
+- **Expected result**: Better signal strength measurements, reduced false negatives
+
+#### **Phase 2: Optimal Overlap (Advanced)**
+- **Implement 75% overlap**: Change step size from 0.7 to 0.25 in window calculation
+- **Manage computational load**: Consider parallel processing or faster scan modes
+- **Expected result**: Near-perfect signal detection across frequency boundaries
+
+#### **Phase 3: Hybrid Approach (Recommended)**
+- **Smart overlap**: Use 75% overlap only in frequency ranges with known signals
+- **Coarse + fine scanning**: Initial 30% overlap scan, then 75% overlap refinement in active areas
+- **Balance efficiency vs thoroughness**: Optimal scanning speed with reliable detection
+
+### **Industry Validation**
+
+Research findings align with established SDR practices:
+- *"75% overlap provides good approximation for capturing transient events"* (Tektronix FFT Analysis)
+- *"High redundancy from overlap processing makes frequency domain processing more robust to noise"* (Signal Processing Research)
+- *"For Von Hann or Hamming windows, 50% or 75% overlap is recommended"* (Spectrum Analysis Best Practices)
+- *"Fast Scanner plugins typically scan 2 MHz chunks with overlapping coverage"* (SDR# Documentation)
+
+### **Window Positioning Strategy**
+
+Beyond overlap percentage, **strategic window positioning** can optimize detection:
+- **Align windows with known signal frequencies**: Position window centers near expected FM frequencies
+- **Avoid edge placement**: Keep strong signals away from window boundaries when possible
+- **Consider frequency spacing**: FM stations typically spaced at 200 kHz intervals (odd/even MHz + 0.1, 0.3, 0.5, etc.)
+
+**Example optimized window centers for FM band:**
+```
+Window centers optimized for typical FM spacing:
+88.1, 88.5, 88.9, 89.3, 89.7, 90.1, 90.5, 90.9, ... MHz
+Result: Major FM frequencies near window centers rather than edges
+```
+
+### **Conclusion**
+
+The research confirms that **window overlap is critical for reliable SDR frequency scanning**. While our current 30% overlap is functional, upgrading to the research-recommended 75% overlap, combined with proper AGC settling times, would provide significantly improved signal detection reliability. The computational cost increase (4x) can be managed through smart scanning strategies and modern processing power.

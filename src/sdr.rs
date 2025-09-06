@@ -1,4 +1,7 @@
-use crate::{soapy::SdrSource, types::Result};
+use crate::{
+    soapy::SdrSource,
+    types::{Result, ScanningConfig},
+};
 use rustradio::{
     Complex,
     graph::{CancellationToken as CancelToken, Graph, GraphRunner},
@@ -16,18 +19,34 @@ pub struct SdrManager {
     audio_sender: broadcast::Sender<Complex>,
     graph_handle: Option<thread::JoinHandle<()>>,
     cancel_token: Option<CancelToken>,
+
+    // I/Q capture configuration
+    capture_iq: Option<String>,
+    capture_duration: f64,
+    fft_size: usize,
+    peak_detection_threshold: f32,
+    peak_scan_duration: Option<f64>,
+    driver: String,
 }
 
 impl SdrManager {
-    pub fn new(driver: String, samp_rate: f64) -> Result<Self> {
-        let sdr_source = Arc::new(Mutex::new(SdrSource::when_ready(driver)?));
-        let (audio_sender, _) = broadcast::channel(262144); // Increased to 256K samples (~128ms at 2MHz for parallel processing)
+    pub fn new(config: &ScanningConfig) -> Result<Self> {
+        let sdr_source = Arc::new(Mutex::new(SdrSource::when_ready(config.driver.clone())?));
+        let (audio_sender, _) = broadcast::channel(524288); // Increased to 512K samples (~256ms at 2MHz for better buffering
         Ok(Self {
             sdr_source,
-            samp_rate,
+            samp_rate: config.samp_rate,
             audio_sender,
             graph_handle: None,
             cancel_token: None,
+
+            // I/Q capture configuration
+            capture_iq: config.capture_iq.clone(),
+            capture_duration: config.capture_duration,
+            fft_size: config.fft_size,
+            peak_detection_threshold: config.peak_detection_threshold,
+            peak_scan_duration: config.peak_scan_duration,
+            driver: config.driver.clone(),
         })
     }
 
@@ -60,8 +79,27 @@ impl SdrManager {
 
         graph.add(Box::new(sdr_source_block));
 
+        // Insert I/Q capture block if capture is enabled
+        let final_stream = if let Some(ref capture_file) = self.capture_iq {
+            let (iq_capture_block, iq_output_stream) = crate::iq_capture::IqCaptureBlock::new(
+                sdr_output_stream,
+                capture_file.clone(),
+                self.samp_rate,
+                freq,
+                self.capture_duration,
+                self.fft_size,
+                self.peak_detection_threshold,
+                self.peak_scan_duration,
+                self.driver.clone(),
+            )?;
+            graph.add(Box::new(iq_capture_block));
+            iq_output_stream
+        } else {
+            sdr_output_stream
+        };
+
         let broadcast_sink =
-            crate::broadcast::BroadcastSink::new(sdr_output_stream, self.audio_sender.clone());
+            crate::broadcast::BroadcastSink::new(final_stream, self.audio_sender.clone());
         graph.add(Box::new(broadcast_sink));
 
         self.cancel_token = Some(graph.cancel_token());
