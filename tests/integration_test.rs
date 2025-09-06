@@ -47,7 +47,7 @@ fn test_pipeline_debug_modes() {
 
     // Test that debug mode doesn't crash and config is set correctly
     assert!(config.debug_pipeline);
-    assert_eq!(config.samp_rate, 1_000_000.0);
+    assert_eq!(config.samp_rate, 2000_000.0);
     assert_eq!(config.fft_size, 1024);
 }
 

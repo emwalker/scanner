@@ -13,7 +13,6 @@ mod logging;
 mod mpsc;
 mod sdr;
 mod soapy;
-#[cfg(test)]
 mod testing;
 mod types;
 use crate::broadcast::BroadcastSource;
@@ -33,11 +32,7 @@ fn parse_stations(stations_str: &str) -> Result<Vec<f64>> {
 
 fn scan_stations(
     stations_str: &str,
-    candidate_tx: &SyncSender<(
-        Candidate,
-        std::sync::mpsc::Receiver<rustradio::Complex>,
-        f64,
-    )>,
+    candidate_tx: &SyncSender<(Candidate, f64)>,
     config: &ScanningConfig,
     sdr_manager: &Arc<Mutex<sdr::SdrManager>>,
 ) -> Result<()> {
@@ -47,21 +42,8 @@ fn scan_stations(
         stations = format!("{:?}", stations)
     );
 
-    let mut sdr_manager_guard = sdr_manager.lock().unwrap();
-
     for station_freq in stations {
-        sdr_manager_guard.set_center_frequency(station_freq)?;
-
-        if config.capture_iq.is_some() {
-            debug!(
-                message = "Capturing I/Q samples for station",
-                frequency_hz = station_freq
-            );
-            let _peaks = fm::collect_peaks(config, &config.driver, station_freq)?;
-        }
-
-        let sdr_rx = sdr_manager_guard.set_detection_sink()?;
-        sdr_manager_guard.start()?;
+        sdr_manager.lock().unwrap().set_frequency(station_freq)?;
 
         let candidate = Candidate::Fm(fm::Candidate {
             frequency_hz: station_freq,
@@ -80,9 +62,7 @@ fn scan_stations(
             );
         }
 
-        candidate_tx
-            .send((candidate, sdr_rx, station_freq))
-            .unwrap();
+        candidate_tx.send((candidate, station_freq)).unwrap();
     }
 
     Ok(())
@@ -90,12 +70,7 @@ fn scan_stations(
 
 fn scan_band(
     config: &ScanningConfig,
-    driver: &str,
-    candidate_tx: &SyncSender<(
-        Candidate,
-        std::sync::mpsc::Receiver<rustradio::Complex>,
-        f64,
-    )>,
+    candidate_tx: &SyncSender<(Candidate, f64)>,
     sdr_manager: &Arc<Mutex<sdr::SdrManager>>,
 ) -> Result<()> {
     let windows = config.band.windows(config.samp_rate);
@@ -105,8 +80,6 @@ fn scan_band(
         config.band
     );
 
-    let mut sdr_manager_guard = sdr_manager.lock().unwrap();
-
     for (i, center_freq) in windows.iter().enumerate() {
         debug!(
             "Scanning window {} of {} at {:.1} MHz",
@@ -115,9 +88,10 @@ fn scan_band(
             center_freq / 1e6
         );
 
-        sdr_manager_guard.set_center_frequency(*center_freq)?;
+        sdr_manager.lock().unwrap().set_frequency(*center_freq)?;
+        let sdr_rx = sdr_manager.lock().unwrap().get_audio_subscriber();
 
-        let peaks = fm::collect_peaks(config, driver, *center_freq)?;
+        let peaks = fm::collect_peaks(config, sdr_rx, *center_freq)?;
 
         if !peaks.is_empty() {
             debug!("Found {} peaks in this window", peaks.len());
@@ -156,12 +130,7 @@ fn scan_band(
                     );
                 }
 
-                let sdr_rx = sdr_manager_guard.set_detection_sink()?;
-                sdr_manager_guard.start()?;
-
-                candidate_tx
-                    .send((candidate, sdr_rx, *center_freq))
-                    .unwrap();
+                candidate_tx.send((candidate, *center_freq)).unwrap();
             }
         } else {
             debug!("No peaks detected in this window");
@@ -274,7 +243,7 @@ pub struct ScanningConfig {
 impl Default for ScanningConfig {
     fn default() -> Self {
         Self {
-            audio_buffer_size: 4096,
+            audio_buffer_size: 8192, // Increased from 4K to 8K samples for better buffering
             audio_sample_rate: 48000,
             band: Band::Fm,
             capture_audio: None,
@@ -289,7 +258,7 @@ impl Default for ScanningConfig {
             peak_detection_threshold: 1.0,
             peak_scan_duration: None,
             print_candidates: false,
-            samp_rate: 1_000_000.0,
+            samp_rate: 2_000_000.0,
             squelch_learning_duration: 2.0,
         }
     }
@@ -330,10 +299,21 @@ fn create_audio_stream(
     let stream = device.build_output_stream(
         stream_config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            for sample in data.iter_mut() {
+            // More efficient batch processing - try to fill buffer in chunks
+            let mut filled = 0;
+            while filled < data.len() {
                 match audio_rx.try_recv() {
-                    Ok(audio_sample) => *sample = audio_sample.clamp(-1.0, 1.0),
-                    Err(_) => *sample = 0.0,
+                    Ok(audio_sample) => {
+                        data[filled] = audio_sample.clamp(-1.0, 1.0);
+                        filled += 1;
+                    }
+                    Err(_) => {
+                        // Fill remaining with silence to avoid underruns
+                        for sample in &mut data[filled..] {
+                            *sample = 0.0;
+                        }
+                        break;
+                    }
                 }
             }
         },
@@ -373,16 +353,29 @@ fn create_audio_fm_graph(
         frequency_offset / 1e3
     );
 
-    let channel_bandwidth = 150_000.0f32;
-    let transition_width = 75_000.0f32;
+    // Get optimized filter configuration for audio stage
+    let filter_config = crate::fm::filter_config::FmFilterConfig::for_purpose(
+        crate::fm::filter_config::FilterPurpose::Audio,
+        config.samp_rate,
+    );
+
+    debug!(
+        message = "Audio stage filter configuration",
+        passband_khz = filter_config.channel_bandwidth / 1000.0,
+        transition_khz = filter_config.transition_width / 1000.0,
+        decimation = filter_config.decimation,
+        estimated_taps = filter_config.estimated_taps,
+        estimated_mflops = filter_config.estimated_mflops
+    );
+
     let taps = fir::low_pass(
         config.samp_rate as f32,
-        channel_bandwidth / 2.0,
-        transition_width,
+        filter_config.cutoff_frequency(),
+        filter_config.transition_width,
         &WindowType::Hamming,
     );
 
-    let decimation = 6;
+    let decimation = filter_config.decimation;
     let (freq_xlating_block, prev) = crate::freq_xlating_fir::FreqXlatingFir::with_real_taps(
         prev,
         &taps,
@@ -427,7 +420,7 @@ fn create_audio_fm_graph(
 
 fn process_signal_for_audio(
     signal: &types::Signal,
-    sdr_manager: &Arc<Mutex<sdr::SdrManager>>,
+    sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
     audio_tx: std::sync::mpsc::SyncSender<f32>,
     config: &ScanningConfig,
     shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
@@ -436,8 +429,6 @@ fn process_signal_for_audio(
         "Creating audio processing pipeline for {:.1} MHz",
         signal.frequency_hz / 1e6
     );
-
-    let sdr_rx = sdr_manager.lock().unwrap().add_audio_sink();
 
     let mut audio_graph = create_audio_fm_graph(
         signal,
@@ -498,7 +489,7 @@ fn spawn_audio_thread(
     let audio_sample_rate = config.audio_sample_rate;
     let audio_buffer_size = config.audio_buffer_size;
 
-    let (audio_tx, audio_processing_rx) = std::sync::mpsc::sync_channel::<f32>(4096);
+    let (audio_tx, audio_processing_rx) = std::sync::mpsc::sync_channel::<f32>(16384); // Increased from 4K to 16K samples (~340ms at 48kHz)
 
     let handle = thread::spawn(move || -> Result<()> {
         let (audio_device, supported_config) = setup_audio_device(audio_sample_rate)?;
@@ -530,10 +521,11 @@ fn spawn_audio_thread(
                         signal.signal_strength,
                         signal.modulation
                     );
+                    let sdr_rx = sdr_manager.lock().unwrap().get_audio_subscriber();
 
                     if let Err(e) = process_signal_for_audio(
                         &signal,
-                        &sdr_manager,
+                        sdr_rx,
                         audio_tx.clone(),
                         &config,
                         shutdown_flag.clone(),
@@ -559,24 +551,22 @@ fn spawn_audio_thread(
 }
 
 fn spawn_scanning_thread(
-    candidate_rx: std::sync::mpsc::Receiver<(
-        Candidate,
-        std::sync::mpsc::Receiver<rustradio::Complex>,
-        f64,
-    )>,
+    candidate_rx: std::sync::mpsc::Receiver<(Candidate, f64)>,
     config: ScanningConfig,
     signal_tx: std::sync::mpsc::SyncSender<types::Signal>,
+    sdr_manager: Arc<Mutex<sdr::SdrManager>>,
 ) -> Result<thread::JoinHandle<Result<()>>> {
     let handle = thread::spawn(move || -> Result<()> {
         debug!("Scanning for transmissions ...");
 
-        for (candidate, sdr_rx, center_freq) in candidate_rx {
+        for (candidate, center_freq) in candidate_rx {
             if config.print_candidates {
                 info!(
                     "candidate found at {:.1} MHz",
                     candidate.frequency_hz() / 1e6
                 );
             } else {
+                let sdr_rx = sdr_manager.lock().unwrap().get_audio_subscriber();
                 candidate.analyze(&config, sdr_rx, center_freq, signal_tx.clone())?;
             }
 
@@ -645,7 +635,7 @@ fn main() -> Result<()> {
 
     let driver = args.device_args.unwrap_or(DEFAULT_DRIVER.into());
     let config = ScanningConfig {
-        audio_buffer_size: 4096,
+        audio_buffer_size: 8192, // Increased from 4K to 8K samples for better buffering
         audio_sample_rate: 48000,
         band: args.band,
         capture_audio_duration: args.capture_audio_duration,
@@ -660,33 +650,32 @@ fn main() -> Result<()> {
         peak_detection_threshold: 1.0,
         peak_scan_duration: args.peak_scan_duration,
         print_candidates: args.print_candidates,
-        samp_rate: 1_000_000.0f64,
+        samp_rate: 2_000_000.0f64,
         squelch_learning_duration: 2.0,
     };
 
     soapysdr::configure_logging();
     info!("Scanning for stations ...");
 
-    let (candidate_tx, candidate_rx) = std::sync::mpsc::sync_channel::<(
-        Candidate,
-        std::sync::mpsc::Receiver<rustradio::Complex>,
-        f64,
-    )>(100);
+    let (candidate_tx, candidate_rx) = std::sync::mpsc::sync_channel::<(Candidate, f64)>(100);
     let (signal_tx, signal_rx) = std::sync::mpsc::sync_channel::<types::Signal>(100);
 
-    let sdr_manager = Arc::new(Mutex::new(sdr::SdrManager::new(
-        config.driver.clone(),
-        config.samp_rate,
-    )?));
+    let sdr_manager = sdr::SdrManager::new(config.driver.clone(), config.samp_rate)?;
+    let sdr_manager_arc = Arc::new(Mutex::new(sdr_manager));
 
-    let audio_handle = spawn_audio_thread(signal_rx, Arc::clone(&sdr_manager), config.clone())?;
+    let audio_handle = spawn_audio_thread(signal_rx, Arc::clone(&sdr_manager_arc), config.clone())?;
 
-    let scanning_thread = spawn_scanning_thread(candidate_rx, config.clone(), signal_tx.clone())?;
+    let scanning_thread = spawn_scanning_thread(
+        candidate_rx,
+        config.clone(),
+        signal_tx.clone(),
+        Arc::clone(&sdr_manager_arc),
+    )?;
 
     if let Some(stations_str) = args.stations {
-        scan_stations(&stations_str, &candidate_tx, &config, &sdr_manager)?;
+        scan_stations(&stations_str, &candidate_tx, &config, &sdr_manager_arc)?;
     } else {
-        scan_band(&config, &driver, &candidate_tx, &sdr_manager)?;
+        scan_band(&config, &candidate_tx, &sdr_manager_arc)?;
     }
 
     drop(candidate_tx);
@@ -695,6 +684,8 @@ fn main() -> Result<()> {
     // Drop signal_tx to disconnect the signal channel and allow audio thread to exit
     drop(signal_tx);
     audio_handle.join().unwrap()?;
+
+    sdr_manager_arc.lock().unwrap().stop()?;
 
     info!("Scanning complete.");
     logging::flush();

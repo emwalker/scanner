@@ -9,7 +9,7 @@ pub mod testing;
 pub mod types;
 
 pub use crate::logging::LogBuffer;
-pub use crate::types::{Candidate, Peak, Result, SampleSource, ScannerError};
+pub use crate::types::{Candidate, Peak, Result, ScannerError};
 
 // Re-export main types for testing
 use clap::ValueEnum;
@@ -127,7 +127,7 @@ impl Default for ScanningConfig {
             peak_detection_threshold: 1.0,
             peak_scan_duration: None,
             print_candidates: false,
-            samp_rate: 1_000_000.0,
+            samp_rate: 2_000_000.0,
             squelch_learning_duration: 2.0,
         }
     }

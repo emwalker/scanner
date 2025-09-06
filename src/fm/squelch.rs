@@ -263,7 +263,7 @@ mod tests {
     use super::*;
     use rustradio::stream::WriteStream;
 
-    fn load_audio_samples(fixture_path: &str) -> (Vec<f32>, crate::file::AudioFileMetadata) {
+    fn load_audio_samples(fixture_path: &str) -> (Vec<f32>, crate::testing::AudioFileMetadata) {
         let (mut audio_source, metadata) =
             crate::testing::load_audio_fixture(fixture_path).expect("Failed to load audio fixture");
 

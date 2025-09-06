@@ -1,13 +1,75 @@
 #![allow(dead_code)]
-#[cfg(test)]
-use crate::file::AudioFileMetadata;
 use rustradio::Complex;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use crate::types::SampleSource;
 use crate::{file::IqFileMetadata, types::Result};
 use std::io::Read;
 use std::{fs::File, io::BufReader};
+
+/// Metadata for audio fixture files
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AudioFileMetadata {
+    pub sample_rate: f32,
+    pub duration: f32,
+    pub total_samples: usize,
+    pub format: String,                    // e.g., "f32_le"
+    pub expected_squelch_decision: String, // "audio" or "noise"
+    pub description: String,
+}
+
+impl AudioFileMetadata {
+    pub fn new(
+        sample_rate: f32,
+        duration: f32,
+        total_samples: usize,
+        expected_squelch_decision: String,
+        description: String,
+    ) -> Self {
+        Self {
+            sample_rate,
+            duration,
+            total_samples,
+            format: "f32_le".to_string(),
+            expected_squelch_decision,
+            description,
+        }
+    }
+
+    /// Load metadata from a JSON file
+    #[cfg(test)]
+    pub fn from_file(metadata_path: &str) -> Result<Self> {
+        let file = File::open(metadata_path)?;
+        let metadata: AudioFileMetadata = serde_json::from_reader(file)?;
+        Ok(metadata)
+    }
+
+    /// Save metadata to a JSON file
+    pub fn to_file(&self, metadata_path: &str) -> Result<()> {
+        let file = File::create(metadata_path)?;
+        serde_json::to_writer_pretty(file, self)?;
+        Ok(())
+    }
+}
+/// Abstraction for sources of I/Q samples
+pub trait SampleSource {
+    /// Read samples into the provided buffer
+    /// Returns the number of samples actually read
+    fn read_samples(&mut self, buffer: &mut [Complex]) -> Result<usize>;
+
+    /// Get the configured sample rate
+    fn sample_rate(&self) -> f64;
+
+    /// Get the configured center frequency  
+    fn center_frequency(&self) -> f64;
+
+    /// Clean up resources when done
+    fn deactivate(&mut self) -> Result<()>;
+
+    fn peak_scan_duration(&self) -> f64;
+
+    fn device_args(&self) -> &str;
+}
 
 impl IqFileMetadata {
     /// Load metadata from a JSON file

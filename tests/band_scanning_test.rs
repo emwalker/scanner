@@ -1,6 +1,6 @@
 use rustradio::Complex;
 use scanner::testing::MockSampleSource;
-use scanner::types::SampleSource;
+use scanner::testing::SampleSource;
 use scanner::{Band, ScanningConfig};
 use tracing::info;
 

@@ -1,97 +1,90 @@
-use crate::{broadcast::BroadcastSink, mpsc::ComplexMpscSink, soapy::SdrSource, types::Result};
+use crate::{soapy::SdrSource, types::Result};
 use rustradio::{
     Complex,
-    blocks::Tee,
-    graph::{Graph, GraphRunner},
+    graph::{CancellationToken as CancelToken, Graph, GraphRunner},
 };
+use std::sync::{Arc, Mutex};
+use std::thread;
 use tokio::sync::broadcast;
 use tracing::debug;
 
-/// Manages a single SDR source with a single active candidate sink
+/// Manages a single SDR source, running it in a background thread and
+/// broadcasting samples.
 pub struct SdrManager {
-    sdr_source: SdrSource,
-    current_center_freq: f64,
+    sdr_source: Arc<Mutex<SdrSource>>,
     samp_rate: f64,
-    detection_sink: Option<std::sync::mpsc::SyncSender<rustradio::Complex>>,
     audio_sender: broadcast::Sender<Complex>,
-    sdr_graph: Option<Graph>,
+    graph_handle: Option<thread::JoinHandle<()>>,
+    cancel_token: Option<CancelToken>,
 }
 
 impl SdrManager {
     pub fn new(driver: String, samp_rate: f64) -> Result<Self> {
-        let sdr_source = SdrSource::when_ready(driver)?;
-        let (audio_sender, _) = broadcast::channel(16384);
+        let sdr_source = Arc::new(Mutex::new(SdrSource::when_ready(driver)?));
+        let (audio_sender, _) = broadcast::channel(262144); // Increased to 256K samples (~128ms at 2MHz for parallel processing)
         Ok(Self {
             sdr_source,
-            current_center_freq: 0.0,
             samp_rate,
-            detection_sink: None,
             audio_sender,
-            sdr_graph: None,
+            graph_handle: None,
+            cancel_token: None,
         })
     }
 
-    pub fn set_center_frequency(&mut self, center_freq: f64) -> Result<()> {
-        if (self.current_center_freq - center_freq).abs() > 1000.0 {
-            // Only change if different by more than 1kHz
-            self.current_center_freq = center_freq;
-            self.rebuild_sdr_graph()?;
+    /// Stops the current SDR graph, if one is running.
+    pub fn stop(&mut self) -> Result<()> {
+        if let Some(token) = self.cancel_token.take() {
+            debug!("Cancelling SDR graph");
+            token.cancel();
+        }
+        if let Some(handle) = self.graph_handle.take() {
+            debug!("Waiting for SDR graph thread to finish");
+            let _ = handle.join();
+            debug!("SDR graph thread finished");
         }
         Ok(())
     }
 
-    pub fn set_detection_sink(&mut self) -> Result<std::sync::mpsc::Receiver<rustradio::Complex>> {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<rustradio::Complex>(65536); // 4x larger buffer
-        self.detection_sink = Some(tx);
-        self.rebuild_sdr_graph()?;
-        Ok(rx)
+    /// Sets the center frequency of the SDR. This will stop the current
+    /// graph and start a new one.
+    pub fn set_frequency(&mut self, freq: f64) -> Result<()> {
+        self.stop()?;
+
+        debug!("Building new SDR graph at {:.1} MHz", freq / 1e6);
+        let mut graph = Graph::new();
+        let (sdr_source_block, sdr_output_stream) = self
+            .sdr_source
+            .lock()
+            .unwrap()
+            .create_source_block(freq, self.samp_rate)?;
+
+        graph.add(Box::new(sdr_source_block));
+
+        let broadcast_sink =
+            crate::broadcast::BroadcastSink::new(sdr_output_stream, self.audio_sender.clone());
+        graph.add(Box::new(broadcast_sink));
+
+        self.cancel_token = Some(graph.cancel_token());
+        self.graph_handle = Some(thread::spawn(move || {
+            debug!("SDR graph thread started");
+            if let Err(e) = graph.run() {
+                debug!("SDR graph error: {}", e);
+            }
+            debug!("SDR graph thread exited");
+        }));
+        Ok(())
     }
 
-    pub fn add_audio_sink(&mut self) -> broadcast::Receiver<Complex> {
+    /// Returns a new receiver for the audio broadcast channel.
+    pub fn get_audio_subscriber(&self) -> broadcast::Receiver<Complex> {
         self.audio_sender.subscribe()
     }
+}
 
-    fn rebuild_sdr_graph(&mut self) -> Result<()> {
-        if let Some(graph) = self.sdr_graph.take() {
-            graph.cancel_token().cancel();
+impl Drop for SdrManager {
+    fn drop(&mut self) {
+        if let Err(e) = self.stop() {
+            debug!("Error stopping SDR Manager: {}", e);
         }
-
-        if self.detection_sink.is_some() {
-            let mut new_graph = Graph::new();
-            let (sdr_source_block, sdr_output_stream) = self
-                .sdr_source
-                .create_source_block(self.current_center_freq, self.samp_rate)?;
-
-            new_graph.add(Box::new(sdr_source_block));
-
-            let (tee, broadcast_stream, detection_stream) = Tee::new(sdr_output_stream);
-            new_graph.add(Box::new(tee));
-
-            let broadcast_sink = BroadcastSink::new(broadcast_stream, self.audio_sender.clone());
-            new_graph.add(Box::new(broadcast_sink));
-
-            if let Some(detection_sink) = self.detection_sink.take() {
-                let complex_mpsc_sink =
-                    ComplexMpscSink::new(detection_stream, detection_sink, "detection".to_string());
-                new_graph.add(Box::new(complex_mpsc_sink));
-            }
-
-            self.sdr_graph = Some(new_graph);
-        }
-        Ok(())
-    }
-
-    pub fn start(&mut self) -> Result<()> {
-        if let Some(ref mut graph) = self.sdr_graph {
-            let _graph_handle = std::thread::spawn({
-                let mut graph = std::mem::replace(graph, Graph::new());
-                move || {
-                    if let Err(e) = graph.run() {
-                        debug!("SDR graph error: {}", e);
-                    }
-                }
-            });
-        }
-        Ok(())
     }
 }

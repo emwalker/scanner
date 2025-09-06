@@ -89,7 +89,9 @@ impl Block for BroadcastSource {
 
         // Fill buffer with try_recv only (non-blocking)
         // This avoids hanging if no samples are available
-        for _ in 0..out.len() {
+        // Process more samples per call for efficiency with parallel consumers
+        let batch_size = (out.len() / 2).max(32); // Process in 50% chunks, minimum 32 samples
+        for _ in 0..batch_size {
             match self.receiver.try_recv() {
                 Ok(sample) => {
                     out.slice()[n] = sample;
@@ -97,7 +99,10 @@ impl Block for BroadcastSource {
                 }
                 Err(broadcast::error::TryRecvError::Empty) => break,
                 Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
-                    debug!("BroadcastSource: lagged, skipped {} samples", skipped);
+                    // Only log significant lag events to reduce spam
+                    if skipped > 1000 {
+                        debug!("BroadcastSource: lagged, skipped {} samples", skipped);
+                    }
                     continue;
                 }
                 Err(broadcast::error::TryRecvError::Closed) => {
@@ -112,7 +117,8 @@ impl Block for BroadcastSource {
             Ok(BlockRet::Again)
         } else {
             // No samples available right now - sleep briefly to avoid busy wait
-            std::thread::sleep(std::time::Duration::from_micros(50)); // 0.05ms
+            // Use shorter sleep for better responsiveness with multiple consumers
+            std::thread::sleep(std::time::Duration::from_micros(25)); // Reduced to 25 microseconds for parallel processing
             Ok(BlockRet::Again)
         }
     }

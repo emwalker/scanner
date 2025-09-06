@@ -42,18 +42,26 @@ impl rustradio::block::Block for MpscSink {
         let (input_buf, _) = self.src.read_buf()?;
         let samples = input_buf.slice();
 
-        // Send samples to MPSC channel
+        // Send samples to MPSC channel with try_send for better performance
         let mut consumed = 0;
         for &sample in samples {
-            if self.sender.send(sample).is_err() {
-                // Channel is full - this provides backpressure to the entire graph
-                debug!(
-                    "MPSC channel full for {}, backpressuring graph",
-                    self.channel_name
-                );
-                break;
+            match self.sender.try_send(sample) {
+                Ok(_) => consumed += 1,
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    // Channel is full - stop sending to provide backpressure
+                    if consumed == 0 {
+                        debug!(
+                            "MPSC channel full for {}, backpressuring graph",
+                            self.channel_name
+                        );
+                    }
+                    break;
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    // Channel disconnected - stop processing
+                    break;
+                }
             }
-            consumed += 1;
         }
 
         input_buf.consume(consumed);
@@ -67,12 +75,14 @@ impl rustradio::block::Block for MpscSink {
 }
 
 /// Rust Radio sink that pushes samples to an MPSC channel
+#[allow(dead_code)]
 pub struct ComplexMpscSink {
     src: ReadStream<Complex>,
     sender: std::sync::mpsc::SyncSender<Complex>,
     channel_name: String,
 }
 
+#[allow(dead_code)]
 impl ComplexMpscSink {
     pub fn new(
         src: ReadStream<Complex>,
@@ -128,11 +138,13 @@ impl rustradio::block::Block for ComplexMpscSink {
     }
 }
 
+#[allow(dead_code)]
 pub struct MpscReceiverSource {
     output: WriteStream<Complex>,
     receiver: mpsc::Receiver<Complex>,
 }
 
+#[allow(dead_code)]
 impl MpscReceiverSource {
     pub fn new(receiver: mpsc::Receiver<Complex>) -> (Self, ReadStream<Complex>) {
         let (output, output_read_stream) = WriteStream::new();
