@@ -5,33 +5,11 @@ pub mod freq_xlating_fir;
 pub mod frequency_tracking;
 pub mod iq_capture;
 pub mod logging;
+pub mod main_thread;
 pub mod mpsc;
+pub mod sdr;
+#[cfg(feature = "soapysdr")]
 pub mod soapy;
 pub mod testing;
 pub mod types;
-
-pub use crate::logging::LogBuffer;
-pub use crate::types::{Band, Candidate, Peak, Result, ScannerError, ScanningConfig};
-
-// Re-export main types for testing
-use clap::ValueEnum;
-
-#[derive(ValueEnum, Copy, Clone, Debug)]
-pub enum Format {
-    /// JSON structured logging format
-    Json,
-    /// Simple text logging format
-    Text,
-    /// Standard log format with timestamps and levels
-    Log,
-}
-
-impl std::fmt::Display for Format {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Format::Json => write!(f, "json"),
-            Format::Text => write!(f, "text"),
-            Format::Log => write!(f, "log"),
-        }
-    }
-}
+pub mod window;

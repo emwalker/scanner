@@ -5,7 +5,7 @@ use tracing::{debug, info};
 
 use crate::{
     file::IqFileMetadata,
-    types::{Result, ScanningConfig},
+    types::{Format, Result, ScanningConfig},
 };
 use std::io::Read;
 use std::{fs::File, io::BufReader};
@@ -287,7 +287,6 @@ pub fn load_iq_fixture(iq_file_path: &str) -> Result<(FileSampleSource, IqFileMe
 /// File-based audio source for testing squelch functionality
 pub struct AudioFileSource {
     reader: BufReader<File>,
-    #[allow(dead_code)]
     sample_rate: f32,
     samples_remaining: usize,
 }
@@ -661,7 +660,7 @@ pub enum ScanningMode {
 /// Returns a LogBuffer that can be used to retrieve captured log messages
 pub fn init_test_logging(
     verbose: bool,
-    format: crate::Format,
+    format: Format,
 ) -> crate::types::Result<crate::logging::LogBuffer> {
     use tracing::Level;
     use tracing_subscriber::FmtSubscriber;
@@ -670,7 +669,7 @@ pub fn init_test_logging(
     let log_buffer = crate::logging::LogBuffer::default();
 
     match format {
-        crate::Format::Json => {
+        Format::Json => {
             let subscriber = FmtSubscriber::builder()
                 .json()
                 .with_max_level(level)
@@ -680,7 +679,7 @@ pub fn init_test_logging(
                 crate::types::ScannerError::Custom("Failed to set subscriber".to_string())
             })?;
         }
-        crate::Format::Text => {
+        Format::Text => {
             let subscriber = FmtSubscriber::builder()
                 .with_max_level(level)
                 .with_writer(log_buffer.clone())
@@ -692,7 +691,7 @@ pub fn init_test_logging(
                 crate::types::ScannerError::Custom("Failed to set subscriber".to_string())
             })?;
         }
-        crate::Format::Log => {
+        Format::Log => {
             let subscriber = FmtSubscriber::builder()
                 .with_max_level(level)
                 .with_writer(log_buffer.clone())
@@ -710,7 +709,7 @@ pub fn init_test_logging(
 /// Test helper that runs a function with captured logging and returns both result and logs
 pub fn with_captured_logs<F, R>(
     verbose: bool,
-    format: crate::Format,
+    format: Format,
     test_fn: F,
 ) -> crate::types::Result<(R, String)>
 where
@@ -729,7 +728,7 @@ pub fn test_complete_pipeline_with_logs(
     scanning_mode: ScanningMode,
     config: &ScanningConfig,
 ) -> crate::types::Result<(PipelineTestResult, String)> {
-    with_captured_logs(true, crate::Format::Json, || {
+    with_captured_logs(true, Format::Json, || {
         test_complete_pipeline_debug(
             iq_file_path,
             expected_station_freq,

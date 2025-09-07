@@ -104,30 +104,10 @@ impl FmFilterConfig {
         self.channel_bandwidth / 2.0
     }
 
-    /// Get the decimated sample rate after this filter
-    #[allow(dead_code)]
-    pub fn decimated_sample_rate(&self, input_sample_rate: f64) -> f64 {
-        input_sample_rate / self.decimation as f64
-    }
-
     /// Check if this configuration can handle the required frequency offset
     pub fn can_handle_offset(&self, frequency_offset: f64, _sample_rate: f64) -> bool {
         let max_offset = self.cutoff_frequency() as f64;
         frequency_offset.abs() <= max_offset
-    }
-
-    /// Get performance summary for logging/debugging
-    #[allow(dead_code)]
-    pub fn performance_summary(&self, sample_rate: f64) -> String {
-        format!(
-            "Filter: {:.0}kHz passband, {:.0}kHz transition, {}x decimation, ~{} taps, {:.1} MFLOPS → {:.0}kHz output",
-            self.channel_bandwidth / 1000.0,
-            self.transition_width / 1000.0,
-            self.decimation,
-            self.estimated_taps,
-            self.estimated_mflops,
-            self.decimated_sample_rate(sample_rate) / 1000.0
-        )
     }
 }
 

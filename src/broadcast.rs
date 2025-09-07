@@ -125,7 +125,6 @@ impl Block for BroadcastSource {
             }
             Ok(BlockRet::Again)
         } else {
-            debug!("BroadcastSource: no samples available, trying again");
             // No samples available right now - sleep briefly to avoid busy wait
             // Use shorter sleep for better audio responsiveness
             std::thread::sleep(std::time::Duration::from_micros(10)); // Reduced to 10 microseconds for better audio latency

@@ -1,100 +1,9 @@
-use clap::{Parser, ValueEnum};
-use tracing::{debug, info};
-
-mod broadcast;
-mod file;
-mod fm;
-mod freq_xlating_fir;
-mod frequency_tracking;
-mod iq_capture;
-mod logging;
-mod mpsc;
-mod sdr;
-mod soapy;
-mod testing;
-mod types;
-mod window;
-use crate::types::{Band, Result, ScannerError, ScanningConfig};
-use crate::window::Window;
-
-fn parse_stations(stations_str: &str) -> Result<Vec<f64>> {
-    stations_str
-        .split(',')
-        .map(|s| {
-            s.trim()
-                .parse::<f64>()
-                .map_err(|_| ScannerError::Custom(format!("Invalid station frequency: {}", s)))
-        })
-        .collect()
-}
-
-fn scan_stations(stations_str: &str, config: &ScanningConfig) -> Result<()> {
-    let stations = parse_stations(stations_str)?;
-    debug!(
-        message = "Scanning stations",
-        stations = format!("{:?}", stations)
-    );
-
-    let total_stations = stations.len();
-
-    // Create a separate window for each station, using the station frequency as center frequency
-    for (station_idx, station_freq) in stations.into_iter().enumerate() {
-        debug!(
-            "Processing station {} of {} at {:.1} MHz",
-            station_idx + 1,
-            total_stations,
-            station_freq / 1e6
-        );
-
-        // Create a window for this specific station frequency
-        let window = Window::for_station(station_freq, station_idx + 1, total_stations);
-
-        // Process using the full band scanning pipeline (peak detection, candidates, etc.)
-        window.process(config)?;
-    }
-
-    Ok(())
-}
-
-fn scan_band(config: &ScanningConfig) -> Result<()> {
-    // Clear any previously processed frequencies from earlier scans
-    fm::clear_processed_frequencies();
-
-    let window_centers = config.band.windows(config.samp_rate, config.window_overlap);
-    debug!(
-        "Scanning {} windows across {:?} band",
-        window_centers.len(),
-        config.band
-    );
-
-    let windows_to_process = match config.scanning_windows {
-        Some(n) => n.min(window_centers.len()),
-        None => window_centers.len(),
-    };
-
-    for (i, center_freq) in window_centers.iter().enumerate().take(windows_to_process) {
-        let window = Window::new(*center_freq, i + 1, window_centers.len());
-        window.process(config)?;
-    }
-    Ok(())
-}
-
-#[derive(ValueEnum, Copy, Clone, Debug)]
-pub enum Format {
-    Json,
-    Text,
-    Log,
-}
-
-impl std::fmt::Display for Format {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Format::Json => write!(f, "json"),
-            Format::Text => write!(f, "text"),
-            Format::Log => write!(f, "log"),
-        }
-    }
-}
+use clap::Parser;
+use scanner::logging::DefaultLogger;
+use scanner::main_thread::{DefaultConsoleWriter, MainThread};
+use scanner::soapy;
+use scanner::types::{Band, Format, Result, ScanningConfig};
+use std::sync::Arc;
 
 pub struct Audio;
 
@@ -108,6 +17,9 @@ struct Args {
 
     #[arg(long)]
     stations: Option<String>,
+
+    #[arg(long, help = "SDR gain in dB (0 to 48 for SDRplay, default 24)")]
+    gain: Option<f64>,
 
     #[arg(long, default_value_t = Band::Fm)]
     band: Band,
@@ -196,9 +108,6 @@ fn main() -> Result<()> {
         Format::Text // Default when no format specified or when --text is used
     };
 
-    logging::init(args.verbose, format)?;
-
-    let driver = args.device_args.unwrap_or(DEFAULT_DRIVER.into());
     let config = ScanningConfig {
         audio_buffer_size: 8192, // Increased from 4K to 8K samples for better buffering
         audio_sample_rate: 48000,
@@ -208,8 +117,8 @@ fn main() -> Result<()> {
         capture_duration: args.capture_duration,
         capture_iq: args.capture_iq,
         debug_pipeline: args.debug_pipeline,
-        driver: driver.clone(),
         duration: args.duration,
+        sdr_gain: args.gain.unwrap_or(24.0), // Default to middle of 0-48 dB range
         scanning_windows: args.scanning_windows,
         fft_size: 1024,
         peak_detection_threshold: 1.0,
@@ -231,16 +140,16 @@ fn main() -> Result<()> {
         window_overlap: args.window_overlap,
     };
 
-    soapysdr::configure_logging();
-    info!("Scanning for stations ...");
+    let driver = args.device_args.as_deref().unwrap_or(DEFAULT_DRIVER);
+    let console_writer = Arc::new(DefaultConsoleWriter);
+    let logger = Arc::new(DefaultLogger::new(args.verbose, format));
 
-    if let Some(stations_str) = args.stations {
-        scan_stations(&stations_str, &config)?;
-    } else {
-        scan_band(&config)?;
-    }
+    // Enumerate devices and serialize them to strings for later re-instantiation
+    let device_strings = soapysdr::enumerate(driver)?
+        .into_iter()
+        .map(|args| soapy::Device(format!("{}", args)))
+        .collect::<Vec<soapy::Device>>();
 
-    info!("Scanning complete.");
-
-    Ok(())
+    // Create and setup MainThread with device strings
+    MainThread::new(config, console_writer, logger, device_strings)?.run(args.stations)
 }

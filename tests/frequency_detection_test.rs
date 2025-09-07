@@ -1,4 +1,4 @@
-use scanner::ScanningConfig;
+use scanner::types::ScanningConfig;
 
 /// Test frequency detection accuracy with band scanning
 #[test]
@@ -18,7 +18,6 @@ fn test_band_scan_frequency_detection() {
     config.fft_size = metadata.fft_size;
     config.peak_detection_threshold = metadata.peak_detection_threshold;
     config.samp_rate = metadata.sample_rate;
-    config.driver = "test".to_string();
 
     let peaks = scanner::fm::collect_peaks_from_source(&config, &mut file_source)
         .expect("Failed to collect peaks from I/Q file");

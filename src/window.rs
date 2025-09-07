@@ -1,8 +1,9 @@
+use crate::sdr::Segment;
 use crate::types::{Result, ScanningConfig};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, StreamConfig};
 use rustradio::graph::GraphRunner;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tracing::debug;
@@ -13,31 +14,44 @@ pub struct Window {
     window_num: usize,
     total_windows: usize,
     station_mode: bool, // True if this is a specific station frequency, not band scanning
+    device: crate::soapy::Device,
 }
 
 impl Window {
-    pub fn new(center_freq: f64, window_num: usize, total_windows: usize) -> Self {
+    pub fn new(
+        center_freq: f64,
+        window_num: usize,
+        total_windows: usize,
+        device: crate::soapy::Device,
+    ) -> Self {
         Self {
             center_freq,
             window_num,
             total_windows,
             station_mode: false,
+            device,
         }
     }
 
-    pub fn for_station(center_freq: f64, window_num: usize, total_windows: usize) -> Self {
+    pub fn for_station(
+        center_freq: f64,
+        window_num: usize,
+        total_windows: usize,
+        device: crate::soapy::Device,
+    ) -> Self {
         Self {
             center_freq,
             window_num,
             total_windows,
             station_mode: true,
+            device,
         }
     }
 
     fn get_peaks(
         &self,
         config: &ScanningConfig,
-        sdr_manager: &Arc<Mutex<crate::sdr::SdrManager>>,
+        device: &dyn Segment,
     ) -> Result<Vec<crate::types::Peak>> {
         if self.station_mode {
             // Station mode: Create a single peak at the exact station frequency
@@ -51,7 +65,7 @@ impl Window {
             }])
         } else {
             // Band scanning mode: Do peak detection as usual
-            let sdr_rx_for_peaks = sdr_manager.lock().unwrap().get_audio_subscriber();
+            let sdr_rx_for_peaks = device.audio_subscriber();
             crate::fm::collect_peaks(config, sdr_rx_for_peaks, self.center_freq)
         }
     }
@@ -107,7 +121,7 @@ impl Window {
         &self,
         candidates: Vec<crate::types::Candidate>,
         config: &ScanningConfig,
-        sdr_manager: &Arc<Mutex<crate::sdr::SdrManager>>,
+        segment: &dyn Segment,
     ) -> Result<Vec<crate::types::Signal>> {
         if candidates.is_empty() {
             return Ok(Vec::new());
@@ -126,13 +140,20 @@ impl Window {
                 continue;
             }
 
-            let sdr_rx = sdr_manager.lock().unwrap().get_audio_subscriber();
+            let sdr_rx = segment.audio_subscriber();
             let signal_tx_clone = signal_tx.clone();
             let config_clone = config.clone();
             let center_freq = self.center_freq;
+            let device_clone = self.device.clone();
 
             let handle = thread::spawn(move || -> Result<()> {
-                candidate.analyze(&config_clone, sdr_rx, center_freq, signal_tx_clone)
+                candidate.analyze(
+                    &config_clone,
+                    sdr_rx,
+                    center_freq,
+                    signal_tx_clone,
+                    &device_clone,
+                )
             });
             candidate_threads.push(handle);
         }
@@ -167,7 +188,7 @@ impl Window {
         Ok(signals)
     }
 
-    pub fn setup_audio_device(
+    pub(crate) fn setup_audio_device(
         audio_sample_rate: u32,
     ) -> Result<(cpal::Device, cpal::SupportedStreamConfig)> {
         let host = cpal::default_host();
@@ -191,7 +212,7 @@ impl Window {
         Ok((audio_device, supported_config))
     }
 
-    pub fn create_audio_stream(
+    pub(crate) fn create_audio_stream(
         device: &cpal::Device,
         stream_config: &StreamConfig,
         audio_rx: std::sync::mpsc::Receiver<f32>,
@@ -440,7 +461,7 @@ impl Window {
         &self,
         signals: Vec<crate::types::Signal>,
         config: &ScanningConfig,
-        sdr_manager: &Arc<Mutex<crate::sdr::SdrManager>>,
+        segment: &dyn Segment,
     ) -> Result<()> {
         if signals.is_empty() {
             return Ok(());
@@ -483,7 +504,7 @@ impl Window {
 
         for signal in sorted_signals {
             tracing::info!("playing {:.1} MHz", signal.frequency_hz / 1e6);
-            let sdr_rx = sdr_manager.lock().unwrap().get_audio_subscriber();
+            let sdr_rx = segment.audio_subscriber();
             let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
             if let Err(e) = Window::process_signal_for_audio(
@@ -501,7 +522,7 @@ impl Window {
     }
 
     /// Process this window completely: tune SDR, find candidates, run detection/audio, wait for completion
-    pub fn process(&self, config: &ScanningConfig) -> Result<()> {
+    pub fn process(&self, config: &ScanningConfig, segment: &dyn Segment) -> Result<()> {
         debug!(
             "Scanning window {} of {} at {:.1} MHz",
             self.window_num,
@@ -509,16 +530,8 @@ impl Window {
             self.center_freq / 1e6
         );
 
-        // Create a dedicated SDR manager for this window with the specific center frequency
-        // This ensures the SDR runs continuously throughout the entire window processing
-        let sdr_manager = crate::sdr::SdrManager::new(config, self.center_freq)?;
-        let sdr_manager_arc = Arc::new(Mutex::new(sdr_manager));
-
-        // Get a subscriber that we'll keep alive throughout the entire window processing
-        let _sdr_rx_keeper = sdr_manager_arc.lock().unwrap().get_audio_subscriber();
-
         // Get peaks based on mode (station or band scanning)
-        let peaks = self.get_peaks(config, &sdr_manager_arc)?;
+        let peaks = self.get_peaks(config, segment)?;
 
         if !peaks.is_empty() {
             debug!("Found {} peaks in this window", peaks.len());
@@ -527,10 +540,10 @@ impl Window {
 
             // Process candidates while SDR is still running
             // Candidate analysis now properly waits for detection graphs to complete
-            let signals = self.process_candidates(candidates, config, &sdr_manager_arc)?;
+            let signals = self.process_candidates(candidates, config, segment)?;
 
             // No sleep needed - candidate analysis threads wait for detection completion
-            self.play_signals(signals, config, &sdr_manager_arc)
+            self.play_signals(signals, config, segment)
         } else {
             debug!("No peaks detected in this window");
             self.debug_peaks(&peaks, config);

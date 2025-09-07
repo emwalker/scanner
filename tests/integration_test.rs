@@ -1,5 +1,5 @@
 use scanner::testing::*;
-use scanner::{Format, ScanningConfig};
+use scanner::types::{Format, ScanningConfig};
 
 #[test]
 fn test_frequency_translation_scenarios() {

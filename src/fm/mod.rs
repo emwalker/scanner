@@ -55,6 +55,7 @@ impl Candidate {
         sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
         center_freq: f64,
         signal_tx: std::sync::mpsc::SyncSender<crate::types::Signal>,
+        device: &crate::soapy::Device,
     ) -> Result<()> {
         debug!(
             message = "Tuning into station",
@@ -133,6 +134,7 @@ impl Candidate {
             center_freq,
             refined_frequency,
             Some(signal_tx.clone()), // Pass signal channel to squelch
+            device,
         )?;
         let detection_cancel_token = detection_graph.cancel_token();
 
@@ -349,7 +351,7 @@ impl Candidate {
 /// This performs FFT analysis to detect spectral peaks above the threshold.
 #[allow(clippy::type_complexity)]
 fn setup_peak_collection(
-    config: &crate::ScanningConfig,
+    config: &ScanningConfig,
 ) -> (
     Vec<rustfft::num_complex::Complex32>,
     rustfft::FftPlanner<f32>,
@@ -412,7 +414,7 @@ fn run_peak_detection_phase(
     mut read_buffer: Vec<Complex>,
     mut fft_buffer: Vec<rustfft::num_complex::Complex32>,
     fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
-    config: &crate::ScanningConfig,
+    config: &ScanningConfig,
     center_freq: f64,
     start_time: std::time::Instant,
     total_duration: f64,
@@ -482,7 +484,7 @@ fn run_peak_detection_phase(
 }
 
 pub fn collect_peaks(
-    config: &crate::ScanningConfig,
+    config: &ScanningConfig,
     mut sdr_rx: tokio::sync::broadcast::Receiver<Complex>,
     center_freq: f64,
 ) -> Result<Vec<Peak>> {
@@ -568,7 +570,7 @@ fn process_samples_for_peaks(
     samples_read: usize,
     fft_buffer: &mut [rustfft::num_complex::Complex32],
     fft: &std::sync::Arc<dyn rustfft::Fft<f32>>,
-    config: &crate::ScanningConfig,
+    config: &ScanningConfig,
     center_freq: f64,
 ) -> Vec<Peak> {
     // Copy samples to FFT buffer
@@ -594,7 +596,7 @@ fn process_samples_for_peaks(
 
 /// Collect RF peaks from any SampleSource (for testing and production)
 pub fn collect_peaks_from_source(
-    config: &crate::ScanningConfig,
+    config: &ScanningConfig,
     sample_source: &mut dyn testing::SampleSource,
 ) -> Result<Vec<Peak>> {
     let peak_scan_duration = sample_source.peak_scan_duration();
@@ -856,7 +858,7 @@ fn calculate_starting_fm_frequency(freq_start_mhz: f64) -> f64 {
 /// This approach analyzes spectral characteristics like peak width, density, and shape
 pub fn find_candidates(
     peaks: &[Peak],
-    config: &crate::ScanningConfig,
+    config: &ScanningConfig,
     center_freq: f64,
 ) -> Vec<types::Candidate> {
     debug!("Using spectral analysis for FM station detection with sidelobe discrimination...");
@@ -900,10 +902,11 @@ pub fn create_detection_graph(
     source_receiver: tokio::sync::broadcast::Receiver<rustradio::Complex>,
     samp_rate: f64,
     _channel_name: String,
-    config: &crate::ScanningConfig,
+    config: &ScanningConfig,
     center_freq: f64,
     tune_freq: f64,
     signal_tx: Option<std::sync::mpsc::SyncSender<crate::types::Signal>>,
+    device: &crate::soapy::Device,
 ) -> rustradio::Result<(Graph, std::sync::Arc<std::sync::atomic::AtomicU8>)> {
     let mut graph = Graph::new();
 
@@ -1001,7 +1004,7 @@ pub fn create_detection_graph(
             config.squelch_learning_duration,
             tune_freq,
             center_freq,
-            config.driver.clone(),
+            device.0.clone(),
         ) {
             Ok(capturer) => Some(capturer),
             Err(e) => {
@@ -1065,9 +1068,9 @@ mod tests {
 
     #[test]
     fn test_band_scanning_windows() {
-        use crate::Band;
+        use types::Band;
 
-        let config = crate::ScanningConfig::default();
+        let config = ScanningConfig::default();
         let band = Band::Fm;
         let windows = band.windows(config.samp_rate, config.window_overlap);
 
@@ -1110,8 +1113,8 @@ mod tests {
             capture_duration: 2.0,
             capture_iq: None,
             debug_pipeline: false,
-            driver: "test".to_string(),
             duration: 1,
+            sdr_gain: 24.0,
             scanning_windows: None,
             fft_size: 1024,
             peak_detection_threshold: 0.01, // Low threshold for testing

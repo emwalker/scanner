@@ -1,7 +1,7 @@
 use rustradio::Complex;
 use scanner::testing::MockSampleSource;
 use scanner::testing::SampleSource;
-use scanner::{Band, ScanningConfig};
+use scanner::types::{Band, ScanningConfig};
 use tracing::info;
 
 /// Test the band scanning window calculation logic in isolation

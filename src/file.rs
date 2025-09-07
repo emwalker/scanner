@@ -1,6 +1,5 @@
-use crate::testing::{AudioFileMetadata, SampleSource};
+use crate::testing::AudioFileMetadata;
 use crate::types::Result;
-use rustradio::Complex;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -23,7 +22,6 @@ pub struct IqFileMetadata {
     pub driver: String, // SDR driver used (e.g., "driver=sdrplay")
 }
 
-#[allow(dead_code)]
 impl IqFileMetadata {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -166,161 +164,6 @@ impl Drop for AudioCaptureSink {
                 tracing::error!("Failed to save audio metadata on drop: {}", e);
             }
         }
-    }
-}
-
-/// Capturing wrapper that saves I/Q samples to a file while passing them through
-#[allow(dead_code)]
-pub struct SampleCaptureSink {
-    inner: Box<dyn SampleSource>,
-    writer: Option<BufWriter<File>>,
-    samples_captured: usize,
-    max_samples: usize,
-    sample_rate: f64,
-    center_frequency: f64,
-    output_file: String,
-    capture_duration: f64,
-
-    // Peak detection parameters from scanning config
-    fft_size: usize,
-    peak_detection_threshold: f32,
-    peak_scan_duration: Option<f64>,
-    driver: String,
-}
-
-#[allow(dead_code)]
-impl SampleCaptureSink {
-    pub fn new(
-        inner: Box<dyn SampleSource>,
-        output_file: &str,
-        capture_duration: f64,
-        fft_size: usize,
-        peak_detection_threshold: f32,
-        peak_scan_duration: Option<f64>,
-        driver: String,
-    ) -> Result<Self> {
-        let sample_rate = inner.sample_rate();
-        let center_frequency = inner.center_frequency();
-        let max_samples = (sample_rate * capture_duration) as usize;
-
-        let file = File::create(output_file)?;
-        let writer = BufWriter::new(file);
-
-        debug!(
-            message = "Starting I/Q capture",
-            output_file = output_file,
-            capture_duration = capture_duration,
-            max_samples = max_samples,
-            sample_rate = sample_rate
-        );
-
-        Ok(Self {
-            inner,
-            writer: Some(writer),
-            samples_captured: 0,
-            max_samples,
-            sample_rate,
-            center_frequency,
-            output_file: output_file.to_string(),
-            capture_duration,
-            fft_size,
-            peak_detection_threshold,
-            peak_scan_duration,
-            driver,
-        })
-    }
-
-    /// Save metadata for the captured I/Q file
-    fn save_metadata(&self) -> Result<()> {
-        let metadata = IqFileMetadata::new(
-            self.sample_rate,
-            self.center_frequency,
-            self.capture_duration,
-            self.samples_captured,
-            self.fft_size,
-            self.peak_detection_threshold,
-            self.peak_scan_duration,
-            self.driver.clone(),
-        );
-
-        let metadata_path = self.output_file.replace(".iq", ".json");
-        metadata.to_file(&metadata_path)?;
-
-        debug!(
-            message = "I/Q metadata saved",
-            metadata_file = metadata_path,
-            total_samples = self.samples_captured
-        );
-
-        Ok(())
-    }
-}
-
-impl SampleSource for SampleCaptureSink {
-    fn read_samples(&mut self, buffer: &mut [Complex]) -> Result<usize> {
-        let samples_read = self.inner.read_samples(buffer)?;
-
-        // Capture samples if we haven't reached the limit
-        if let Some(ref mut writer) = self.writer
-            && self.samples_captured < self.max_samples
-        {
-            let samples_to_capture = (self.max_samples - self.samples_captured).min(samples_read);
-
-            for sample in buffer.iter().take(samples_to_capture) {
-                // Write as f32 little-endian pairs (real, imaginary)
-                writer.write_all(&sample.re.to_le_bytes())?;
-                writer.write_all(&sample.im.to_le_bytes())?;
-            }
-
-            self.samples_captured += samples_to_capture;
-
-            // Close file when done capturing
-            if self.samples_captured >= self.max_samples
-                && let Some(writer) = self.writer.take()
-            {
-                writer.into_inner().map_err(|e| {
-                    crate::types::ScannerError::IqCapture(format!(
-                        "Failed to flush capture file: {}",
-                        e
-                    ))
-                })?;
-                debug!(
-                    message = "I/Q capture complete",
-                    samples_captured = self.samples_captured
-                );
-            }
-        }
-
-        Ok(samples_read)
-    }
-
-    fn sample_rate(&self) -> f64 {
-        self.sample_rate
-    }
-
-    fn center_frequency(&self) -> f64 {
-        self.center_frequency
-    }
-
-    fn deactivate(&mut self) -> Result<()> {
-        if let Some(writer) = self.writer.take() {
-            if let Err(e) = writer.into_inner() {
-                tracing::error!("Failed to flush I/Q capture file on drop: {}", e);
-            }
-            if let Err(e) = self.save_metadata() {
-                tracing::error!("Failed to save I/Q metadata on drop: {}", e);
-            }
-        }
-
-        self.inner.deactivate()
-    }
-
-    fn device_args(&self) -> &str {
-        "test"
-    }
-
-    fn peak_scan_duration(&self) -> f64 {
-        1.0
     }
 }
 

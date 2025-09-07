@@ -1,6 +1,10 @@
+use crate::fm;
 use thiserror::Error;
 
-use crate::fm;
+pub trait ConsoleWriter {
+    fn write_info(&self, message: &str);
+    fn write_debug(&self, message: &str);
+}
 
 #[derive(Error, Debug)]
 pub enum ScannerError {
@@ -32,6 +36,10 @@ pub enum ScannerError {
 
 pub type Result<T> = std::result::Result<T, ScannerError>;
 
+pub trait Logger {
+    fn init(&self) -> Result<()>;
+}
+
 #[derive(Debug, Clone)]
 pub struct Peak {
     pub frequency_hz: f64,
@@ -44,7 +52,6 @@ pub enum Candidate {
 }
 
 /// Represents a successfully detected and demodulated signal
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Signal {
     /// Center frequency of the signal in Hz
@@ -106,9 +113,12 @@ impl Candidate {
         sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
         center_freq: f64,
         signal_tx: std::sync::mpsc::SyncSender<Signal>,
+        device: &crate::soapy::Device,
     ) -> Result<()> {
         match self {
-            Candidate::Fm(candidate) => candidate.analyze(config, sdr_rx, center_freq, signal_tx),
+            Candidate::Fm(candidate) => {
+                candidate.analyze(config, sdr_rx, center_freq, signal_tx, device)
+            }
         }
     }
 }
@@ -181,8 +191,8 @@ pub struct ScanningConfig {
     pub capture_duration: f64,
     pub capture_iq: Option<String>,
     pub debug_pipeline: bool,
-    pub driver: String,
     pub duration: u64,
+    pub sdr_gain: f64,
     pub scanning_windows: Option<usize>,
     pub fft_size: usize,
     pub peak_detection_threshold: f32,
@@ -215,8 +225,8 @@ impl Default for ScanningConfig {
             capture_duration: 2.0,
             capture_iq: None,
             debug_pipeline: false,
-            driver: "driver=sdrplay".to_string(),
             duration: 3,
+            sdr_gain: 24.0,
             scanning_windows: None,
             fft_size: 1024,
             peak_detection_threshold: 1.0,
@@ -236,6 +246,26 @@ impl Default for ScanningConfig {
             // AGC and window defaults
             agc_settling_time: 3.0,
             window_overlap: 0.75,
+        }
+    }
+}
+
+#[derive(ValueEnum, Copy, Clone, Debug)]
+pub enum Format {
+    /// JSON structured logging format
+    Json,
+    /// Simple text logging format
+    Text,
+    /// Standard log format with timestamps and levels
+    Log,
+}
+
+impl std::fmt::Display for Format {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Format::Json => write!(f, "json"),
+            Format::Text => write!(f, "text"),
+            Format::Log => write!(f, "log"),
         }
     }
 }
