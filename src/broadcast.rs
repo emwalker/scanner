@@ -48,6 +48,10 @@ impl Block for BroadcastSink {
                 }
             }
         }
+
+        if sent > 0 && sent % 1000 == 0 {
+            debug!("BroadcastSink: sent {} samples", sent);
+        }
         input_buf.consume(sent);
         Ok(BlockRet::Again)
     }
@@ -91,11 +95,13 @@ impl Block for BroadcastSource {
         // This avoids hanging if no samples are available
         // Process more samples per call for efficiency with parallel consumers
         let batch_size = out.len().min(4096); // Process up to 4K samples per call for better throughput
+        let mut samples_received = 0;
         for _ in 0..batch_size {
             match self.receiver.try_recv() {
                 Ok(sample) => {
                     out.slice()[n] = sample;
                     n += 1;
+                    samples_received += 1;
                 }
                 Err(broadcast::error::TryRecvError::Empty) => break,
                 Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
@@ -114,8 +120,12 @@ impl Block for BroadcastSource {
 
         if n > 0 {
             out.produce(n, &[]);
+            if samples_received > 0 && samples_received % 1000 == 0 {
+                debug!("BroadcastSource: received {} samples", samples_received);
+            }
             Ok(BlockRet::Again)
         } else {
+            debug!("BroadcastSource: no samples available, trying again");
             // No samples available right now - sleep briefly to avoid busy wait
             // Use shorter sleep for better audio responsiveness
             std::thread::sleep(std::time::Duration::from_micros(10)); // Reduced to 10 microseconds for better audio latency

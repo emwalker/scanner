@@ -30,10 +30,11 @@ pub struct SdrManager {
 }
 
 impl SdrManager {
-    pub fn new(config: &ScanningConfig) -> Result<Self> {
+    pub fn new(config: &ScanningConfig, center_freq: f64) -> Result<Self> {
         let sdr_source = Arc::new(Mutex::new(SdrSource::when_ready(config.driver.clone())?));
         let (audio_sender, _) = broadcast::channel(524288); // Increased to 512K samples (~256ms at 2MHz for better buffering
-        Ok(Self {
+
+        let mut manager = Self {
             sdr_source,
             samp_rate: config.samp_rate,
             audio_sender,
@@ -47,7 +48,12 @@ impl SdrManager {
             peak_detection_threshold: config.peak_detection_threshold,
             peak_scan_duration: config.peak_scan_duration,
             driver: config.driver.clone(),
-        })
+        };
+
+        // Start the SDR graph immediately with the provided center frequency
+        manager.start_sdr_graph(center_freq)?;
+
+        Ok(manager)
     }
 
     /// Stops the current SDR graph, if one is running.
@@ -64,11 +70,8 @@ impl SdrManager {
         Ok(())
     }
 
-    /// Sets the center frequency of the SDR. This will stop the current
-    /// graph and start a new one.
-    pub fn set_frequency(&mut self, freq: f64) -> Result<()> {
-        self.stop()?;
-
+    /// Starts the SDR graph with the specified center frequency.
+    fn start_sdr_graph(&mut self, freq: f64) -> Result<()> {
         debug!("Building new SDR graph at {:.1} MHz", freq / 1e6);
         let mut graph = Graph::new();
         let (sdr_source_block, sdr_output_stream) = self
@@ -103,14 +106,35 @@ impl SdrManager {
         graph.add(Box::new(broadcast_sink));
 
         self.cancel_token = Some(graph.cancel_token());
+
+        // Use channel-based synchronization to ensure SDR graph is ready to avoid a race
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+
         self.graph_handle = Some(thread::spawn(move || {
             debug!("SDR graph thread started");
+
+            // Send ready signal just before starting graph.run()
+            // This ensures the broadcast sink is fully initialized
+            let _ = ready_tx.send(());
+            debug!("SDR graph ready, signaling main thread");
+
             if let Err(e) = graph.run() {
                 debug!("SDR graph error: {}", e);
             }
             debug!("SDR graph thread exited");
         }));
-        Ok(())
+
+        // Wait for SDR graph thread to signal it's ready before returning
+        debug!("Waiting for SDR graph to initialize...");
+        match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(_) => {
+                debug!("SDR graph ready");
+                Ok(())
+            }
+            Err(_) => Err(crate::types::ScannerError::Custom(
+                "SDR graph failed to initialize within 5 seconds".to_string(),
+            )),
+        }
     }
 
     /// Returns a new receiver for the audio broadcast channel.

@@ -64,15 +64,15 @@ impl FmFilterConfig {
 
     /// Optimized for audio quality - standard FM broadcast specifications
     fn for_audio(sample_rate: f64) -> Self {
-        // For audio, we want to decimate heavily to reduce downstream processing load
-        // Target output sample rate around 200-250 kHz for good audio quality with minimal CPU
-        let target_output_rate = 240_000.0; // Slightly increased for better audio quality
+        // OPTIMIZATION: Decimate even more aggressively for audio playback
+        // Target output sample rate around 150-200 kHz - still excellent for FM audio
+        let target_output_rate = 160_000.0; // Reduced from 240k to 160k for lower CPU
         let decimation = (sample_rate / target_output_rate).round() as usize;
-        let decimation = decimation.max(8); // Further increased decimation to reduce CPU load
+        let decimation = decimation.max(10); // Increased minimum decimation (was 8)
 
         // Standard FM broadcast channel is 200 kHz with ±75 kHz deviation
         let channel_bandwidth = 200_000.0; // Full FM channel width
-        let transition_width = 100_000.0; // Even wider transition (80k->100k) for minimal taps and CPU load
+        let transition_width = 120_000.0; // Even wider transition (100k->120k) for fewer taps
 
         let estimated_taps = Self::estimate_taps(sample_rate as f32, transition_width);
         let estimated_mflops = estimated_taps as f32 * sample_rate as f32 / 1_000_000.0;
@@ -152,10 +152,10 @@ mod tests {
 
         // Audio should use standard FM channel width
         assert_eq!(config.channel_bandwidth, 200_000.0); // Standard FM channel
-        assert_eq!(config.transition_width, 100_000.0); // Optimized transition width for reduced CPU load
+        assert_eq!(config.transition_width, 120_000.0); // Optimized transition width for reduced CPU load
         assert!(config.decimation < 15); // Updated for optimized decimation
 
-        assert!(config.estimated_taps > 15); // Reduced from 20 due to wider transition for CPU optimization
+        assert!(config.estimated_taps >= 15); // Reduced from 20 due to wider transition for CPU optimization
     }
 
     #[test]

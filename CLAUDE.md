@@ -10,6 +10,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - When adding debug output, prefer `debug!` to `eprintln!` or `println!`.
 - The `info!` macro is used for user-facing output, so don't use it.
 - Prefer reader methods without the `get_` prefix: `refined_frequency` instead of `get_refined_frequency`
+- Keep methods at or below 20 lines if possible
+- After making significant changes, run the tests: `cargo t`
 
 ### Building and Checking
 - `cargo check` - Check for syntax errors and basic correctness

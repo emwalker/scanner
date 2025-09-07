@@ -144,7 +144,7 @@ impl Candidate {
 
         // Start DSP graph in a separate thread
         let frequency_hz = self.frequency_hz;
-        thread::spawn(move || {
+        let detection_graph_handle = thread::spawn(move || {
             debug!("Detection graph started for {:.1} MHz", frequency_hz / 1e6);
             if let Err(e) = detection_graph.run() {
                 debug!("Detection graph error for {}: {}", frequency_hz / 1e6, e);
@@ -160,7 +160,7 @@ impl Candidate {
         let squelch_learning_duration = config.squelch_learning_duration;
         let decision_state_clone = decision_state.clone();
         let frequency_khz_for_cleanup = frequency_khz; // Capture for potential cleanup
-        thread::spawn(move || {
+        let timer_handle = thread::spawn(move || {
             let check_interval = Duration::from_millis(100);
             // Add extra time beyond learning duration to account for processing delays
             let max_wait_time = squelch_learning_duration + 1.0; // Extra second for processing
@@ -226,6 +226,33 @@ impl Candidate {
             detection_cancel_token.cancel();
         });
 
+        // Wait for both detection graph and timer threads to complete
+        // This ensures the candidate analysis doesn't return until the squelch decision is made
+        debug!(
+            "Waiting for detection graph and timer threads to complete for {:.1} MHz",
+            self.frequency_hz / 1e6
+        );
+
+        if let Err(e) = timer_handle.join() {
+            debug!(
+                "Timer thread panicked for {:.1} MHz: {:?}",
+                self.frequency_hz / 1e6,
+                e
+            );
+        }
+
+        if let Err(e) = detection_graph_handle.join() {
+            debug!(
+                "Detection graph thread panicked for {:.1} MHz: {:?}",
+                self.frequency_hz / 1e6,
+                e
+            );
+        }
+
+        debug!(
+            "All detection threads completed for {:.1} MHz",
+            self.frequency_hz / 1e6
+        );
         Ok(())
     }
 
@@ -320,55 +347,40 @@ impl Candidate {
 
 /// Collect RF peaks by consuming from a broadcast channel.
 /// This performs FFT analysis to detect spectral peaks above the threshold.
-pub fn collect_peaks(
+#[allow(clippy::type_complexity)]
+fn setup_peak_collection(
     config: &crate::ScanningConfig,
-    mut sdr_rx: tokio::sync::broadcast::Receiver<Complex>,
-    center_freq: f64,
-) -> Result<Vec<Peak>> {
-    let agc_settling_time = config.agc_settling_time;
-    let peak_scan_duration = config.peak_scan_duration.unwrap_or(0.5);
-    let total_duration = agc_settling_time + peak_scan_duration;
-
-    debug!(
-        agc_settling_seconds = agc_settling_time,
-        peak_scan_seconds = peak_scan_duration,
-        total_seconds = total_duration,
-        "Starting AGC settling followed by peak detection scan"
-    );
-
-    // Prepare FFT processing
-    use std::collections::BTreeMap;
-    let mut peaks_map: BTreeMap<u64, Peak> = BTreeMap::new();
-    let mut fft_buffer = vec![rustfft::num_complex::Complex32::default(); config.fft_size];
+) -> (
+    Vec<rustfft::num_complex::Complex32>,
+    rustfft::FftPlanner<f32>,
+    std::sync::Arc<dyn rustfft::Fft<f32>>,
+    Vec<Complex>,
+) {
+    let fft_buffer = vec![rustfft::num_complex::Complex32::default(); config.fft_size];
     let mut planner = rustfft::FftPlanner::new();
     let fft = planner.plan_fft_forward(config.fft_size);
+    let read_buffer = vec![Complex::default(); config.fft_size];
+    (fft_buffer, planner, fft, read_buffer)
+}
 
-    // Calculate sampling parameters
-    let samples_per_second = config.samp_rate as usize;
-    let agc_samples_needed = (samples_per_second as f64 * agc_settling_time) as usize;
-    let peak_samples_needed = (samples_per_second as f64 * peak_scan_duration) as usize;
-    let mut read_buffer = vec![Complex::default(); config.fft_size];
-
-    let start_time = std::time::Instant::now();
-
-    debug!(
-        agc_samples = agc_samples_needed,
-        peak_samples = peak_samples_needed,
-        "Starting two-phase collection: AGC settling then peak detection"
-    );
-
-    // Phase 1: AGC Settling - consume samples but don't analyze
+fn run_agc_settling_phase(
+    sdr_rx: &mut tokio::sync::broadcast::Receiver<Complex>,
+    agc_samples_needed: usize,
+    start_time: std::time::Instant,
+    total_duration: f64,
+) -> usize {
     debug!("Phase 1: AGC settling phase - consuming samples without analysis");
     let mut agc_samples_consumed = 0;
+
     while agc_samples_consumed < agc_samples_needed {
         if start_time.elapsed().as_secs_f64() > total_duration + 1.0 {
             debug!("AGC settling phase timed out");
             break;
         }
+
         match sdr_rx.try_recv() {
             Ok(_sample) => {
                 agc_samples_consumed += 1;
-                // Just consume samples, don't process for peaks during AGC settling
             }
             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
                 std::thread::sleep(std::time::Duration::from_millis(1));
@@ -390,14 +402,33 @@ pub fn collect_peaks(
         "AGC settling phase complete"
     );
 
-    // Phase 2: Peak Detection - collect samples and perform peak detection
+    agc_samples_consumed
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_peak_detection_phase(
+    sdr_rx: &mut tokio::sync::broadcast::Receiver<Complex>,
+    peak_samples_needed: usize,
+    mut read_buffer: Vec<Complex>,
+    mut fft_buffer: Vec<rustfft::num_complex::Complex32>,
+    fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
+    config: &crate::ScanningConfig,
+    center_freq: f64,
+    start_time: std::time::Instant,
+    total_duration: f64,
+) -> std::collections::BTreeMap<u64, Peak> {
+    use std::collections::BTreeMap;
+
     debug!("Phase 2: Peak detection phase - analyzing samples for spectral peaks");
+    let mut peaks_map: BTreeMap<u64, Peak> = BTreeMap::new();
     let mut peak_samples_collected = 0;
+
     while peak_samples_collected < peak_samples_needed {
         if start_time.elapsed().as_secs_f64() > total_duration + 1.0 {
             debug!("Peak detection phase timed out");
             break;
         }
+
         match sdr_rx.try_recv() {
             Ok(sample) => {
                 read_buffer[peak_samples_collected % config.fft_size] = sample;
@@ -412,6 +443,7 @@ pub fn collect_peaks(
                         config,
                         center_freq,
                     );
+
                     for peak in batch_peaks {
                         let rounded_freq = (peak.frequency_hz / 1000.0).round() as u64;
                         peaks_map
@@ -426,7 +458,6 @@ pub fn collect_peaks(
                 }
             }
             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
-                // No samples available, wait a bit
                 thread::sleep(Duration::from_micros(100));
                 continue;
             }
@@ -447,10 +478,54 @@ pub fn collect_peaks(
         "Peak detection phase complete"
     );
 
+    peaks_map
+}
+
+pub fn collect_peaks(
+    config: &crate::ScanningConfig,
+    mut sdr_rx: tokio::sync::broadcast::Receiver<Complex>,
+    center_freq: f64,
+) -> Result<Vec<Peak>> {
+    let agc_settling_time = config.agc_settling_time;
+    let peak_scan_duration = config.peak_scan_duration.unwrap_or(0.5);
+    let total_duration = agc_settling_time + peak_scan_duration;
+
+    debug!(
+        agc_settling_seconds = agc_settling_time,
+        peak_scan_seconds = peak_scan_duration,
+        total_seconds = total_duration,
+        "Starting AGC settling followed by peak detection scan"
+    );
+
+    let samples_per_second = config.samp_rate as usize;
+    let agc_samples_needed = (samples_per_second as f64 * agc_settling_time) as usize;
+    let peak_samples_needed = (samples_per_second as f64 * peak_scan_duration) as usize;
+    let start_time = std::time::Instant::now();
+
+    debug!(
+        agc_samples = agc_samples_needed,
+        peak_samples = peak_samples_needed,
+        "Starting two-phase collection: AGC settling then peak detection"
+    );
+
+    let (fft_buffer, _planner, fft, read_buffer) = setup_peak_collection(config);
+    let _agc_samples_consumed =
+        run_agc_settling_phase(&mut sdr_rx, agc_samples_needed, start_time, total_duration);
+
+    let peaks_map = run_peak_detection_phase(
+        &mut sdr_rx,
+        peak_samples_needed,
+        read_buffer,
+        fft_buffer,
+        fft,
+        config,
+        center_freq,
+        start_time,
+        total_duration,
+    );
+
     let peaks: Vec<Peak> = peaks_map.into_values().collect();
-
     debug!("Peak detection scan complete. Found {} peaks.", peaks.len());
-
     Ok(peaks)
 }
 
