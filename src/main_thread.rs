@@ -90,10 +90,11 @@ impl MainThread {
                 station_idx + 1,
                 total_stations,
                 device.clone(),
+                self.config.clone(),
             );
 
             // Process using the full band scanning pipeline (peak detection, candidates, etc.)
-            window.process(&self.config, &*segment)?;
+            window.process(&*segment)?;
         }
 
         Ok(())
@@ -119,9 +120,15 @@ impl MainThread {
         };
 
         for (i, center_freq) in window_centers.iter().enumerate().take(windows_to_process) {
-            let window = Window::new(*center_freq, i + 1, window_centers.len(), device.clone());
+            let window = Window::new(
+                *center_freq,
+                i + 1,
+                window_centers.len(),
+                device.clone(),
+                self.config.clone(),
+            );
             let segment = device.tune(&self.config, *center_freq)?;
-            window.process(&self.config, &*segment)?;
+            window.process(&*segment)?;
         }
         Ok(())
     }

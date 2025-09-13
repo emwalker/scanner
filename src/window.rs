@@ -15,6 +15,7 @@ pub struct Window {
     total_windows: usize,
     station_mode: bool, // True if this is a specific station frequency, not band scanning
     device: crate::soapy::Device,
+    config: ScanningConfig,
 }
 
 impl Window {
@@ -23,6 +24,7 @@ impl Window {
         window_num: usize,
         total_windows: usize,
         device: crate::soapy::Device,
+        config: ScanningConfig,
     ) -> Self {
         Self {
             center_freq,
@@ -30,6 +32,7 @@ impl Window {
             total_windows,
             station_mode: false,
             device,
+            config,
         }
     }
 
@@ -38,6 +41,7 @@ impl Window {
         window_num: usize,
         total_windows: usize,
         device: crate::soapy::Device,
+        config: ScanningConfig,
     ) -> Self {
         Self {
             center_freq,
@@ -45,14 +49,11 @@ impl Window {
             total_windows,
             station_mode: true,
             device,
+            config,
         }
     }
 
-    fn get_peaks(
-        &self,
-        config: &ScanningConfig,
-        device: &dyn Segment,
-    ) -> Result<Vec<crate::types::Peak>> {
+    fn get_peaks(&self, device: &dyn Segment) -> Result<Vec<crate::types::Peak>> {
         if self.station_mode {
             // Station mode: Create a single peak at the exact station frequency
             debug!(
@@ -66,12 +67,12 @@ impl Window {
         } else {
             // Band scanning mode: Do peak detection as usual
             let sdr_rx_for_peaks = device.audio_subscriber();
-            crate::fm::collect_peaks(config, sdr_rx_for_peaks, self.center_freq)
+            crate::fm::collect_peaks(&self.config, sdr_rx_for_peaks, self.center_freq)
         }
     }
 
-    fn debug_peaks(&self, peaks: &[crate::types::Peak], config: &ScanningConfig) {
-        if config.debug_pipeline {
+    fn debug_peaks(&self, peaks: &[crate::types::Peak]) {
+        if self.config.debug_pipeline {
             debug!(
                 message = "Band scanning window analysis",
                 window_number = self.window_num,
@@ -94,12 +95,11 @@ impl Window {
     fn create_candidates_from_peaks(
         &self,
         peaks: &[crate::types::Peak],
-        config: &ScanningConfig,
     ) -> Vec<crate::types::Candidate> {
         let mut candidates = Vec::new();
 
-        for candidate in crate::fm::find_candidates(peaks, config, self.center_freq) {
-            if config.debug_pipeline {
+        for candidate in crate::fm::find_candidates(peaks, &self.config, self.center_freq) {
+            if self.config.debug_pipeline {
                 let frequency_offset = candidate.frequency_hz() - self.center_freq;
                 debug!(
                     message = "Candidate created",
@@ -120,7 +120,6 @@ impl Window {
     fn process_candidates(
         &self,
         candidates: Vec<crate::types::Candidate>,
-        config: &ScanningConfig,
         segment: &dyn Segment,
     ) -> Result<Vec<crate::types::Signal>> {
         if candidates.is_empty() {
@@ -132,7 +131,7 @@ impl Window {
         let (signal_tx, signal_rx) = std::sync::mpsc::sync_channel::<crate::types::Signal>(100);
 
         for candidate in candidates {
-            if config.print_candidates {
+            if self.config.print_candidates {
                 tracing::info!(
                     "candidate found at {:.1} MHz",
                     candidate.frequency_hz() / 1e6
@@ -142,7 +141,7 @@ impl Window {
 
             let sdr_rx = segment.audio_subscriber();
             let signal_tx_clone = signal_tx.clone();
-            let config_clone = config.clone();
+            let config_clone = self.config.clone();
             let center_freq = self.center_freq;
             let device_clone = self.device.clone();
 
@@ -381,23 +380,23 @@ impl Window {
         prev: rustradio::stream::ReadStream<rustradio::Float>,
         graph: &mut rustradio::graph::Graph,
         quad_rate: f32,
+        config: &ScanningConfig,
     ) -> Result<rustradio::stream::ReadStream<rustradio::Float>> {
         use rustradio::{
             Float, blockchain, blocks::RationalResampler, fir, fir::FirFilter, window::WindowType,
         };
 
-        let target_audio_rate = 48_000.0;
-        let decimation_factor = (quad_rate / target_audio_rate).round() as usize;
-        let actual_audio_rate = quad_rate / decimation_factor as f32;
+        let target_audio_rate = config.audio_sample_rate as f32;
+        let resampling_ratio = target_audio_rate / quad_rate;
 
         debug!(
-            "Audio decimation: {:.1} kHz → {:.1} kHz (factor {})",
+            "Audio resampling: {:.1} kHz → {:.1} kHz (ratio {:.4})",
             quad_rate / 1000.0,
-            actual_audio_rate / 1000.0,
-            decimation_factor
+            target_audio_rate / 1000.0,
+            resampling_ratio
         );
 
-        let nyquist_freq = actual_audio_rate / 2.0;
+        let nyquist_freq = target_audio_rate / 2.0;
         let audio_cutoff = (nyquist_freq * 0.8).min(15_000.0);
         let transition_width = nyquist_freq * 0.4;
 
@@ -409,12 +408,21 @@ impl Window {
         );
         let prev = blockchain![graph, prev, FirFilter::new(prev, &taps)];
 
+        // Calculate optimal rational resampler ratios dynamically
+        let (interp, deci) = config.calculate_resampler_ratios(quad_rate);
+        let actual_output_rate = quad_rate * (interp as f32 / deci as f32);
+
+        debug!(
+            "Rational resampler: {}:{} ratio, output rate: {:.1} Hz",
+            interp, deci, actual_output_rate
+        );
+
         let prev = blockchain![
             graph,
             prev,
             RationalResampler::<Float>::builder()
-                .interp(1)
-                .deci(decimation_factor)
+                .interp(interp)
+                .deci(deci)
                 .build(prev)?
         ];
 
@@ -447,7 +455,7 @@ impl Window {
         let quad_rate = decimated_samp_rate as f32;
 
         let prev = Self::create_fm_demodulation_chain(prev, &mut graph, quad_rate);
-        let prev = Self::create_audio_decimation_chain(prev, &mut graph, quad_rate)?;
+        let prev = Self::create_audio_decimation_chain(prev, &mut graph, quad_rate, config)?;
 
         graph.add(Box::new(crate::mpsc::MpscSink::new(
             prev,
@@ -460,7 +468,6 @@ impl Window {
     fn play_signals(
         &self,
         signals: Vec<crate::types::Signal>,
-        config: &ScanningConfig,
         segment: &dyn Segment,
     ) -> Result<()> {
         if signals.is_empty() {
@@ -478,15 +485,15 @@ impl Window {
         );
 
         // Create audio infrastructure for this window
-        let audio_buffer_samples = (config.audio_sample_rate as f32 * 0.25) as usize;
+        let audio_buffer_samples = (self.config.audio_sample_rate as f32 * 0.25) as usize;
         let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<f32>(audio_buffer_samples);
 
         // Setup audio device and stream
         let (audio_device, supported_config) =
-            Window::setup_audio_device(config.audio_sample_rate)?;
+            Window::setup_audio_device(self.config.audio_sample_rate)?;
         let sample_format = supported_config.sample_format();
         let mut stream_config: StreamConfig = supported_config.into();
-        stream_config.buffer_size = BufferSize::Fixed(config.audio_buffer_size);
+        stream_config.buffer_size = BufferSize::Fixed(self.config.audio_buffer_size);
 
         let stream = match sample_format {
             SampleFormat::F32 => {
@@ -511,7 +518,7 @@ impl Window {
                 &signal,
                 sdr_rx,
                 audio_tx.clone(),
-                config,
+                &self.config,
                 shutdown_flag,
             ) {
                 debug!("Error processing signal for audio: {}", e);
@@ -522,7 +529,7 @@ impl Window {
     }
 
     /// Process this window completely: tune SDR, find candidates, run detection/audio, wait for completion
-    pub fn process(&self, config: &ScanningConfig, segment: &dyn Segment) -> Result<()> {
+    pub fn process(&self, segment: &dyn Segment) -> Result<()> {
         debug!(
             "Scanning window {} of {} at {:.1} MHz",
             self.window_num,
@@ -531,22 +538,22 @@ impl Window {
         );
 
         // Get peaks based on mode (station or band scanning)
-        let peaks = self.get_peaks(config, segment)?;
+        let peaks = self.get_peaks(segment)?;
 
         if !peaks.is_empty() {
             debug!("Found {} peaks in this window", peaks.len());
-            self.debug_peaks(&peaks, config);
-            let candidates = self.create_candidates_from_peaks(&peaks, config);
+            self.debug_peaks(&peaks);
+            let candidates = self.create_candidates_from_peaks(&peaks);
 
             // Process candidates while SDR is still running
             // Candidate analysis now properly waits for detection graphs to complete
-            let signals = self.process_candidates(candidates, config, segment)?;
+            let signals = self.process_candidates(candidates, segment)?;
 
             // No sleep needed - candidate analysis threads wait for detection completion
-            self.play_signals(signals, config, segment)
+            self.play_signals(signals, segment)
         } else {
             debug!("No peaks detected in this window");
-            self.debug_peaks(&peaks, config);
+            self.debug_peaks(&peaks);
             Ok(())
         }
     }
