@@ -303,8 +303,9 @@ impl Window {
         debug!("Audio graph thread finished");
 
         debug!(
-            "Finished playing audio for {:.1} MHz",
-            signal.frequency_hz / 1e6
+            "Finished playing audio for {:.1} MHz [{}]",
+            signal.frequency_hz / 1e6,
+            signal.audio_quality.to_human_string()
         );
         Ok(())
     }
@@ -364,16 +365,56 @@ impl Window {
         prev: rustradio::stream::ReadStream<rustradio::Complex>,
         graph: &mut rustradio::graph::Graph,
         quad_rate: f32,
+        signal: &crate::types::Signal,
     ) -> rustradio::stream::ReadStream<rustradio::Float> {
         use rustradio::{blockchain, blocks::QuadratureDemod};
 
-        let fm_gain = (quad_rate / (2.0 * 75_000.0)) * 0.8;
+        // Calculate adaptive FM gain based on signal characteristics
+        let base_gain = (quad_rate / (2.0 * 75_000.0)) * 0.8;
+        let fm_gain = Self::calculate_adaptive_fm_gain(base_gain, signal);
+
+        debug!(
+            "FM demodulator gain: base={:.3}, adaptive={:.3}, signal_strength={:.6}",
+            base_gain, fm_gain, signal.signal_strength
+        );
+
         let prev = blockchain![graph, prev, QuadratureDemod::new(prev, fm_gain)];
 
         let (deemphasis_block, deemphasis_stream) =
             crate::fm::deemph::Deemphasis::new(prev, quad_rate, 75.0);
         graph.add(Box::new(deemphasis_block));
         deemphasis_stream
+    }
+
+    fn calculate_adaptive_fm_gain(base_gain: f32, signal: &crate::types::Signal) -> f32 {
+        // Adaptive gain calculation based on signal strength (RMS value)
+        let gain_adjustment = if signal.signal_strength < 0.001 {
+            // Very weak signal - significant boost
+            5.0
+        } else if signal.signal_strength < 0.01 {
+            // Weak signal - moderate boost
+            3.0
+        } else if signal.signal_strength < 0.1 {
+            // Low signal - slight boost
+            1.5
+        } else {
+            // Normal/strong signal - no adjustment
+            1.0
+        };
+
+        // Additional adjustment based on audio quality
+        let quality_adjustment = match signal.audio_quality {
+            crate::audio_quality::AudioQuality::Good => 1.0,
+            crate::audio_quality::AudioQuality::Moderate => 1.2,
+            crate::audio_quality::AudioQuality::Poor => 1.5,
+            crate::audio_quality::AudioQuality::Static => 0.5, // Reduce gain for static
+            crate::audio_quality::AudioQuality::Unknown => 1.0,
+        };
+
+        let adaptive_gain = base_gain * gain_adjustment * quality_adjustment;
+
+        // Clamp to reasonable bounds to prevent overflow/underflow
+        adaptive_gain.clamp(0.05, 10.0)
     }
 
     fn create_audio_decimation_chain(
@@ -451,10 +492,28 @@ impl Window {
         let (prev, decimation) =
             Self::create_frequency_xlating_filter(prev, &mut graph, frequency_offset, config)?;
 
+        // Add signal-specific IF AGC after frequency translation to handle FM capture effect
+        // This processes only the target frequency signal, not the entire spectrum
+        // Note: Using a simple gain reduction since rustradio doesn't have AGC block yet
+        let prev = if !config.disable_if_agc {
+            debug!(
+                "Signal-specific IF AGC enabled in audio pipeline after frequency translation (using gain reduction)"
+            );
+            use rustradio::{Complex, blockchain, blocks::MultiplyConst};
+            blockchain![
+                graph,
+                prev,
+                MultiplyConst::new(prev, Complex::new(0.1, 0.0)) // Reduce strong signals by 10x (-20dB)
+            ]
+        } else {
+            debug!("Signal-specific IF AGC disabled in audio pipeline");
+            prev
+        };
+
         let decimated_samp_rate = config.samp_rate / decimation as f64;
         let quad_rate = decimated_samp_rate as f32;
 
-        let prev = Self::create_fm_demodulation_chain(prev, &mut graph, quad_rate);
+        let prev = Self::create_fm_demodulation_chain(prev, &mut graph, quad_rate, signal);
         let prev = Self::create_audio_decimation_chain(prev, &mut graph, quad_rate, config)?;
 
         graph.add(Box::new(crate::mpsc::MpscSink::new(
@@ -510,7 +569,11 @@ impl Window {
         debug!("Audio system ready for window {}", self.window_num);
 
         for signal in sorted_signals {
-            tracing::info!("playing {:.1} MHz", signal.frequency_hz / 1e6);
+            tracing::info!(
+                "playing {:.1} MHz [{}]",
+                signal.frequency_hz / 1e6,
+                signal.audio_quality.to_human_string()
+            );
             let sdr_rx = segment.audio_subscriber();
             let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
 

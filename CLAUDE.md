@@ -19,6 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `cargo run -- --stations 88.9e6 --duration 1 --json --scanning-windows 2` - Run tuned to specific frequency (88.9 MHz)
 - `make lint` - Format code and run clippy with fixes
 - When checking `--band fm`, use a timeout command with a suitable timeout
+- When troubleshooting a test, add `let _ = tracing_subscriber::fmt::try_init();` and use the `debug!` output if it's already available.
 
 # Committing to Git
 - Use one-line commit messages

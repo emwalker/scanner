@@ -1,3 +1,4 @@
+use crate::audio_quality::{AudioQuality, AudioQualityMetrics};
 use crate::types::Signal;
 use rustradio::block::{Block, BlockEOF, BlockName, BlockRet};
 use rustradio::stream::ReadStream;
@@ -53,134 +54,110 @@ pub struct SquelchBlock {
     frequency_hz: f64,
     detection_center_freq: f64,
 
-    // Detection algorithm state
-    sample_buffer: Vec<f32>,
-    rms_accumulator: f32,
-    zero_crossings: usize,
-    prev_sample_sign: bool,
+    // Audio quality analyzer (normalized, gain-invariant)
+    quality_analyzer: AudioQualityMetrics,
+    audio_samples: Vec<f32>,
 
-    // Thresholds for audio detection
-    min_rms_threshold: f32,
-    max_zero_crossing_rate: f32,
-    min_zero_crossing_rate: f32,
+    // Squelch configuration
+    squelch_disabled: bool,
+}
+
+/// Configuration for squelch block creation
+pub struct SquelchConfig {
+    pub sample_rate: f32,
+    pub learning_duration: f32,
+    pub signal_tx: Option<SyncSender<Signal>>,
+    pub frequency_hz: f64,
+    pub center_freq: f64,
+    pub squelch_disabled: bool,
+    pub fft_size: usize,
 }
 
 impl SquelchBlock {
-    pub fn new(
-        input: ReadStream<Float>,
-        sample_rate: f32,
-        learning_duration: f32,
-        signal_tx: Option<SyncSender<Signal>>,
-        frequency_hz: f64,
-        center_freq: f64,
-    ) -> (Self, Arc<AtomicU8>) {
-        let learning_samples_needed = (sample_rate * learning_duration) as usize;
+    pub fn new(input: ReadStream<Float>, config: SquelchConfig) -> (Self, Arc<AtomicU8>) {
+        let learning_samples_needed = (config.sample_rate * config.learning_duration) as usize;
         let decision_state = Arc::new(AtomicU8::new(Decision::Learning.to_u8()));
+
+        // Use normalized analyzer with gain-invariant metrics
+        let quality_analyzer = AudioQualityMetrics::new(config.sample_rate, config.fft_size);
 
         let block = Self {
             input,
             decision: Decision::Learning,
             decision_state: decision_state.clone(),
-            _sample_rate: sample_rate,
-            _learning_duration: learning_duration,
+            _sample_rate: config.sample_rate,
+            _learning_duration: config.learning_duration,
             samples_analyzed: 0,
             learning_samples_needed,
             analysis_completed: false,
-            signal_tx,
-            frequency_hz,
-            detection_center_freq: center_freq,
-            sample_buffer: Vec::with_capacity(learning_samples_needed),
-            rms_accumulator: 0.0,
-            zero_crossings: 0,
-            prev_sample_sign: false,
-
-            // Tuned thresholds based on captured audio measurements
-            // Real audio: RMS ~0.003, Var ~0.000005, ZC ~0.019
-            // Noise: RMS ~0.125, Var ~0.015, ZC ~0.069
-            min_rms_threshold: 0.0001, // Very low threshold - audio can be quiet
-            max_zero_crossing_rate: 1.0, // Temporarily set high to test other discriminators
-            min_zero_crossing_rate: 0.01, // Very low minimum
+            signal_tx: config.signal_tx,
+            frequency_hz: config.frequency_hz,
+            detection_center_freq: config.center_freq,
+            quality_analyzer,
+            audio_samples: Vec::with_capacity(learning_samples_needed),
+            squelch_disabled: config.squelch_disabled,
         };
 
         (block, decision_state)
     }
 
-    fn analyze_audio_content(&self) -> bool {
-        if self.sample_buffer.is_empty() {
-            return false;
-        }
+    fn analyze_audio_content(&mut self) -> (bool, AudioQuality, f32) {
+        // Use normalized analyzer with collected audio samples
+        let normalized_result = self
+            .quality_analyzer
+            .analyze(&self.audio_samples, self._sample_rate);
 
-        // Calculate RMS power
-        let rms = (self.rms_accumulator / self.sample_buffer.len() as f32).sqrt();
+        // Convert normalized quality score to legacy AudioQuality enum
+        // Based on calibration findings: threshold around 0.17 signal strength, conservative Good ratings
+        let quality = if normalized_result.normalized_signal_strength < 0.17 {
+            AudioQuality::Static
+        } else if normalized_result.quality_score >= 0.8 {
+            AudioQuality::Good
+        } else if normalized_result.quality_score >= 0.6 {
+            AudioQuality::Moderate
+        } else if normalized_result.quality_score >= 0.3 {
+            AudioQuality::Poor
+        } else {
+            AudioQuality::Static
+        };
 
-        // Calculate zero-crossing rate
-        let zero_crossing_rate = self.zero_crossings as f32 / self.sample_buffer.len() as f32;
-
-        // Calculate signal variance (measure of structure vs noise)
-        let mean = self.sample_buffer.iter().sum::<f32>() / self.sample_buffer.len() as f32;
-        let variance = self
-            .sample_buffer
-            .iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f32>()
-            / self.sample_buffer.len() as f32;
-
-        debug!(
-            rms = rms,
-            zero_crossing_rate = zero_crossing_rate,
-            variance = variance,
-            mean = mean,
-            samples = self.sample_buffer.len(),
-            frequency_mhz = self.frequency_hz / 1e6,
-            "Squelch analysis complete"
-        );
-
-        // Audio detection based on captured fixture measurements:
-        // Real audio: RMS ~0.003-0.327, Variance ~0.000005-0.106980, ZC ~0.011-0.071
-        // Noise: RMS ~0.125-0.131, Variance ~0.013974-0.014869, ZC ~0.061-0.069
-        let has_sufficient_power = rms > self.min_rms_threshold;
-        let reasonable_zero_crossings = zero_crossing_rate >= self.min_zero_crossing_rate
-            && zero_crossing_rate <= self.max_zero_crossing_rate;
-
-        // Use multiple discriminators to classify audio vs noise
-        // Noise tends to have: high RMS (~0.125+), high ZC rate (~0.06+), variance ~0.014
-        // Audio can vary widely but differs in at least one key metric
-        let likely_noise =
-            rms > 0.120 && zero_crossing_rate > 0.060 && (0.013..=0.015).contains(&variance);
-
-        let is_audio = has_sufficient_power && reasonable_zero_crossings && !likely_noise;
+        let is_audio = if self.squelch_disabled {
+            true // Always classify as audio when squelch is disabled
+        } else {
+            matches!(
+                quality,
+                AudioQuality::Good | AudioQuality::Moderate | AudioQuality::Poor
+            )
+        };
 
         debug!(
+            audio_quality = format!("{:?}", quality),
+            quality_score = normalized_result.quality_score,
+            signal_strength = normalized_result.normalized_signal_strength,
+            si_sdr_db = normalized_result.si_sdr_db,
+            temporal_stability = normalized_result.temporal_stability,
             decision = if is_audio { "AUDIO" } else { "NOISE" },
-            has_sufficient_power = has_sufficient_power,
-            reasonable_zero_crossings = reasonable_zero_crossings,
-            likely_noise = likely_noise,
+            squelch_disabled = self.squelch_disabled,
             frequency_mhz = self.frequency_hz / 1e6,
-            "Squelch decision made"
+            samples = self.samples_analyzed,
+            "Normalized squelch analysis complete"
         );
 
-        is_audio
+        (
+            is_audio,
+            quality,
+            normalized_result.normalized_signal_strength,
+        )
     }
 
     fn process_sample_for_analysis(&mut self, sample: f32) {
-        // Add to buffer for later analysis
-        self.sample_buffer.push(sample);
-
-        // Accumulate RMS calculation
-        self.rms_accumulator += sample * sample;
-
-        // Count zero crossings
-        let current_sign = sample >= 0.0;
-        if self.samples_analyzed > 0 && current_sign != self.prev_sample_sign {
-            self.zero_crossings += 1;
-        }
-        self.prev_sample_sign = current_sign;
-
+        // Collect samples for normalized analysis
+        self.audio_samples.push(sample);
         self.samples_analyzed += 1;
 
         // Check if learning period is complete and analysis hasn't been done yet
         if self.samples_analyzed >= self.learning_samples_needed && !self.analysis_completed {
-            let is_audio = self.analyze_audio_content();
+            let (is_audio, audio_quality, signal_strength) = self.analyze_audio_content();
             self.analysis_completed = true;
 
             if is_audio {
@@ -192,10 +169,6 @@ impl SquelchBlock {
                 self.decision_state
                     .store(Decision::Audio.to_u8(), Ordering::Relaxed);
 
-                // Calculate signal strength from RMS
-                let rms = (self.rms_accumulator / self.sample_buffer.len() as f32).sqrt();
-                let signal_strength = rms; // Use RMS as signal strength measure
-
                 // Push signal to queue if channel is available
                 if let Some(ref tx) = self.signal_tx {
                     let signal = Signal::new_fm(
@@ -205,6 +178,7 @@ impl SquelchBlock {
                         self._sample_rate as u32,
                         (self._learning_duration * 1000.0) as u32, // Convert to ms
                         self.detection_center_freq,
+                        audio_quality,
                     );
 
                     match tx.try_send(signal) {
@@ -247,7 +221,7 @@ impl BlockEOF for SquelchBlock {
             );
 
             // Analyze with whatever samples we have
-            let is_audio = self.analyze_audio_content();
+            let (is_audio, audio_quality, signal_strength) = self.analyze_audio_content();
             self.analysis_completed = true;
 
             if is_audio {
@@ -259,10 +233,6 @@ impl BlockEOF for SquelchBlock {
                 self.decision_state
                     .store(Decision::Audio.to_u8(), Ordering::Relaxed);
 
-                // Calculate signal strength from RMS
-                let rms = (self.rms_accumulator / self.sample_buffer.len() as f32).sqrt();
-                let signal_strength = rms;
-
                 // Push signal to queue if channel is available
                 if let Some(ref tx) = self.signal_tx {
                     let signal = Signal::new_fm(
@@ -272,6 +242,7 @@ impl BlockEOF for SquelchBlock {
                         self._sample_rate as u32,
                         (self.samples_analyzed as f32 / self._sample_rate * 1000.0) as u32, // Actual duration analyzed
                         self.detection_center_freq,
+                        audio_quality,
                     );
 
                     match tx.try_send(signal) {
@@ -366,14 +337,16 @@ mod tests {
         metadata: &crate::testing::AudioFileMetadata,
     ) -> SquelchBlock {
         let (_input_stream, input_read_stream) = WriteStream::new();
-        let (mut squelch, _decision_state) = SquelchBlock::new(
-            input_read_stream,
-            metadata.sample_rate,
-            metadata.squelch_learning_duration, // Use the actual learning duration from metadata
-            None,                               // no signal channel for tests
-            metadata.frequency_hz,
-            metadata.center_freq,
-        );
+        let squelch_config = SquelchConfig {
+            sample_rate: metadata.sample_rate,
+            learning_duration: metadata.squelch_learning_duration, // Use the actual learning duration from metadata
+            signal_tx: None,                                       // no signal channel for tests
+            frequency_hz: metadata.frequency_hz,
+            center_freq: metadata.center_freq,
+            squelch_disabled: false, // don't disable squelch for tests
+            fft_size: 1024,          // default FFT size for tests
+        };
+        let (mut squelch, _decision_state) = SquelchBlock::new(input_read_stream, squelch_config);
 
         // Process all available samples (simulating what would happen with this duration)
         for sample in samples {
@@ -399,7 +372,8 @@ mod tests {
 
         // Check if squelch completed analysis
         let is_audio = if squelch.analysis_completed {
-            squelch.analyze_audio_content()
+            let (audio_result, _quality, _signal_strength) = squelch.analyze_audio_content();
+            audio_result
         } else {
             // Simulate EOF behavior - analyze with available samples
             debug!(

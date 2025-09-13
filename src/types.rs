@@ -70,6 +70,8 @@ pub struct Signal {
     pub analysis_duration_ms: u32,
     /// Center frequency used by SDR during detection (needed for audio processing offset calculation)
     pub detection_center_freq: f64,
+    /// Audio quality assessment
+    pub audio_quality: crate::audio_quality::AudioQuality,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +88,7 @@ impl Signal {
         audio_sample_rate: u32,
         analysis_duration_ms: u32,
         detection_center_freq: f64,
+        audio_quality: crate::audio_quality::AudioQuality,
     ) -> Self {
         Self {
             frequency_hz,
@@ -96,6 +99,7 @@ impl Signal {
             detected_at: std::time::SystemTime::now(),
             analysis_duration_ms,
             detection_center_freq,
+            audio_quality,
         }
     }
 }
@@ -212,6 +216,10 @@ pub struct ScanningConfig {
     // AGC and window configuration
     pub agc_settling_time: f64,
     pub window_overlap: f64,
+    // Squelch configuration
+    pub disable_squelch: bool,
+    // IF AGC configuration
+    pub disable_if_agc: bool,
 }
 
 impl Default for ScanningConfig {
@@ -246,6 +254,10 @@ impl Default for ScanningConfig {
             // AGC and window defaults
             agc_settling_time: 3.0,
             window_overlap: 0.75,
+            // Squelch defaults
+            disable_squelch: false,
+            // IF AGC defaults
+            disable_if_agc: false,
         }
     }
 }
@@ -344,7 +356,11 @@ mod tests {
         let actual_output = input_rate * (interp as f32 / deci as f32);
         let error = (actual_output - 48000.0).abs();
 
-        assert!(error < 1.0, "Resampling error should be < 1 Hz, got {:.1} Hz", error);
+        assert!(
+            error < 1.0,
+            "Resampling error should be < 1 Hz, got {:.1} Hz",
+            error
+        );
         assert_eq!(interp, 312);
         assert_eq!(deci, 1000);
     }
@@ -360,13 +376,21 @@ mod tests {
         let (interp, deci) = config.calculate_resampler_ratios(44100.0);
         let actual_output = 44100.0 * (interp as f32 / deci as f32);
         let error = (actual_output - 48000.0).abs();
-        assert!(error < 10.0, "44.1->48 kHz error should be < 10 Hz, got {:.1} Hz", error);
+        assert!(
+            error < 10.0,
+            "44.1->48 kHz error should be < 10 Hz, got {:.1} Hz",
+            error
+        );
 
         // Test 96 kHz -> 48 kHz (simple 2:1 ratio)
         let (interp, deci) = config.calculate_resampler_ratios(96000.0);
         let actual_output = 96000.0 * (interp as f32 / deci as f32);
         let error = (actual_output - 48000.0).abs();
-        assert!(error < 1.0, "96->48 kHz error should be < 1 Hz, got {:.1} Hz", error);
+        assert!(
+            error < 1.0,
+            "96->48 kHz error should be < 1 Hz, got {:.1} Hz",
+            error
+        );
     }
 
     #[test]
@@ -380,7 +404,11 @@ mod tests {
         let (interp, deci) = config_44k.calculate_resampler_ratios(48000.0);
         let actual_output = 48000.0 * (interp as f32 / deci as f32);
         let error = (actual_output - 44100.0).abs();
-        assert!(error < 10.0, "48->44.1 kHz error should be < 10 Hz, got {:.1} Hz", error);
+        assert!(
+            error < 10.0,
+            "48->44.1 kHz error should be < 10 Hz, got {:.1} Hz",
+            error
+        );
 
         // Test with 96 kHz target
         let config_96k = ScanningConfig {
@@ -391,7 +419,11 @@ mod tests {
         let (interp, deci) = config_96k.calculate_resampler_ratios(48000.0);
         let actual_output = 48000.0 * (interp as f32 / deci as f32);
         let error = (actual_output - 96000.0).abs();
-        assert!(error < 1.0, "48->96 kHz error should be < 1 Hz, got {:.1} Hz", error);
+        assert!(
+            error < 1.0,
+            "48->96 kHz error should be < 1 Hz, got {:.1} Hz",
+            error
+        );
     }
 
     #[test]
@@ -406,12 +438,24 @@ mod tests {
         let (interp, deci) = config.calculate_resampler_ratios(input_rate);
 
         // Should use fallback if ratios become too large
-        assert!(interp <= 10000, "Interpolation factor should be <= 10000, got {}", interp);
-        assert!(deci <= 10000, "Decimation factor should be <= 10000, got {}", deci);
+        assert!(
+            interp <= 10000,
+            "Interpolation factor should be <= 10000, got {}",
+            interp
+        );
+        assert!(
+            deci <= 10000,
+            "Decimation factor should be <= 10000, got {}",
+            deci
+        );
 
         let actual_output = input_rate * (interp as f32 / deci as f32);
         let error = (actual_output - 48000.0).abs();
-        assert!(error < 100.0, "Fallback error should be reasonable, got {:.1} Hz", error);
+        assert!(
+            error < 100.0,
+            "Fallback error should be reasonable, got {:.1} Hz",
+            error
+        );
     }
 
     #[test]
@@ -426,7 +470,11 @@ mod tests {
         let actual_output = 48000.0 * (interp as f32 / deci as f32);
         let error = (actual_output - 48000.0).abs();
 
-        assert!(error < 0.1, "Unity ratio should have minimal error, got {:.3} Hz", error);
+        assert!(
+            error < 0.1,
+            "Unity ratio should have minimal error, got {:.3} Hz",
+            error
+        );
     }
 
     #[test]
@@ -440,10 +488,19 @@ mod tests {
         let (interp, deci) = config.calculate_resampler_ratios(24000.0); // 2:1 ratio
 
         // Should get a simple ratio like 2:1, not 2000:1000
-        assert!(interp <= 10 && deci <= 10, "Simple ratios should be reduced: got {}:{}", interp, deci);
+        assert!(
+            interp <= 10 && deci <= 10,
+            "Simple ratios should be reduced: got {}:{}",
+            interp,
+            deci
+        );
 
         let actual_output = 24000.0 * (interp as f32 / deci as f32);
         let error = (actual_output - 48000.0).abs();
-        assert!(error < 1.0, "Simple ratio error should be < 1 Hz, got {:.1} Hz", error);
+        assert!(
+            error < 1.0,
+            "Simple ratio error should be < 1 Hz, got {:.1} Hz",
+            error
+        );
     }
 }

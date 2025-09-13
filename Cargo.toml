@@ -44,3 +44,6 @@ tracing = "0.1.40"
 tracing-log = "0.2.0" # To bridge log macros to tracing
 tracing-subscriber = { version = "0.3.17", features = ["json"] }
 tokio = { version = "1", features = ["sync"] }
+
+[dev-dependencies]
+rand = "0.8"

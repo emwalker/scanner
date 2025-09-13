@@ -5,11 +5,11 @@ use crate::{
     testing,
     types::{self, Peak, Result, ScanningConfig},
 };
+use rustradio::blocks::QuadratureDemod;
 use rustradio::fir;
 use rustradio::graph::{Graph, GraphRunner};
 use rustradio::window::WindowType;
 use rustradio::{Complex, blockchain};
-use rustradio::{blocks::QuadratureDemod, fir::FirFilter};
 use std::{
     collections::HashSet,
     sync::{LazyLock, Mutex},
@@ -917,8 +917,8 @@ pub fn create_detection_graph(
     // Calculate frequency offset for translating filter
     let frequency_offset = tune_freq - center_freq;
 
-    // Get optimized filter configuration for detection stage
-    let filter_config = FmFilterConfig::for_purpose(FilterPurpose::Detection, samp_rate);
+    // Get optimized filter configuration for detection stage - use same narrow filter as audio pipeline
+    let filter_config = FmFilterConfig::for_purpose(FilterPurpose::Audio, samp_rate);
 
     debug!(
         message = "Detection stage filter configuration",
@@ -970,6 +970,24 @@ pub fn create_detection_graph(
     // Update effective sample rate after decimation
     let decimated_samp_rate = samp_rate / decimation as f64;
 
+    // Add signal-specific IF AGC after frequency translation to handle FM capture effect
+    // This matches the audio pipeline structure exactly: narrow filter → AGC → FM processing
+    // Note: Using a simple gain reduction since rustradio doesn't have AGC block yet
+    let prev = if !config.disable_if_agc {
+        debug!(
+            "Signal-specific IF AGC enabled in detection pipeline after frequency translation (using gain reduction)"
+        );
+        use rustradio::blocks::MultiplyConst;
+        blockchain![
+            graph,
+            prev,
+            MultiplyConst::new(prev, Complex::new(0.1, 0.0)) // Reduce strong signals by 10x (-20dB)
+        ]
+    } else {
+        debug!("Signal-specific IF AGC disabled in detection pipeline");
+        prev
+    };
+
     // Skip additional resampling if we're already close to desired quad rate
     let quad_rate = decimated_samp_rate as f32; // Use decimated rate directly to avoid extra resampling
 
@@ -978,21 +996,60 @@ pub fn create_detection_graph(
     let fm_gain = (quad_rate / (2.0 * 75_000.0)) * 0.8; // 0.8 factor to prevent overload
     let prev = blockchain![graph, prev, QuadratureDemod::new(prev, fm_gain)];
 
-    // DETECTION OPTIMIZATION: Minimal audio processing for squelch analysis only
-    // We don't need high-quality audio - just enough to distinguish audio from noise
+    // Add proper FM deemphasis to match audio pipeline processing
+    // This ensures both pipelines process the FM signal identically
+    let (deemphasis_block, prev) = crate::fm::deemph::Deemphasis::new(prev, quad_rate, 75.0);
+    graph.add(Box::new(deemphasis_block));
 
-    // Very light audio filter - just enough to remove high-frequency noise
-    let taps = fir::low_pass(
-        quad_rate,
-        15_000.0f32, // Higher cutoff (less filtering)
-        12_000.0f32, // Very wide transition (minimal taps)
-        &WindowType::Hamming,
-    );
-    let prev = blockchain![graph, prev, FirFilter::new(prev, &taps)];
+    // Add identical audio decimation chain to match audio pipeline exactly
+    let prev = {
+        use rustradio::{
+            Float, blockchain, blocks::RationalResampler, fir, fir::FirFilter, window::WindowType,
+        };
 
-    // SKIP EXPENSIVE RESAMPLING: Use current rate for squelch analysis
-    // The squelch block can analyze audio content at any reasonable sample rate
-    let analysis_rate = quad_rate; // ~133kHz is fine for audio vs noise detection
+        let target_audio_rate = config.audio_sample_rate as f32;
+        let resampling_ratio = target_audio_rate / quad_rate;
+
+        debug!(
+            "Detection audio resampling: {:.1} kHz → {:.1} kHz (ratio {:.4})",
+            quad_rate / 1000.0,
+            target_audio_rate / 1000.0,
+            resampling_ratio
+        );
+
+        let nyquist_freq = target_audio_rate / 2.0;
+        let audio_cutoff = (nyquist_freq * 0.8).min(15_000.0);
+        let transition_width = nyquist_freq * 0.4;
+
+        let taps = fir::low_pass(
+            quad_rate,
+            audio_cutoff,
+            transition_width,
+            &WindowType::Hamming,
+        );
+        let prev = blockchain![graph, prev, FirFilter::new(prev, &taps)];
+
+        // Calculate optimal rational resampler ratios dynamically
+        let (interp, deci) = config.calculate_resampler_ratios(quad_rate);
+        let actual_output_rate = quad_rate * (interp as f32 / deci as f32);
+
+        debug!(
+            "Detection rational resampler: {}:{} ratio, output rate: {:.1} Hz",
+            interp, deci, actual_output_rate
+        );
+
+        blockchain![
+            graph,
+            prev,
+            RationalResampler::<Float>::builder()
+                .interp(interp)
+                .deci(deci)
+                .build(prev)?
+        ]
+    };
+
+    // Use actual resampled rate for squelch analysis
+    let analysis_rate = config.audio_sample_rate as f32; // Now matches audio pipeline exactly
 
     // Audio capture block (captures samples while passing them through)
     // Create audio capturer if requested - needed for test fixture generation
@@ -1020,14 +1077,17 @@ pub fn create_detection_graph(
     graph.add(Box::new(audio_capture_block));
     let prev = audio_capture_output;
 
-    let (squelch_block, decision_state) = SquelchBlock::new(
-        prev,
-        analysis_rate, // Use current rate instead of resampled audio rate
-        config.squelch_learning_duration,
+    use crate::fm::squelch::SquelchConfig;
+    let squelch_config = SquelchConfig {
+        sample_rate: analysis_rate, // Use current rate instead of resampled audio rate
+        learning_duration: config.squelch_learning_duration,
         signal_tx,
-        tune_freq,
+        frequency_hz: tune_freq,
         center_freq,
-    );
+        squelch_disabled: config.disable_squelch,
+        fft_size: config.fft_size,
+    };
+    let (squelch_block, decision_state) = SquelchBlock::new(prev, squelch_config);
     graph.add(Box::new(squelch_block));
 
     Ok((graph, decision_state))
@@ -1134,6 +1194,10 @@ mod tests {
             // AGC and window configuration
             agc_settling_time: 3.0,
             window_overlap: 0.75,
+            // Squelch configuration
+            disable_squelch: false,
+            // IF AGC configuration
+            disable_if_agc: false,
         };
 
         // Create mock source with a signal at +100kHz offset from center

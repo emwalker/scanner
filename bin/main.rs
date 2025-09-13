@@ -94,6 +94,14 @@ struct Args {
     /// Window overlap percentage for band scanning (0.0-1.0, where 0.75 = 75% overlap)
     #[arg(long, default_value_t = 0.75)]
     window_overlap: f64,
+
+    /// Disable squelch analysis and generate signals from all candidates regardless of audio quality
+    #[arg(long)]
+    disable_squelch: bool,
+
+    /// Disable IF AGC in both detection and audio pipelines (AGC enabled by default)
+    #[arg(long)]
+    disable_if_agc: bool,
 }
 
 fn main() -> Result<()> {
@@ -138,6 +146,10 @@ fn main() -> Result<()> {
         // AGC and window configuration
         agc_settling_time: args.agc_settling_time,
         window_overlap: args.window_overlap,
+        // Squelch configuration
+        disable_squelch: args.disable_squelch,
+        // IF AGC configuration
+        disable_if_agc: args.disable_if_agc,
     };
 
     let driver = args.device_args.as_deref().unwrap_or(DEFAULT_DRIVER);

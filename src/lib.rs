@@ -1,3 +1,4 @@
+pub mod audio_quality;
 pub mod broadcast;
 pub mod file;
 pub mod fm;

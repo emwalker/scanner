@@ -1,0 +1,278 @@
+{
+  "calibration_metadata": {
+    "date": "2025-09-14",
+    "test_conditions": {
+      "duration_seconds": 5,
+      "sdr_sample_rate_hz": 2000000,
+      "audio_sample_rate_hz": 48000,
+      "gain_db": 24.0,
+      "if_agc_enabled": true,
+      "if_agc_gain_reduction": 0.1,
+      "squelch_disabled": true,
+      "command_template": "cargo run -- --stations {freq}e6 --duration 5 --disable-squelch --verbose --json"
+    },
+    "analyzer_version": "legacy",
+    "signal_strength_threshold": 0.25
+  },
+  "results": [
+    {
+      "frequency_mhz": 88.1,
+      "frequency_hz": 88100000,
+      "human_rating": "Static",
+      "analyzer_rating": "Static",
+      "match": true,
+      "signal_strength": 0.123,
+      "snr_db": null,
+      "notes": "Perfect match - static correctly identified"
+    },
+    {
+      "frequency_mhz": 88.3,
+      "frequency_hz": 88300000,
+      "human_rating": "Static",
+      "analyzer_rating": "Static",
+      "match": true,
+      "signal_strength": 0.122,
+      "snr_db": null,
+      "notes": "Perfect match - static correctly identified"
+    },
+    {
+      "frequency_mhz": 88.5,
+      "frequency_hz": 88500000,
+      "human_rating": "Static",
+      "analyzer_rating": "Static",
+      "match": true,
+      "signal_strength": 0.123,
+      "snr_db": null,
+      "notes": "Perfect match - static correctly identified"
+    },
+    {
+      "frequency_mhz": 88.7,
+      "frequency_hz": 88700000,
+      "human_rating": "Poor",
+      "analyzer_rating": "Static",
+      "match": false,
+      "signal_strength": 0.834,
+      "snr_db": 0.26,
+      "analyzer_details": {
+        "static_indicators": 3,
+        "reason": "High signal strength but classified as Static due to poor quality indicators"
+      },
+      "notes": "MISMATCH - High signal strength with audible content classified as static",
+      "fix_needed": "Review static classification logic for high signal strength cases"
+    },
+    {
+      "frequency_mhz": 88.9,
+      "frequency_hz": 88900000,
+      "human_rating": "Good",
+      "analyzer_rating": "Good",
+      "match": true,
+      "signal_strength": 0.267,
+      "snr_db": 5.48,
+      "analyzer_details": {
+        "good_indicators": 4,
+        "artifact_score": 1.418
+      },
+      "notes": "Perfect match - our reference 'good' station"
+    },
+    {
+      "frequency_mhz": 89.1,
+      "frequency_hz": 89100000,
+      "human_rating": "Poor",
+      "analyzer_rating": "Good",
+      "match": false,
+      "signal_strength": 0.682,
+      "snr_db": 0.88,
+      "analyzer_details": {
+        "good_indicators": 2,
+        "static_indicators": 2,
+        "reason": "Good signal strength classified as Good despite very low SNR"
+      },
+      "notes": "MISMATCH - High signal strength but very low SNR should indicate poor quality",
+      "fix_needed": "Weight SNR more heavily in classification logic"
+    },
+    {
+      "frequency_mhz": 89.3,
+      "frequency_hz": 89300000,
+      "human_rating": "Poor",
+      "analyzer_rating": "Static",
+      "match": false,
+      "signal_strength": 0.161,
+      "snr_db": null,
+      "notes": "MISMATCH - Signal strength threshold issue: audible content below 0.25 threshold",
+      "fix_needed": "Lower signal strength threshold to ~0.15-0.18"
+    },
+    {
+      "frequency_mhz": 89.5,
+      "frequency_hz": 89500000,
+      "human_rating": "Static",
+      "analyzer_rating": "Static",
+      "match": true,
+      "signal_strength": 0.125,
+      "snr_db": null,
+      "notes": "Perfect match - static correctly identified"
+    },
+    {
+      "frequency_mhz": 89.7,
+      "frequency_hz": 89700000,
+      "human_rating": "Moderate",
+      "analyzer_rating": "Good",
+      "match": false,
+      "signal_strength": 0.406,
+      "snr_db": 3.59,
+      "analyzer_details": {
+        "good_indicators": 2,
+        "moderate_indicators": 2,
+        "reason": "Algorithm chose Good over Moderate despite mixed indicators"
+      },
+      "notes": "MISMATCH - Moderate SNR should prevent Good classification",
+      "fix_needed": "More conservative Good rating criteria"
+    },
+    {
+      "frequency_mhz": 89.9,
+      "frequency_hz": 89900000,
+      "human_rating": "Static",
+      "analyzer_rating": "Static",
+      "match": true,
+      "signal_strength": 0.131,
+      "snr_db": null,
+      "notes": "Perfect match - static correctly identified"
+    },
+    {
+      "frequency_mhz": 90.1,
+      "frequency_hz": 90100000,
+      "human_rating": "Moderate",
+      "analyzer_rating": "Good",
+      "match": false,
+      "signal_strength": 0.367,
+      "snr_db": 9.65,
+      "analyzer_details": {
+        "good_indicators": 2,
+        "moderate_indicators": 1,
+        "poor_indicators": 1,
+        "static_indicators": 1,
+        "reason": "Good SNR but human detects quality issues not captured by spectral analysis"
+      },
+      "notes": "MISMATCH - Even with good technical metrics, human perception differs",
+      "fix_needed": "Research perceptual quality factors beyond spectral analysis"
+    },
+    {
+      "frequency_mhz": 90.3,
+      "frequency_hz": 90300000,
+      "human_rating": "Static",
+      "analyzer_rating": "Static",
+      "match": true,
+      "signal_strength": 0.121,
+      "snr_db": null,
+      "notes": "Perfect match - static correctly identified"
+    },
+    {
+      "frequency_mhz": 90.5,
+      "frequency_hz": 90500000,
+      "human_rating": "Static",
+      "analyzer_rating": "Static",
+      "match": true,
+      "signal_strength": 0.129,
+      "snr_db": null,
+      "notes": "Perfect match - static correctly identified"
+    },
+    {
+      "frequency_mhz": 90.7,
+      "frequency_hz": 90700000,
+      "human_rating": "Static",
+      "analyzer_rating": "Static",
+      "match": true,
+      "signal_strength": 0.049,
+      "snr_db": null,
+      "notes": "Perfect match - very low signal strength, clearly static"
+    },
+    {
+      "frequency_mhz": 90.9,
+      "frequency_hz": 90900000,
+      "human_rating": "Poor",
+      "analyzer_rating": "Static",
+      "match": false,
+      "signal_strength": 0.130,
+      "snr_db": null,
+      "notes": "MISMATCH - Signal strength threshold issue: audible content below 0.25 threshold",
+      "fix_needed": "Lower signal strength threshold to ~0.15-0.18"
+    },
+    {
+      "frequency_mhz": 91.1,
+      "frequency_hz": 91100000,
+      "human_rating": "Moderate",
+      "analyzer_rating": "Good",
+      "match": false,
+      "signal_strength": 0.282,
+      "snr_db": 5.82,
+      "analyzer_details": {
+        "good_indicators": 2,
+        "moderate_indicators": 1,
+        "poor_indicators": 1,
+        "static_indicators": 1,
+        "reason": "Mixed indicators but algorithm chose Good"
+      },
+      "notes": "MISMATCH - Algorithm too optimistic with mixed quality indicators",
+      "fix_needed": "More conservative Good classification logic"
+    },
+    {
+      "frequency_mhz": 91.3,
+      "frequency_hz": 91300000,
+      "human_rating": "Static",
+      "analyzer_rating": "Static",
+      "match": true,
+      "signal_strength": 0.125,
+      "snr_db": null,
+      "notes": "Perfect match - static correctly identified"
+    },
+    {
+      "frequency_mhz": 91.5,
+      "frequency_hz": 91500000,
+      "human_rating": "Moderate",
+      "analyzer_rating": "Good",
+      "match": false,
+      "signal_strength": 0.351,
+      "snr_db": 20.26,
+      "analyzer_details": {
+        "good_indicators": 3,
+        "moderate_indicators": 2,
+        "poor_indicators": 0,
+        "static_indicators": 0,
+        "reason": "Excellent technical metrics but human perception differs"
+      },
+      "notes": "CRITICAL MISMATCH - Even with excellent SNR (20.3dB), human perception is Moderate",
+      "fix_needed": "Fundamental algorithm limitation - research perceptual quality metrics"
+    },
+    {
+      "frequency_mhz": 91.7,
+      "frequency_hz": 91700000,
+      "human_rating": "Static",
+      "analyzer_rating": "Static",
+      "match": true,
+      "signal_strength": 0.125,
+      "snr_db": null,
+      "notes": "Perfect match - static correctly identified"
+    }
+  ],
+  "summary": {
+    "total_tested": 18,
+    "perfect_matches": 10,
+    "mismatches": 8,
+    "match_rate": 0.556,
+    "mismatch_types": {
+      "signal_strength_threshold": 3,
+      "algorithm_too_optimistic": 5
+    },
+    "key_insights": [
+      "Signal strength threshold of 0.25 too high - causes audible content to be classified as static",
+      "Algorithm too optimistic - even excellent technical metrics don't guarantee human satisfaction",
+      "SNR correlation exists but isn't sufficient - humans detect quality issues beyond spectral analysis",
+      "Most critical case: 91.5MHz with 20.3dB SNR still rated as Moderate by human"
+    ],
+    "recommended_fixes": [
+      "Lower signal strength threshold from 0.25 to 0.17",
+      "Implement more conservative Good rating criteria",
+      "Research perceptual audio quality metrics (PESQ, STOI)",
+      "Weight temporal stability and artifacts more heavily"
+    ]
+  }
+}

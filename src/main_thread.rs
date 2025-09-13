@@ -235,6 +235,8 @@ mod tests {
             spectral_threshold: 0.2,
             agc_settling_time: 3.0,
             window_overlap: 0.75,
+            disable_squelch: false,
+            disable_if_agc: false,
         }
     }
 

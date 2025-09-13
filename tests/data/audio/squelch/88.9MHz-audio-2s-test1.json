@@ -1,11 +1,11 @@
 {
   "sample_rate": 133333.33,
   "squelch_learning_duration": 2.0,
-  "total_samples": 262053,
+  "total_samples": 266666,
   "format": "f32_le",
   "expected_squelch_decision": "unknown",
-  "description": "Captured demodulated audio at 133333.33 Hz with 2 second squelch learning period",
+  "description": "Captured demodulated audio at 133333.33 Hz for 2 seconds",
   "frequency_hz": 88900000.0,
   "center_freq": 88900000.0,
-  "driver": "driver=sdrplay"
+  "driver": "driver=sdrplay, label=SDRplay Dev0 RSPduo 2301034E34 - Single Tuner, mode=ST, serial=2301034E34"
 }
