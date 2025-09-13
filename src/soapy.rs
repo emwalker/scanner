@@ -254,9 +254,15 @@ impl SoapySdrSource {
         // Sleep for 3 seconds before rustradio source block is instantiated
         std::thread::sleep(std::time::Duration::from_secs(3));
 
+        // Disable AGC to allow manual gain control
+        if device.has_gain_mode(soapysdr::Direction::Rx, 0)? {
+            debug!("Disabling AGC for manual gain control");
+            device.set_gain_mode(soapysdr::Direction::Rx, 0, false)?;
+        }
+
         let (sdr_source_block, sdr_output_stream) =
             rustradio::blocks::SoapySdrSource::builder(&device, frequency_hz, sample_rate)
-                .igain(normalized_gain)
+                .igain(normalized_gain / 48.0) // Normalize gain_db to 0.0-1.0 range
                 .build()?;
 
         debug!("rustradio SoapySdrSource created successfully");

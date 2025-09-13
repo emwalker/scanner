@@ -1152,6 +1152,7 @@ dependencies = [
 [[package]]
 name = "rustradio"
 version = "0.14.2"
+source = "git+https://github.com/ThomasHabets/rustradio.git?branch=main#3a4c779abe44ca77a25c1054364763388bda7f7e"
 dependencies = [
  "async-trait",
  "fast-math",
@@ -1164,19 +1165,17 @@ dependencies = [
  "rustradio_macros",
  "serde",
  "serde_json",
- "serde_yaml",
  "sha2",
  "soapysdr",
  "tar",
  "tempfile",
  "thiserror 2.0.16",
- "thousands",
- "timer",
 ]
 
 [[package]]
 name = "rustradio_macros"
 version = "0.14.2"
+source = "git+https://github.com/ThomasHabets/rustradio.git?branch=main#3a4c779abe44ca77a25c1054364763388bda7f7e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1187,6 +1186,7 @@ dependencies = [
 [[package]]
 name = "rustradio_macros_code"
 version = "0.1.0"
+source = "git+https://github.com/ThomasHabets/rustradio.git?branch=main#3a4c779abe44ca77a25c1054364763388bda7f7e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1266,19 +1266,6 @@ dependencies = [
  "memchr",
  "ryu",
  "serde",
-]
-
-[[package]]
-name = "serde_yaml"
-version = "0.9.34+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
 ]
 
 [[package]]
@@ -1457,27 +1444,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "thousands"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bf63baf9f5039dadc247375c29eb13706706cfde997d0330d05aa63a77d8820"
-
-[[package]]
 name = "thread_local"
 version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "timer"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31d42176308937165701f50638db1c31586f183f1aab416268216577aec7306b"
-dependencies = [
- "chrono",
 ]
 
 [[package]]
@@ -1602,12 +1574,6 @@ name = "unicode-ident"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a5f39404a5da50712a4c1eecf25e90dd62b613502b7e925fd4e4d19b5c96512"
-
-[[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "utf8parse"
