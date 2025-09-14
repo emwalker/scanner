@@ -62,10 +62,10 @@ struct Args {
     capture_duration: f64,
 
     #[arg(long)]
-    capture_audio: Option<String>,
+    audio_capture_dir: Option<String>,
 
-    #[arg(long, default_value_t = 3.0)]
-    capture_audio_duration: f64,
+    #[arg(long, default_value_t = 2.0)]
+    audio_capture_duration: f64,
 
     /// Duration in seconds for squelch to analyze audio vs noise
     #[arg(long, default_value_t = 2.0)]
@@ -120,8 +120,8 @@ fn main() -> Result<()> {
         audio_buffer_size: 8192, // Increased from 4K to 8K samples for better buffering
         audio_sample_rate: 48000,
         band: args.band,
-        capture_audio_duration: args.capture_audio_duration,
-        capture_audio: args.capture_audio,
+        capture_audio_duration: args.audio_capture_duration,
+        capture_audio: args.audio_capture_dir,
         capture_duration: args.capture_duration,
         capture_iq: args.capture_iq,
         debug_pipeline: args.debug_pipeline,

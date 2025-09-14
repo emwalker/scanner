@@ -76,8 +76,8 @@ pub struct Signal {
 
 #[derive(Debug, Clone)]
 pub enum ModulationType {
-    Fm,
-    // Future: Am, Digital, etc.
+    WFM,
+    // Future: NFM, Am, Digital, etc.
 }
 
 impl Signal {
@@ -94,7 +94,7 @@ impl Signal {
             frequency_hz,
             signal_strength,
             bandwidth_hz,
-            modulation: ModulationType::Fm,
+            modulation: ModulationType::WFM,
             audio_sample_rate,
             detected_at: std::time::SystemTime::now(),
             analysis_duration_ms,

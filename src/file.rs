@@ -1,8 +1,8 @@
-use crate::testing::AudioFileMetadata;
-use crate::types::Result;
+use crate::types::{ModulationType, Result};
 use serde::{Deserialize, Serialize};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufWriter, Write};
+use std::path::Path;
 use tracing::debug;
 
 /// Metadata for I/Q files
@@ -56,64 +56,159 @@ impl IqFileMetadata {
     }
 }
 
-/// Capturing wrapper for audio samples - saves demodulated audio to file for squelch testing
+/// Configuration for AudioCaptureSink creation
+pub struct AudioCaptureConfig {
+    pub output_dir: String,
+    pub sample_rate: f32,
+    pub capture_duration: f64,
+    pub frequency_hz: f64,
+    pub modulation_type: ModulationType,
+}
+
+/// Capturing wrapper for audio samples - saves demodulated audio to WAV file for analysis
 pub struct AudioCaptureSink {
     samples_captured: usize,
     max_samples: usize,
-    sample_rate: f32,
-    output_file: String,
-    capture_duration: f64,
-    squelch_learning_duration: f32,
-    frequency_hz: f64,
-    center_freq: f64,
-    driver: String,
     writer: Option<BufWriter<File>>,
 }
 
 impl AudioCaptureSink {
-    pub fn new(
-        output_file: &str,
-        sample_rate: f32,
-        capture_duration: f64,
-        squelch_learning_duration: f32,
-        frequency_hz: f64,
-        center_freq: f64,
-        driver: String,
-    ) -> crate::types::Result<Self> {
-        let max_samples = (sample_rate * capture_duration as f32) as usize;
+    pub fn new(config: AudioCaptureConfig) -> crate::types::Result<Self> {
+        let max_samples = (config.sample_rate * config.capture_duration as f32) as usize;
 
-        let file = File::create(output_file)?;
-        let writer = BufWriter::new(file);
+        // Generate filename with frequency formatting and auto-increment
+        let output_file = Self::generate_filename(
+            &config.output_dir,
+            config.frequency_hz,
+            &config.modulation_type,
+        )?;
+
+        // Create directory if it doesn't exist
+        if let Some(parent) = Path::new(&output_file).parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let file = File::create(&output_file)?;
+        let mut writer = BufWriter::new(file);
+
+        // Write WAV header
+        Self::write_wav_header(&mut writer, config.sample_rate, max_samples)?;
 
         debug!(
             message = "Starting audio capture",
             output_file = output_file,
-            capture_duration = capture_duration,
+            capture_duration = config.capture_duration,
             max_samples = max_samples,
-            sample_rate = sample_rate
+            sample_rate = config.sample_rate
         );
 
         Ok(Self {
             samples_captured: 0,
             max_samples,
-            sample_rate,
-            output_file: output_file.to_string(),
-            capture_duration,
-            squelch_learning_duration,
-            frequency_hz,
-            center_freq,
-            driver,
             writer: Some(writer),
         })
     }
 
-    /// Capture audio samples to file
+    /// Generate filename with frequency formatting and auto-increment
+    fn generate_filename(
+        output_dir: &str,
+        frequency_hz: f64,
+        modulation_type: &ModulationType,
+    ) -> crate::types::Result<String> {
+        // Format frequency with zero-padding and dot separators
+        let freq_str = Self::format_frequency(frequency_hz);
+
+        // Format modulation type
+        let mod_str = match modulation_type {
+            ModulationType::WFM => "wfm",
+        };
+
+        // Find next available test number
+        let mut test_num = 1;
+        loop {
+            let filename = format!(
+                "{}/{}-{}-{:03}.wav",
+                output_dir, freq_str, mod_str, test_num
+            );
+
+            if !Path::new(&filename).exists() {
+                return Ok(filename);
+            }
+
+            test_num += 1;
+            if test_num > 999 {
+                return Err(crate::types::ScannerError::Custom(
+                    "Maximum test number (999) exceeded for frequency".to_string(),
+                ));
+            }
+        }
+    }
+
+    /// Format frequency with zero-padding and dot separators
+    /// Example: 88900000.0 -> "0.088.900.000Hz"
+    fn format_frequency(frequency_hz: f64) -> String {
+        let freq_hz = frequency_hz as u64;
+
+        // Zero-pad to 10 digits (supports up to 9.999 GHz)
+        let padded = format!("{:010}", freq_hz);
+
+        // Insert dots every 3 digits from the right
+        let mut result = String::new();
+        for (i, ch) in padded.chars().enumerate() {
+            if i > 0 && (padded.len() - i) % 3 == 0 {
+                result.push('.');
+            }
+            result.push(ch);
+        }
+        result.push_str("Hz");
+        result
+    }
+
+    /// Write WAV file header (RIFF format with 32-bit IEEE float)
+    fn write_wav_header(
+        writer: &mut BufWriter<File>,
+        sample_rate: f32,
+        total_samples: usize,
+    ) -> crate::types::Result<()> {
+        let sample_rate = sample_rate as u32;
+        let channels = 1u16;
+        let bits_per_sample = 32u16;
+        let bytes_per_sample = bits_per_sample / 8;
+        let byte_rate = sample_rate * channels as u32 * bytes_per_sample as u32;
+        let block_align = channels * bytes_per_sample;
+        let data_size = total_samples as u32 * bytes_per_sample as u32;
+        let file_size = 36 + data_size;
+
+        // RIFF header
+        writer.write_all(b"RIFF")?;
+        writer.write_all(&file_size.to_le_bytes())?;
+        writer.write_all(b"WAVE")?;
+
+        // fmt chunk
+        writer.write_all(b"fmt ")?;
+        writer.write_all(&16u32.to_le_bytes())?; // chunk size
+        writer.write_all(&3u16.to_le_bytes())?; // format (3 = IEEE float)
+        writer.write_all(&channels.to_le_bytes())?;
+        writer.write_all(&sample_rate.to_le_bytes())?;
+        writer.write_all(&byte_rate.to_le_bytes())?;
+        writer.write_all(&block_align.to_le_bytes())?;
+        writer.write_all(&bits_per_sample.to_le_bytes())?;
+
+        // data chunk header
+        writer.write_all(b"data")?;
+        writer.write_all(&data_size.to_le_bytes())?;
+
+        Ok(())
+    }
+
+    /// Capture audio samples to WAV file
     pub fn capture_samples(&mut self, samples: &[f32]) -> crate::types::Result<()> {
         if let Some(ref mut writer) = self.writer
             && self.samples_captured < self.max_samples
         {
             let samples_to_capture = (self.max_samples - self.samples_captured).min(samples.len());
 
+            // Write 32-bit IEEE float samples directly
             for sample in samples.iter().take(samples_to_capture) {
                 writer.write_all(&sample.to_le_bytes())?;
             }
@@ -123,45 +218,14 @@ impl AudioCaptureSink {
 
         Ok(())
     }
-
-    /// Save metadata for the captured audio file
-    fn save_metadata(&self) -> crate::types::Result<()> {
-        let metadata = AudioFileMetadata::new(
-            self.sample_rate,
-            self.squelch_learning_duration, // Use squelch learning duration, not capture duration
-            self.samples_captured,
-            "unknown".to_string(), // Will need to be set by caller based on squelch decision
-            format!(
-                "Captured demodulated audio at {} Hz for {} seconds",
-                self.sample_rate, self.capture_duration
-            ),
-            self.frequency_hz,
-            self.center_freq,
-            self.driver.clone(),
-        );
-
-        let metadata_path = self.output_file.replace(".audio", ".json");
-        metadata.to_file(&metadata_path)?;
-
-        debug!(
-            message = "Audio metadata saved",
-            metadata_file = metadata_path,
-            total_samples = self.samples_captured
-        );
-
-        Ok(())
-    }
 }
 
 impl Drop for AudioCaptureSink {
     fn drop(&mut self) {
         if let Some(writer) = self.writer.take() {
-            debug!("Saving audio file and metadata");
+            debug!("Finalizing WAV file");
             if let Err(e) = writer.into_inner() {
                 tracing::error!("Failed to flush audio capture file on drop: {}", e);
-            }
-            if let Err(e) = self.save_metadata() {
-                tracing::error!("Failed to save audio metadata on drop: {}", e);
             }
         }
     }

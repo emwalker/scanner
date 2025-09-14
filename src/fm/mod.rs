@@ -906,7 +906,7 @@ pub fn create_detection_graph(
     center_freq: f64,
     tune_freq: f64,
     signal_tx: Option<std::sync::mpsc::SyncSender<crate::types::Signal>>,
-    device: &crate::soapy::Device,
+    _device: &crate::soapy::Device,
 ) -> rustradio::Result<(Graph, std::sync::Arc<std::sync::atomic::AtomicU8>)> {
     let mut graph = Graph::new();
 
@@ -1053,16 +1053,15 @@ pub fn create_detection_graph(
 
     // Audio capture block (captures samples while passing them through)
     // Create audio capturer if requested - needed for test fixture generation
-    let audio_capturer = if let Some(ref capture_file) = config.capture_audio {
-        match crate::file::AudioCaptureSink::new(
-            capture_file,
-            analysis_rate, // Use current sample rate for capture
-            config.capture_audio_duration,
-            config.squelch_learning_duration,
-            tune_freq,
-            center_freq,
-            device.0.clone(),
-        ) {
+    let audio_capturer = if let Some(ref capture_dir) = config.capture_audio {
+        let audio_config = crate::file::AudioCaptureConfig {
+            output_dir: capture_dir.clone(),
+            sample_rate: analysis_rate,
+            capture_duration: config.capture_audio_duration,
+            frequency_hz: tune_freq,
+            modulation_type: crate::types::ModulationType::WFM,
+        };
+        match crate::file::AudioCaptureSink::new(audio_config) {
             Ok(capturer) => Some(capturer),
             Err(e) => {
                 debug!("Failed to create audio capturer: {}", e);
