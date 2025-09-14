@@ -1,27 +1,7 @@
+use super::AudioQuality;
 use rustfft::{FftPlanner, num_complex::Complex};
 use std::collections::VecDeque;
 use tracing::debug;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum AudioQuality {
-    Good,     // High quality, minimal distortion
-    Moderate, // Audible content with some distortion/noise
-    Poor,     // Weak signal with significant distortion but still audible
-    Static,   // Primarily noise, no clear audio content
-    Unknown,  // Unable to determine quality (insufficient data)
-}
-
-impl AudioQuality {
-    pub fn to_human_string(&self) -> &'static str {
-        match self {
-            AudioQuality::Good => "good audio",
-            AudioQuality::Moderate => "moderate audio",
-            AudioQuality::Poor => "poor audio",
-            AudioQuality::Static => "static",
-            AudioQuality::Unknown => "unknown quality",
-        }
-    }
-}
 
 pub struct AudioQualityAnalyzer {
     fft_planner: FftPlanner<f32>,

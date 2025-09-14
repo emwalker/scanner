@@ -325,40 +325,15 @@ impl Window {
         frequency_offset: f64,
         config: &ScanningConfig,
     ) -> Result<(rustradio::stream::ReadStream<rustradio::Complex>, u32)> {
-        use rustradio::{fir, window::WindowType};
-
-        let filter_config = crate::fm::filter_config::FmFilterConfig::for_purpose(
-            crate::fm::filter_config::FilterPurpose::Audio,
-            config.samp_rate,
-        );
-
-        debug!(
-            message = "Audio stage filter configuration",
-            passband_khz = filter_config.channel_bandwidth / 1000.0,
-            transition_khz = filter_config.transition_width / 1000.0,
-            decimation = filter_config.decimation,
-            estimated_taps = filter_config.estimated_taps,
-            estimated_mflops = filter_config.estimated_mflops
-        );
-
-        let taps = fir::low_pass(
-            config.samp_rate as f32,
-            filter_config.cutoff_frequency(),
-            filter_config.transition_width,
-            &WindowType::Hamming,
-        );
-
-        let decimation = filter_config.decimation;
-        let (freq_xlating_block, stream) = crate::freq_xlating_fir::FreqXlatingFir::with_real_taps(
+        // Use shared pipeline builder for frequency xlating filter
+        crate::fm::pipeline_builder::FmPipelineBuilder::create_frequency_xlating_filter(
             prev,
-            &taps,
-            frequency_offset as f32,
-            config.samp_rate as f32,
-            decimation,
-        );
-        graph.add(Box::new(freq_xlating_block));
-
-        Ok((stream, decimation.try_into().unwrap()))
+            graph,
+            frequency_offset,
+            config,
+            crate::fm::filter_config::FilterPurpose::Audio,
+        )
+        .map_err(|e| e.into())
     }
 
     fn create_fm_demodulation_chain(
@@ -423,51 +398,11 @@ impl Window {
         quad_rate: f32,
         config: &ScanningConfig,
     ) -> Result<rustradio::stream::ReadStream<rustradio::Float>> {
-        use rustradio::{
-            Float, blockchain, blocks::RationalResampler, fir, fir::FirFilter, window::WindowType,
-        };
-
-        let target_audio_rate = config.audio_sample_rate as f32;
-        let resampling_ratio = target_audio_rate / quad_rate;
-
-        debug!(
-            "Audio resampling: {:.1} kHz → {:.1} kHz (ratio {:.4})",
-            quad_rate / 1000.0,
-            target_audio_rate / 1000.0,
-            resampling_ratio
-        );
-
-        let nyquist_freq = target_audio_rate / 2.0;
-        let audio_cutoff = (nyquist_freq * 0.8).min(15_000.0);
-        let transition_width = nyquist_freq * 0.4;
-
-        let taps = fir::low_pass(
-            quad_rate,
-            audio_cutoff,
-            transition_width,
-            &WindowType::Hamming,
-        );
-        let prev = blockchain![graph, prev, FirFilter::new(prev, &taps)];
-
-        // Calculate optimal rational resampler ratios dynamically
-        let (interp, deci) = config.calculate_resampler_ratios(quad_rate);
-        let actual_output_rate = quad_rate * (interp as f32 / deci as f32);
-
-        debug!(
-            "Rational resampler: {}:{} ratio, output rate: {:.1} Hz",
-            interp, deci, actual_output_rate
-        );
-
-        let prev = blockchain![
-            graph,
-            prev,
-            RationalResampler::<Float>::builder()
-                .interp(interp)
-                .deci(deci)
-                .build(prev)?
-        ];
-
-        Ok(prev)
+        // Use shared pipeline builder for audio decimation chain
+        crate::fm::pipeline_builder::FmPipelineBuilder::create_audio_decimation_chain(
+            prev, graph, quad_rate, config, "Audio",
+        )
+        .map_err(|e| e.into())
     }
 
     fn create_audio_fm_graph(
@@ -492,23 +427,10 @@ impl Window {
         let (prev, decimation) =
             Self::create_frequency_xlating_filter(prev, &mut graph, frequency_offset, config)?;
 
-        // Add signal-specific IF AGC after frequency translation to handle FM capture effect
-        // This processes only the target frequency signal, not the entire spectrum
-        // Note: Using a simple gain reduction since rustradio doesn't have AGC block yet
-        let prev = if !config.disable_if_agc {
-            debug!(
-                "Signal-specific IF AGC enabled in audio pipeline after frequency translation (using gain reduction)"
-            );
-            use rustradio::{Complex, blockchain, blocks::MultiplyConst};
-            blockchain![
-                graph,
-                prev,
-                MultiplyConst::new(prev, Complex::new(0.1, 0.0)) // Reduce strong signals by 10x (-20dB)
-            ]
-        } else {
-            debug!("Signal-specific IF AGC disabled in audio pipeline");
-            prev
-        };
+        // Add IF AGC using shared pipeline builder
+        let prev = crate::fm::pipeline_builder::FmPipelineBuilder::create_if_agc(
+            prev, &mut graph, config, "audio",
+        );
 
         let decimated_samp_rate = config.samp_rate / decimation as f64;
         let quad_rate = decimated_samp_rate as f32;

@@ -145,12 +145,12 @@ impl AudioCaptureSink {
     }
 
     /// Format frequency with zero-padding and dot separators
-    /// Example: 88900000.0 -> "0.088.900.000Hz"
+    /// Example: 88900000.0 -> "000.088.900.000Hz"
     fn format_frequency(frequency_hz: f64) -> String {
         let freq_hz = frequency_hz as u64;
 
-        // Zero-pad to 10 digits (supports up to 9.999 GHz)
-        let padded = format!("{:010}", freq_hz);
+        // Zero-pad to 12 digits (supports up to 999.999 GHz)
+        let padded = format!("{:012}", freq_hz);
 
         // Insert dots every 3 digits from the right
         let mut result = String::new();

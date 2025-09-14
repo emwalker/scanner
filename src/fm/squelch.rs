@@ -101,33 +101,19 @@ impl SquelchBlock {
         (block, decision_state)
     }
 
-    fn analyze_audio_content(&mut self) -> (bool, AudioQuality, f32) {
+    fn analyze_audio_content(&mut self) -> (AudioQuality, f32) {
         // Use normalized analyzer with collected audio samples
         let normalized_result = self
             .quality_analyzer
             .analyze(&self.audio_samples, self._sample_rate);
 
-        // Convert normalized quality score to legacy AudioQuality enum
-        // Based on calibration findings: threshold around 0.17 signal strength, conservative Good ratings
-        let quality = if normalized_result.normalized_signal_strength < 0.17 {
-            AudioQuality::Static
-        } else if normalized_result.quality_score >= 0.8 {
-            AudioQuality::Good
-        } else if normalized_result.quality_score >= 0.6 {
-            AudioQuality::Moderate
-        } else if normalized_result.quality_score >= 0.3 {
-            AudioQuality::Poor
-        } else {
-            AudioQuality::Static
-        };
+        // Get audio quality from normalized result
+        let quality = normalized_result.audio_quality;
 
         let is_audio = if self.squelch_disabled {
             true // Always classify as audio when squelch is disabled
         } else {
-            matches!(
-                quality,
-                AudioQuality::Good | AudioQuality::Moderate | AudioQuality::Poor
-            )
+            quality.is_audio()
         };
 
         debug!(
@@ -143,11 +129,7 @@ impl SquelchBlock {
             "Normalized squelch analysis complete"
         );
 
-        (
-            is_audio,
-            quality,
-            normalized_result.normalized_signal_strength,
-        )
+        (quality, normalized_result.normalized_signal_strength)
     }
 
     fn process_sample_for_analysis(&mut self, sample: f32) {
@@ -157,10 +139,10 @@ impl SquelchBlock {
 
         // Check if learning period is complete and analysis hasn't been done yet
         if self.samples_analyzed >= self.learning_samples_needed && !self.analysis_completed {
-            let (is_audio, audio_quality, signal_strength) = self.analyze_audio_content();
+            let (audio_quality, signal_strength) = self.analyze_audio_content();
             self.analysis_completed = true;
 
-            if is_audio {
+            if audio_quality.is_audio() {
                 debug!(
                     frequency_mhz = self.frequency_hz / 1e6,
                     "Squelch: Audio detected, enabling passthrough"
@@ -221,10 +203,10 @@ impl BlockEOF for SquelchBlock {
             );
 
             // Analyze with whatever samples we have
-            let (is_audio, audio_quality, signal_strength) = self.analyze_audio_content();
+            let (audio_quality, signal_strength) = self.analyze_audio_content();
             self.analysis_completed = true;
 
-            if is_audio {
+            if audio_quality.is_audio() {
                 debug!(
                     frequency_mhz = self.frequency_hz / 1e6,
                     "Squelch: Audio detected from partial samples at EOF"
@@ -372,8 +354,8 @@ mod tests {
 
         // Check if squelch completed analysis
         let is_audio = if squelch.analysis_completed {
-            let (audio_result, _quality, _signal_strength) = squelch.analyze_audio_content();
-            audio_result
+            let (quality, _signal_strength) = squelch.analyze_audio_content();
+            quality.is_audio()
         } else {
             // Simulate EOF behavior - analyze with available samples
             debug!(
