@@ -156,6 +156,9 @@ fn main() -> Result<()> {
     let console_writer = Arc::new(DefaultConsoleWriter);
     let logger = Arc::new(DefaultLogger::new(args.verbose, format));
 
+    // Initialize logging before SDR operations to suppress library messages
+    scanner::logging::init(logger.as_ref(), args.verbose)?;
+
     // Enumerate devices and serialize them to strings for later re-instantiation
     let device_strings = soapysdr::enumerate(driver)?
         .into_iter()

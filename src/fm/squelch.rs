@@ -1,4 +1,4 @@
-use crate::audio_quality::{AudioQuality, AudioQualityMetrics};
+use crate::audio_quality::{AudioQuality, RandomForestClassifier};
 use crate::types::Signal;
 use rustradio::block::{Block, BlockEOF, BlockName, BlockRet};
 use rustradio::stream::ReadStream;
@@ -54,8 +54,7 @@ pub struct SquelchBlock {
     frequency_hz: f64,
     detection_center_freq: f64,
 
-    // Audio quality analyzer (normalized, gain-invariant)
-    quality_analyzer: AudioQualityMetrics,
+    // CNN-based audio quality analysis (no stored analyzer needed)
     audio_samples: Vec<f32>,
 
     // Squelch configuration
@@ -78,8 +77,8 @@ impl SquelchBlock {
         let learning_samples_needed = (config.sample_rate * config.learning_duration) as usize;
         let decision_state = Arc::new(AtomicU8::new(Decision::Learning.to_u8()));
 
-        // Use normalized analyzer with gain-invariant metrics
-        let quality_analyzer = AudioQualityMetrics::new(config.sample_rate, config.fft_size);
+        // CNN-based audio quality analysis will be used directly in process_audio
+        debug!("SquelchBlock configured to use CNN-based audio quality analysis");
 
         let block = Self {
             input,
@@ -93,7 +92,6 @@ impl SquelchBlock {
             signal_tx: config.signal_tx,
             frequency_hz: config.frequency_hz,
             detection_center_freq: config.center_freq,
-            quality_analyzer,
             audio_samples: Vec::with_capacity(learning_samples_needed),
             squelch_disabled: config.squelch_disabled,
         };
@@ -102,13 +100,24 @@ impl SquelchBlock {
     }
 
     fn analyze_audio_content(&mut self) -> (AudioQuality, f32) {
-        // Use normalized analyzer with collected audio samples
-        let normalized_result = self
-            .quality_analyzer
-            .analyze(&self.audio_samples, self._sample_rate);
+        // Use Random Forest-based audio quality analysis
+        let mut classifier = RandomForestClassifier::new(self._sample_rate);
 
-        // Get audio quality from normalized result
-        let quality = normalized_result.audio_quality;
+        // Train the classifier (this could be cached/optimized in production)
+        let quality = match classifier
+            .train()
+            .and_then(|_| classifier.predict(&self.audio_samples))
+        {
+            Ok(result) => result.quality,
+            Err(e) => {
+                debug!(
+                    error = %e,
+                    frequency_mhz = self.frequency_hz / 1e6,
+                    "Random Forest analysis failed, defaulting to Static"
+                );
+                AudioQuality::Static
+            }
+        };
 
         let is_audio = if self.squelch_disabled {
             true // Always classify as audio when squelch is disabled
@@ -116,20 +125,27 @@ impl SquelchBlock {
             quality.is_audio()
         };
 
+        // Calculate signal strength from audio samples for compatibility
+        let signal_strength = if !self.audio_samples.is_empty() {
+            let rms = (self.audio_samples.iter().map(|s| s * s).sum::<f32>()
+                / self.audio_samples.len() as f32)
+                .sqrt();
+            rms * 100.0 // Scale to reasonable range
+        } else {
+            0.0
+        };
+
         debug!(
             audio_quality = format!("{:?}", quality),
-            quality_score = normalized_result.quality_score,
-            signal_strength = normalized_result.normalized_signal_strength,
-            si_sdr_db = normalized_result.si_sdr_db,
-            temporal_stability = normalized_result.temporal_stability,
+            signal_strength = signal_strength,
             decision = if is_audio { "AUDIO" } else { "NOISE" },
             squelch_disabled = self.squelch_disabled,
             frequency_mhz = self.frequency_hz / 1e6,
             samples = self.samples_analyzed,
-            "Normalized squelch analysis complete"
+            "CNN squelch analysis complete"
         );
 
-        (quality, normalized_result.normalized_signal_strength)
+        (quality, signal_strength)
     }
 
     fn process_sample_for_analysis(&mut self, sample: f32) {

@@ -8,7 +8,7 @@ use tracing::{debug, info};
 pub struct MainThread {
     config: ScanningConfig,
     console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
-    logger: Arc<dyn Logger + Send + Sync>,
+    _logger: Arc<dyn Logger + Send + Sync>,
     devices: Vec<soapy::Device>,
 }
 
@@ -22,13 +22,13 @@ impl MainThread {
         Ok(MainThread {
             config,
             console_writer,
-            logger,
+            _logger: logger,
             devices,
         })
     }
 
     pub fn run(&self, stations: Option<String>) -> Result<()> {
-        self.setup_logging()?;
+        // Logging is now initialized in main() before SDR operations
 
         // Discover available SDR devices
         if self.devices.is_empty() {
@@ -49,10 +49,6 @@ impl MainThread {
 
         self.console_writer.write_info("Scanning complete.");
         Ok(())
-    }
-
-    fn setup_logging(&self) -> Result<()> {
-        crate::logging::init(self.logger.as_ref())
     }
 
     fn parse_stations(&self, stations_str: &str) -> Result<Vec<f64>> {
@@ -197,10 +193,6 @@ mod tests {
                 init_called: Arc::new(Mutex::new(false)),
             }
         }
-
-        pub fn was_init_called(&self) -> bool {
-            *self.init_called.lock().unwrap()
-        }
     }
 
     impl Logger for MockLogger {
@@ -266,22 +258,6 @@ mod tests {
         if let Err(e) = result {
             assert!(e.to_string().contains("No SDR devices found"));
         }
-    }
-
-    #[test]
-    fn test_setup_logging() {
-        let config = create_test_config();
-        let console_writer = Arc::new(MockConsoleWriter::new());
-        let logger = Arc::new(MockLogger::new());
-        let logger_clone = Arc::clone(&logger);
-        let devices: Vec<soapy::Device> =
-            vec![soapy::Device("driver=mock, label=Test Device".to_string())];
-
-        let main_thread = MainThread::new(config, console_writer, logger, devices).unwrap();
-        let result = main_thread.setup_logging();
-
-        assert!(result.is_ok());
-        assert!(logger_clone.was_init_called());
     }
 
     #[test]

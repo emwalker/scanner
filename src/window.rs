@@ -98,6 +98,22 @@ impl Window {
     ) -> Vec<crate::types::Candidate> {
         let mut candidates = Vec::new();
 
+        if self.station_mode {
+            // Station mode: Create candidate directly for the specific station frequency
+            debug!(
+                "Station mode: Creating direct candidate for {:.1} MHz",
+                self.center_freq / 1e6
+            );
+            candidates.push(crate::types::Candidate::Fm(crate::fm::Candidate {
+                frequency_hz: self.center_freq,
+                signal_strength: "Strong".to_string(), // Assume strong signal for requested station
+                peak_count: 1,
+                max_magnitude: 1.0,
+                avg_magnitude: 1.0,
+            }));
+            return candidates;
+        }
+
         for candidate in crate::fm::find_candidates(peaks, &self.config, self.center_freq) {
             if self.config.debug_pipeline {
                 let frequency_offset = candidate.frequency_hz() - self.center_freq;
@@ -382,7 +398,8 @@ impl Window {
             crate::audio_quality::AudioQuality::Good => 1.0,
             crate::audio_quality::AudioQuality::Moderate => 1.2,
             crate::audio_quality::AudioQuality::Poor => 1.5,
-            crate::audio_quality::AudioQuality::Static => 0.5, // Reduce gain for static
+            crate::audio_quality::AudioQuality::NoAudio => 1.0, // Similar to Poor but signal present
+            crate::audio_quality::AudioQuality::Static => 0.5,  // Reduce gain for static
             crate::audio_quality::AudioQuality::Unknown => 1.0,
         };
 

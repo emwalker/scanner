@@ -1,4 +1,5 @@
 use crate::types::{Format, Logger, Result};
+use gag::Gag;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use tracing::Level;
@@ -47,15 +48,16 @@ impl Write for &TestWriter {
             let mut buffer = buffer.0.lock().unwrap();
             buffer.extend_from_slice(buf);
         } else {
-            // Write directly to tty/stdout for immediate output
+            // Always write directly to tty to bypass gag redirection
             use std::fs::OpenOptions;
             match OpenOptions::new().write(true).open("/dev/tty") {
                 Ok(mut tty) => {
-                    tty.write(buf)?;
+                    tty.write_all(buf)?;
                     tty.flush()?;
                 }
                 Err(_) => {
-                    io::stdout().write(buf)?;
+                    // Fallback to stdout if TTY is not available (e.g., in tests or when piped)
+                    io::stdout().write_all(buf)?;
                     io::stdout().flush()?;
                 }
             }
@@ -75,15 +77,16 @@ impl Write for TestWriter {
             let mut buffer = buffer.0.lock().unwrap();
             buffer.extend_from_slice(buf);
         } else {
-            // Write directly to tty/stdout for immediate output
+            // Always write directly to tty to bypass gag redirection
             use std::fs::OpenOptions;
             match OpenOptions::new().write(true).open("/dev/tty") {
                 Ok(mut tty) => {
-                    tty.write(buf)?;
+                    tty.write_all(buf)?;
                     tty.flush()?;
                 }
                 Err(_) => {
-                    io::stdout().write(buf)?;
+                    // Fallback to stdout if TTY is not available (e.g., in tests or when piped)
+                    io::stdout().write_all(buf)?;
                     io::stdout().flush()?;
                 }
             }
@@ -92,6 +95,15 @@ impl Write for TestWriter {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        use std::fs::OpenOptions;
+        match OpenOptions::new().write(true).open("/dev/tty") {
+            Ok(mut tty) => {
+                tty.flush()?;
+            }
+            Err(_) => {
+                io::stdout().flush()?;
+            }
+        }
         Ok(())
     }
 }
@@ -124,10 +136,6 @@ impl<'a> MakeWriter<'a> for ImmediateWriter {
         let _ = meta;
         self.make_writer()
     }
-}
-
-pub fn init(logger: &dyn Logger) -> Result<()> {
-    logger.init()
 }
 
 // flush() function removed - logging now flushes immediately
@@ -187,4 +195,12 @@ impl Logger for DefaultLogger {
 
         Ok(())
     }
+}
+
+pub fn init(logger: &dyn Logger, verbose: bool) -> Result<()> {
+    let _stdout_gag = if verbose { None } else { Some(Gag::stdout()?) };
+    let _stderr_gag = if verbose { None } else { Some(Gag::stderr()?) };
+    let _ = logger.init();
+    soapysdr::configure_logging();
+    Ok(())
 }

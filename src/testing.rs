@@ -371,15 +371,7 @@ impl FrequencyTest {
     /// Simulate the frequency translation that would occur in the FreqXlatingFir
     pub fn simulate_frequency_translation(&self) -> f64 {
         // This is what the FreqXlatingFir receives
-        let frequency_offset = self.target_station_freq - self.sdr_center_freq;
-        info!(
-            "[{}] SDR Center: {:.1} MHz, Target: {:.1} MHz, Offset: {:.1} kHz",
-            self.test_name,
-            self.sdr_center_freq / 1e6,
-            self.target_station_freq / 1e6,
-            frequency_offset / 1e3
-        );
-        frequency_offset
+        self.target_station_freq - self.sdr_center_freq
     }
 }
 

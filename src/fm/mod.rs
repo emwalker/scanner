@@ -70,13 +70,13 @@ impl Candidate {
                 freq_mhz = self.frequency_hz / 1e6,
                 "Frequency tracking disabled, using FFT estimate"
             );
-            // Round to nearest kHz to avoid floating point errors
-            (self.frequency_hz / 1000.0).round() * 1000.0
+            // Round to nearest 100 kHz to avoid floating point errors
+            (self.frequency_hz / 100000.0).round() * 100000.0
         } else {
             match self.run_frequency_tracking(config, sdr_rx.resubscribe()) {
                 Some(freq) => {
-                    // Round to nearest kHz to avoid floating point errors
-                    let rounded_freq = (freq / 1000.0).round() * 1000.0;
+                    // Round to nearest 100 kHz to avoid floating point errors
+                    let rounded_freq = (freq / 100000.0).round() * 100000.0;
                     debug!(
                         original_mhz = self.frequency_hz / 1e6,
                         refined_mhz = freq / 1e6,
@@ -91,13 +91,13 @@ impl Candidate {
                         freq_mhz = self.frequency_hz / 1e6,
                         "Frequency tracking failed, using FFT estimate"
                     );
-                    // Round to nearest kHz to avoid floating point errors
-                    (self.frequency_hz / 1000.0).round() * 1000.0
+                    // Round to nearest 100 kHz to avoid floating point errors
+                    (self.frequency_hz / 100000.0).round() * 100000.0
                 }
             }
         };
 
-        // Convert to kHz for deduplication (frequency is already rounded to nearest kHz)
+        // Convert to kHz for deduplication (frequency is already rounded to nearest 100 kHz)
         let frequency_khz = (refined_frequency / 1000.0) as u64;
 
         // Check if we've already processed this frequency
@@ -445,7 +445,7 @@ fn run_peak_detection_phase(
                     );
 
                     for peak in batch_peaks {
-                        let rounded_freq = (peak.frequency_hz / 1000.0).round() as u64;
+                        let rounded_freq = (peak.frequency_hz / 100000.0).round() as u64;
                         peaks_map
                             .entry(rounded_freq)
                             .and_modify(|e| {
@@ -549,8 +549,8 @@ fn extract_peaks_from_magnitudes(
             let freq_offset = (i as f64 / fft_size as f64) * sample_rate;
             let freq_hz = center_freq - (sample_rate / 2.0) + freq_offset;
 
-            // Round to nearest kHz to eliminate floating point precision errors
-            let freq_hz_rounded = (freq_hz / 1000.0).round() * 1000.0;
+            // Round to nearest 100 kHz to eliminate floating point precision errors
+            let freq_hz_rounded = (freq_hz / 100000.0).round() * 100000.0;
 
             peaks.push(Peak {
                 frequency_hz: freq_hz_rounded,
@@ -630,7 +630,7 @@ pub fn collect_peaks_from_source(
                     sample_source.center_frequency(),
                 );
                 for peak in batch_peaks {
-                    let rounded_freq = (peak.frequency_hz / 1000.0).round() as u64;
+                    let rounded_freq = (peak.frequency_hz / 100000.0).round() as u64;
                     peaks_map
                         .entry(rounded_freq)
                         .and_modify(|e| {
@@ -1206,5 +1206,40 @@ mod tests {
             "Should not classify 20 kHz span as narrow/sidelobe. Analysis: '{}'",
             analysis_summary
         );
+    }
+
+    #[test]
+    fn test_frequency_rounding_100khz() {
+        // Test that frequencies are rounded to nearest 100 kHz
+        let test_cases = vec![
+            // (input_hz, expected_hz)
+            (87_700_000.0, 87_700_000.0), // Exact 100 kHz boundary
+            (87_749_999.0, 87_700_000.0), // Just under 50 kHz threshold - round down
+            (87_750_000.0, 87_800_000.0), // Exactly 50 kHz - round up
+            (87_750_001.0, 87_800_000.0), // Just over 50 kHz threshold - round up
+            (87_799_999.0, 87_800_000.0), // Just under next boundary - round up
+            (87_800_000.0, 87_800_000.0), // Exact 100 kHz boundary
+            (93_125_000.0, 93_100_000.0), // 93.125 MHz -> 93.1 MHz
+            (93_175_000.0, 93_200_000.0), // 93.175 MHz -> 93.2 MHz
+            (93_149_999.0, 93_100_000.0), // Just under 50 kHz threshold
+            (93_150_000.0, 93_200_000.0), // Exactly 50 kHz threshold
+        ];
+
+        for (input_hz, expected_hz) in test_cases {
+            let rounded = (input_hz / 100000.0f64).round() * 100000.0f64;
+            assert_eq!(
+                rounded, expected_hz,
+                "Failed rounding {:.0} Hz to nearest 100 kHz. Expected {:.0}, got {:.0}",
+                input_hz, expected_hz, rounded
+            );
+
+            // Verify the rounding is actually 100 kHz aligned
+            assert_eq!(
+                (rounded as u64) % 100_000,
+                0,
+                "Rounded frequency {:.0} Hz is not aligned to 100 kHz boundary",
+                rounded
+            );
+        }
     }
 }
