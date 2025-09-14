@@ -8,6 +8,7 @@
 //! normalized system while preserving calibration results and enabling comprehensive testing.
 
 pub mod legacy;
+pub mod ml_regression;
 pub mod normalized;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,3 +45,6 @@ pub use legacy::AudioQualityAnalyzer;
 
 // Re-export normalized types for new code
 pub use normalized::{AudioQualityMetrics, QualityResult};
+
+// Re-export ML regression types
+pub use ml_regression::{MLAudioQualityAnalyzer, QualityScore, TrainingSample};
