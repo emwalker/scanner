@@ -26,3 +26,4 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Run `make lint` and fix all warnings. We should not create a commit with linter warnings.
 - In commit messages, omit the "Generated with" line
 - In commit messages, omit the "Co-Authored-By" line
+- There is no need at this time to maintain backwards compatability, as this is a greenfield project.

@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use scanner::audio_quality::AudioAnalyzer;
+use scanner::audio_quality::AudioQuality;
 use scanner::logging::DefaultLogger;
 use scanner::main_thread::{DefaultConsoleWriter, MainThread};
 use scanner::soapy;
@@ -28,7 +29,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Scan for FM radio stations
-    Scan(ScanArgs),
+    Scan(Box<ScanArgs>),
     /// Train audio quality machine learning model
     Train(TrainArgs),
 }
@@ -122,6 +123,11 @@ struct ScanArgs {
     #[arg(long)]
     disable_squelch: bool,
 
+    /// Audio quality threshold for squelch ("static", "no-audio", "poor", "moderate", "good")
+    /// Signals below this threshold will be filtered out. Default: "moderate"
+    #[arg(long, default_value = "moderate")]
+    squelch_threshold: String,
+
     /// Disable IF AGC in both detection and audio pipelines (AGC enabled by default)
     #[arg(long)]
     disable_if_agc: bool,
@@ -155,6 +161,20 @@ struct TrainArgs {
 
     #[arg(long)]
     verbose: bool,
+}
+
+fn parse_squelch_threshold(threshold_str: &str) -> Result<AudioQuality> {
+    match threshold_str.to_lowercase().as_str() {
+        "static" => Ok(AudioQuality::Static),
+        "no-audio" => Ok(AudioQuality::NoAudio),
+        "poor" => Ok(AudioQuality::Poor),
+        "moderate" => Ok(AudioQuality::Moderate),
+        "good" => Ok(AudioQuality::Good),
+        _ => Err(scanner::types::ScannerError::Custom(format!(
+            "Invalid squelch threshold '{}'. Valid values: static, no-audio, poor, moderate, good",
+            threshold_str
+        ))),
+    }
 }
 
 fn create_audio_analyzer_for_scan(
@@ -215,19 +235,23 @@ fn create_audio_analyzer_for_scan(
 }
 
 fn handle_scan_command(args: ScanArgs) -> Result<()> {
-    // Create audio analyzer based on CLI argument and squelch setting
-    let audio_analyzer = if args.disable_squelch {
-        scanner::audio_quality::AudioAnalyzer::pass_through()
+    // Parse squelch threshold, with --disable-squelch overriding to "static"
+    let squelch_threshold = if args.disable_squelch {
+        AudioQuality::Static
     } else {
-        create_audio_analyzer_for_scan(
-            args.audio_classifier.clone(),
-            48000.0,
-            args.model_path.as_deref(),
-        )?
+        parse_squelch_threshold(&args.squelch_threshold)?
     };
+
+    // Always create a real audio analyzer - threshold filtering happens in squelch logic
+    let audio_analyzer = create_audio_analyzer_for_scan(
+        args.audio_classifier.clone(),
+        48000.0,
+        args.model_path.as_deref(),
+    )?;
 
     tracing::debug!(
         classifier = audio_analyzer.classifier_name(),
+        squelch_threshold = format!("{:?}", squelch_threshold),
         "Audio analyzer initialized"
     );
 
@@ -272,6 +296,7 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         window_overlap: args.window_overlap,
         // Squelch configuration
         disable_squelch: args.disable_squelch,
+        squelch_threshold,
         // IF AGC configuration
         disable_if_agc: args.disable_if_agc,
         // Audio analyzer
@@ -408,7 +433,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Scan(args) => handle_scan_command(args),
+        Commands::Scan(args) => handle_scan_command(*args),
         Commands::Train(args) => handle_train_command(args),
     }
 }

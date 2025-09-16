@@ -44,6 +44,11 @@ impl AudioQuality {
         )
     }
 
+    /// Returns true if this quality level meets or exceeds the minimum threshold
+    pub fn meets_threshold(&self, min_threshold: AudioQuality) -> bool {
+        (*self as i32) >= (min_threshold as i32)
+    }
+
     /// Convert to numerical value for ML regression
     pub fn to_score(&self) -> f64 {
         *self as i32 as f64

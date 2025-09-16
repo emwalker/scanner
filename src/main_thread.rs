@@ -224,6 +224,7 @@ mod tests {
             agc_settling_time: 3.0,
             window_overlap: 0.75,
             disable_squelch: false,
+            squelch_threshold: crate::audio_quality::AudioQuality::Moderate,
             disable_if_agc: false,
             audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
         }

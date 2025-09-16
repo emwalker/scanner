@@ -1,3 +1,4 @@
+use crate::audio_quality::AudioQuality;
 use crate::fm;
 use thiserror::Error;
 
@@ -228,6 +229,7 @@ pub struct ScanningConfig {
     pub window_overlap: f64,
     // Squelch configuration
     pub disable_squelch: bool,
+    pub squelch_threshold: AudioQuality,
     // IF AGC configuration
     pub disable_if_agc: bool,
     // Audio quality analyzer
@@ -268,6 +270,7 @@ impl Default for ScanningConfig {
             window_overlap: 0.75,
             // Squelch defaults
             disable_squelch: false,
+            squelch_threshold: AudioQuality::Moderate,
             // IF AGC defaults
             disable_if_agc: false,
             // Audio analyzer default (pass-through for testing)

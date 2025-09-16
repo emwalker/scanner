@@ -60,6 +60,7 @@ pub struct SquelchBlock {
 
     // Squelch configuration
     squelch_disabled: bool,
+    threshold: AudioQuality,
 }
 
 /// Configuration for squelch block creation
@@ -70,6 +71,7 @@ pub struct SquelchConfig {
     pub frequency_hz: f64,
     pub center_freq: f64,
     pub squelch_disabled: bool,
+    pub threshold: AudioQuality,
     pub fft_size: usize,
     pub audio_analyzer: AudioAnalyzer,
 }
@@ -100,6 +102,7 @@ impl SquelchBlock {
             audio_samples: Vec::with_capacity(learning_samples_needed),
             audio_analyzer: config.audio_analyzer,
             squelch_disabled: config.squelch_disabled,
+            threshold: config.threshold,
         };
 
         (block, decision_state)
@@ -126,7 +129,7 @@ impl SquelchBlock {
         let is_audio = if self.squelch_disabled {
             true // Always classify as audio when squelch is disabled
         } else {
-            quality.is_audio()
+            quality.meets_threshold(self.threshold)
         };
 
         // Calculate signal strength from audio samples for compatibility
@@ -163,7 +166,7 @@ impl SquelchBlock {
             let (audio_quality, signal_strength) = self.analyze_audio_content();
             self.analysis_completed = true;
 
-            if audio_quality.is_audio() {
+            if audio_quality.meets_threshold(self.threshold) {
                 debug!(
                     frequency_mhz = self.frequency_hz / 1e6,
                     "Squelch: Audio detected, enabling passthrough"
@@ -227,7 +230,7 @@ impl BlockEOF for SquelchBlock {
             let (audio_quality, signal_strength) = self.analyze_audio_content();
             self.analysis_completed = true;
 
-            if audio_quality.is_audio() {
+            if audio_quality.meets_threshold(self.threshold) {
                 debug!(
                     frequency_mhz = self.frequency_hz / 1e6,
                     "Squelch: Audio detected from partial samples at EOF"
@@ -347,6 +350,7 @@ mod tests {
             frequency_hz: metadata.frequency_hz,
             center_freq: metadata.center_freq,
             squelch_disabled: false, // don't disable squelch for tests
+            threshold: AudioQuality::Moderate, // default threshold for tests
             fft_size: 1024,          // default FFT size for tests
             audio_analyzer: AudioAnalyzer::mock(), // use mock analyzer for tests
         };
@@ -377,7 +381,7 @@ mod tests {
         // Check if squelch completed analysis
         let is_audio = if squelch.analysis_completed {
             let (quality, _signal_strength) = squelch.analyze_audio_content();
-            quality.is_audio()
+            quality.meets_threshold(squelch.threshold)
         } else {
             // Simulate EOF behavior - analyze with available samples
             debug!(

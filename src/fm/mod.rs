@@ -994,6 +994,7 @@ pub fn create_detection_graph(
         frequency_hz: tune_freq,
         center_freq,
         squelch_disabled: config.disable_squelch,
+        threshold: config.squelch_threshold,
         fft_size: config.fft_size,
         audio_analyzer,
     };
@@ -1106,6 +1107,7 @@ mod tests {
             window_overlap: 0.75,
             // Squelch configuration
             disable_squelch: false,
+            squelch_threshold: crate::audio_quality::AudioQuality::Moderate,
             // IF AGC configuration
             disable_if_agc: false,
             // Audio analyzer for tests
