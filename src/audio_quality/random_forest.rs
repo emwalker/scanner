@@ -1,8 +1,6 @@
 use crate::audio_quality::{AudioFeatures, AudioQuality, get_training_dataset};
-use hound::{SampleFormat, WavReader};
 use smartcore::ensemble::random_forest_classifier::RandomForestClassifier;
 use smartcore::linalg::basic::matrix::DenseMatrix;
-use std::path::Path;
 use tracing::debug;
 
 /// Audio quality classifier using Random Forest algorithm
@@ -26,55 +24,6 @@ impl AudioQualityClassifier {
             sample_rate,
             model: None,
         }
-    }
-
-    /// Load WAV file and return audio samples
-    pub fn load_wav_file<P: AsRef<Path>>(&self, path: P) -> crate::types::Result<Vec<f32>> {
-        let mut reader = WavReader::open(path.as_ref()).map_err(|e| {
-            crate::types::ScannerError::Custom(format!("Failed to open WAV file: {}", e))
-        })?;
-
-        let spec = reader.spec();
-        debug!(
-            path = %path.as_ref().display(),
-            channels = spec.channels,
-            sample_rate = spec.sample_rate,
-            bits_per_sample = spec.bits_per_sample,
-            sample_format = ?spec.sample_format,
-            "Loading WAV file"
-        );
-
-        let mut samples = Vec::new();
-        match spec.sample_format {
-            SampleFormat::Float => {
-                for sample in reader.samples::<f32>() {
-                    samples.push(sample.map_err(|e| {
-                        crate::types::ScannerError::Custom(format!("Failed to read sample: {}", e))
-                    })?);
-                }
-            }
-            SampleFormat::Int => {
-                let max_val = (1i32 << (spec.bits_per_sample - 1)) as f32;
-                for sample in reader.samples::<i32>() {
-                    let s = sample.map_err(|e| {
-                        crate::types::ScannerError::Custom(format!("Failed to read sample: {}", e))
-                    })?;
-                    samples.push(s as f32 / max_val);
-                }
-            }
-        }
-
-        // Convert to mono if stereo by averaging channels
-        if spec.channels == 2 {
-            let mono_samples: Vec<f32> = samples
-                .chunks(2)
-                .map(|chunk| (chunk[0] + chunk[1]) / 2.0)
-                .collect();
-            samples = mono_samples;
-        }
-
-        debug!(sample_count = samples.len(), "Loaded WAV samples");
-        Ok(samples)
     }
 
     /// Extract comprehensive audio features
@@ -136,7 +85,7 @@ impl AudioQualityClassifier {
                 continue;
             }
 
-            let audio_samples = match self.load_wav_file(&wav_path) {
+            let audio_samples = match crate::wave::load_file(&wav_path) {
                 Ok(samples) => samples,
                 Err(e) => {
                     debug!(filename = %filename, error = %e, "Failed to load training file");

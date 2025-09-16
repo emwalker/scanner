@@ -106,7 +106,7 @@ impl AudioQualityMetrics {
             let _frequency_hz = Self::extract_frequency_from_filename(filename)?;
 
             // Load WAV file and compute features
-            match Self::load_wav_samples(&wav_path) {
+            match crate::wave::load_file(&wav_path) {
                 Ok(samples) => {
                     if !samples.is_empty() {
                         // Run normalized audio analysis on the WAV samples
@@ -174,27 +174,6 @@ impl AudioQualityMetrics {
             "Failed to extract frequency from filename: {}",
             filename
         )))
-    }
-
-    /// Load WAV file samples (32-bit IEEE float format)
-    fn load_wav_samples(wav_path: &str) -> crate::types::Result<Vec<f32>> {
-        use std::fs::File;
-        use std::io::{BufReader, Read, Seek, SeekFrom};
-
-        let mut file = BufReader::new(File::open(wav_path)?);
-
-        // Skip WAV header (44 bytes for standard WAV)
-        file.seek(SeekFrom::Start(44))?;
-
-        let mut samples = Vec::new();
-        let mut buffer = [0u8; 4]; // 32-bit IEEE float samples
-
-        while file.read_exact(&mut buffer).is_ok() {
-            let sample = f32::from_le_bytes(buffer);
-            samples.push(sample);
-        }
-
-        Ok(samples)
     }
 
     /// Fallback to hybrid analysis when ML is not available or fails

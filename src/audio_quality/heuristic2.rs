@@ -1,6 +1,4 @@
 use crate::audio_quality::AudioQuality;
-use hound::{SampleFormat, WavReader};
-use std::path::Path;
 use tracing::debug;
 
 /// Audio quality classifier using handcrafted features
@@ -47,55 +45,6 @@ pub struct QualityResult {
 impl AudioQualityClassifier {
     pub fn new(sample_rate: f32) -> Self {
         Self { sample_rate }
-    }
-
-    /// Load WAV file and return audio samples
-    pub fn load_wav_file<P: AsRef<Path>>(&self, path: P) -> crate::types::Result<Vec<f32>> {
-        let mut reader = WavReader::open(path.as_ref()).map_err(|e| {
-            crate::types::ScannerError::Custom(format!("Failed to open WAV file: {}", e))
-        })?;
-
-        let spec = reader.spec();
-        debug!(
-            path = %path.as_ref().display(),
-            channels = spec.channels,
-            sample_rate = spec.sample_rate,
-            bits_per_sample = spec.bits_per_sample,
-            sample_format = ?spec.sample_format,
-            "Loading WAV file"
-        );
-
-        let mut samples = Vec::new();
-        match spec.sample_format {
-            SampleFormat::Float => {
-                for sample in reader.samples::<f32>() {
-                    samples.push(sample.map_err(|e| {
-                        crate::types::ScannerError::Custom(format!("Failed to read sample: {}", e))
-                    })?);
-                }
-            }
-            SampleFormat::Int => {
-                let max_val = (1i32 << (spec.bits_per_sample - 1)) as f32;
-                for sample in reader.samples::<i32>() {
-                    let s = sample.map_err(|e| {
-                        crate::types::ScannerError::Custom(format!("Failed to read sample: {}", e))
-                    })?;
-                    samples.push(s as f32 / max_val);
-                }
-            }
-        }
-
-        // Convert to mono if stereo by averaging channels
-        if spec.channels == 2 {
-            let mono_samples: Vec<f32> = samples
-                .chunks(2)
-                .map(|chunk| (chunk[0] + chunk[1]) / 2.0)
-                .collect();
-            samples = mono_samples;
-        }
-
-        debug!(sample_count = samples.len(), "Loaded WAV samples");
-        Ok(samples)
     }
 
     /// Extract comprehensive audio features

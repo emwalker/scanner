@@ -25,7 +25,7 @@ fn test_ml_feature_analysis() {
             continue;
         }
 
-        let audio_samples = match classifier.load_wav_file(&wav_path) {
+        let audio_samples = match scanner::wave::load_file(&wav_path) {
             Ok(samples) => samples,
             Err(e) => {
                 println!("⚠ Warning: Failed to load WAV file {}: {}", filename, e);
@@ -82,7 +82,7 @@ fn test_ml_feature_analysis() {
             continue;
         }
 
-        if let Ok(audio_samples) = classifier.load_wav_file(&wav_path) {
+        if let Ok(audio_samples) = scanner::wave::load_file(&wav_path) {
             if let Ok(features) = classifier.extract_features(&audio_samples) {
                 all_features.push((features, *expected_quality));
             }

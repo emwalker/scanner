@@ -13,4 +13,5 @@ pub mod sdr;
 pub mod soapy;
 pub mod testing;
 pub mod types;
+pub mod wave;
 pub mod window;

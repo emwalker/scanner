@@ -33,7 +33,7 @@ fn test_real_ml_accuracy_on_training_data() {
         }
 
         // Load and decode the WAV file
-        let audio_samples = match classifier.load_wav_file(&wav_path) {
+        let audio_samples = match scanner::wave::load_file(&wav_path) {
             Ok(samples) => samples,
             Err(e) => {
                 println!("⚠ Warning: Failed to load WAV file {}: {}", filename, e);

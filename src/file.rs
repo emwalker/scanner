@@ -1,7 +1,7 @@
 use crate::types::{ModulationType, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::path::Path;
 use tracing::debug;
 
@@ -69,7 +69,7 @@ pub struct AudioCaptureConfig {
 pub struct AudioCaptureSink {
     samples_captured: usize,
     max_samples: usize,
-    writer: Option<BufWriter<File>>,
+    writer: Option<crate::wave::BufWriter>,
 }
 
 impl AudioCaptureSink {
@@ -89,10 +89,10 @@ impl AudioCaptureSink {
         }
 
         let file = File::create(&output_file)?;
-        let mut writer = BufWriter::new(file);
+        let mut writer = crate::wave::BufWriter::new(file);
 
         // Write WAV header
-        Self::write_wav_header(&mut writer, config.sample_rate, max_samples)?;
+        writer.write_header(config.sample_rate, max_samples)?;
 
         debug!(
             message = "Starting audio capture",
@@ -162,43 +162,6 @@ impl AudioCaptureSink {
         }
         result.push_str("Hz");
         result
-    }
-
-    /// Write WAV file header (RIFF format with 32-bit IEEE float)
-    fn write_wav_header(
-        writer: &mut BufWriter<File>,
-        sample_rate: f32,
-        total_samples: usize,
-    ) -> crate::types::Result<()> {
-        let sample_rate = sample_rate as u32;
-        let channels = 1u16;
-        let bits_per_sample = 32u16;
-        let bytes_per_sample = bits_per_sample / 8;
-        let byte_rate = sample_rate * channels as u32 * bytes_per_sample as u32;
-        let block_align = channels * bytes_per_sample;
-        let data_size = total_samples as u32 * bytes_per_sample as u32;
-        let file_size = 36 + data_size;
-
-        // RIFF header
-        writer.write_all(b"RIFF")?;
-        writer.write_all(&file_size.to_le_bytes())?;
-        writer.write_all(b"WAVE")?;
-
-        // fmt chunk
-        writer.write_all(b"fmt ")?;
-        writer.write_all(&16u32.to_le_bytes())?; // chunk size
-        writer.write_all(&3u16.to_le_bytes())?; // format (3 = IEEE float)
-        writer.write_all(&channels.to_le_bytes())?;
-        writer.write_all(&sample_rate.to_le_bytes())?;
-        writer.write_all(&byte_rate.to_le_bytes())?;
-        writer.write_all(&block_align.to_le_bytes())?;
-        writer.write_all(&bits_per_sample.to_le_bytes())?;
-
-        // data chunk header
-        writer.write_all(b"data")?;
-        writer.write_all(&data_size.to_le_bytes())?;
-
-        Ok(())
     }
 
     /// Capture audio samples to WAV file
