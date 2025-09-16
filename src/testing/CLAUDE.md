@@ -18,24 +18,10 @@ Testing SDR applications presents unique challenges due to their real-time, sign
 - **Regression testing**: Detect changes in signal processing behavior
 - **Sharing**: Test datasets can be shared across teams and tools
 
-**Standards**: 
+**Standards**:
 - **SigMF (Signal Metadata Format)**: Open standard for RF signal metadata
 - **IQEngine**: Web-based platform for sharing and analyzing RF I/Q recordings
 - **SDRplay/SDRangel**: Provide collections of sample I/Q files
-
-**Implementation in Our Framework**:
-```rust
-// Load I/Q test fixture with metadata
-let (sample_source, metadata) = load_iq_fixture("test_data/88_9_signal.iq")?;
-
-// Test peak detection with known signal
-let result = test_peak_detection_isolated(
-    "test_data/fm_signal.iq", 
-    &[88.9e6], // Expected peaks
-    &config, 
-    true // Debug mode
-)?;
-```
 
 ### 2. Synthetic Signal Generation
 
@@ -43,7 +29,7 @@ let result = test_peak_detection_isolated(
 
 **Applications**:
 - **Tone testing**: Pure sinusoids at known frequencies
-- **Noise testing**: White/pink noise for dynamic range testing  
+- **Noise testing**: White/pink noise for dynamic range testing
 - **Modulated signals**: Generate AM/FM/PSK signals with known parameters
 - **Multi-signal scenarios**: Complex RF environments with multiple signals
 
@@ -52,27 +38,11 @@ let result = test_peak_detection_isolated(
 - **Signal Sources**: Generate tones, chirps, and modulated signals
 - **Noise Sources**: Add controlled noise for robustness testing
 
-**Implementation Pattern**:
-```rust
-// Create synthetic FM signal at 100 kHz offset
-let mut mock_source = MockSampleSource::new(
-    1_000_000.0,  // Sample rate
-    88.9e6,       // Center frequency
-    100_000,      // Sample count
-    100_000.0,    // Signal offset frequency
-);
-```
-
 ### 3. Pipeline Isolation Testing
 
 **Concept**: Test individual blocks and stages of the signal processing pipeline separately.
 
 **GNU Radio Best Practice**: "Write QA code first" for every block.
-
-**Our Implementation**:
-- **Peak Detection Testing**: Isolated from frequency translation
-- **Frequency Translation Testing**: Isolated from peak detection  
-- **End-to-End Pipeline Testing**: Complete signal flow validation
 
 **Benefits**:
 - **Faster debugging**: Identify which stage has issues
@@ -88,7 +58,7 @@ let mut mock_source = MockSampleSource::new(
 - **Swept frequency testing**: Characterize filter responses
 - **Dynamic range testing**: Test with various signal levels
 
-**Applications in Our Framework**:
+**Applications**:
 - **Filter verification**: FreqXlatingFir bandwidth and response
 - **Demodulator testing**: FM demodulation accuracy
 - **AGC testing**: Automatic gain control behavior
@@ -97,37 +67,25 @@ let mut mock_source = MockSampleSource::new(
 
 **Concept**: Capture and analyze detailed logs to detect behavioral changes.
 
-**Our Implementation**:
-```rust
-// Capture logs during testing
-let (result, logs) = with_captured_logs(true, Format::Json, || {
-    test_complete_pipeline_debug(iq_file, station_freq, mode, &config)
-})?;
-
-// Analyze captured JSON logs
-assert!(logs.contains("Peak detection test started"));
-assert!(logs.contains("Candidate created"));
-```
-
 **Benefits**:
 - **Behavioral tracking**: Detect subtle changes in processing
 - **Performance monitoring**: Track processing times and resource usage
 - **Debug information**: Detailed trace of signal processing steps
 
-## Testing Categories for Our Scanner Application
+## Testing Categories for SDR Applications
 
 ### Unit Tests
-- **Individual blocks**: FreqXlatingFir, peak detection, candidate creation
+- **Individual blocks**: Filters, peak detection, signal processing components
 - **Mathematical operations**: Frequency calculations, offset validation
-- **Data structures**: Peak, Candidate, configuration validation
+- **Data structures**: Signal metadata, configuration validation
 
-### Integration Tests  
-- **Pipeline segments**: Peak detection → candidate creation → frequency translation
+### Integration Tests
+- **Pipeline segments**: Multi-block signal processing chains
 - **Multi-block interactions**: How blocks work together
 - **Configuration scenarios**: Different scan modes and parameters
 
 ### System Tests
-- **End-to-end scenarios**: Complete scanning workflows
+- **End-to-end scenarios**: Complete signal processing workflows
 - **Hardware integration**: SDR device interaction (when available)
 - **Real-world signals**: Performance with actual RF environment
 
@@ -138,7 +96,7 @@ assert!(logs.contains("Candidate created"));
 
 ### Regression Tests
 - **Behavioral consistency**: Same inputs produce same outputs
-- **Performance regression**: Processing times don't degrade  
+- **Performance regression**: Processing times don't degrade
 - **Feature preservation**: New changes don't break existing functionality
 
 ## Industry Best Practices
@@ -160,7 +118,7 @@ assert!(logs.contains("Candidate created"));
 #### Challenge: Real-time Constraints
 **Solution**: Use file-based testing for development, real-time testing for validation
 
-#### Challenge: Hardware Dependencies  
+#### Challenge: Hardware Dependencies
 **Solution**: Mock interfaces and synthetic signal sources
 
 #### Challenge: Complex Signal Processing
@@ -168,45 +126,6 @@ assert!(logs.contains("Candidate created"));
 
 #### Challenge: Non-deterministic Behavior
 **Solution**: Controlled test environments and statistical validation
-
-## Our Testing Framework Features
-
-### Implemented
-- ✅ **File-based I/Q testing** with metadata support
-- ✅ **Pipeline isolation** for peak detection and frequency translation
-- ✅ **Structured debug logging** with JSON capture
-- ✅ **Synthetic test scenarios** for frequency translation validation
-- ✅ **Integration test framework** for complete pipeline testing
-
-### Ready to Implement
-- 📋 **I/Q test fixture creation** from live signals
-- 📋 **Performance benchmarking** with timing measurements  
-- 📋 **Statistical validation** for non-deterministic components
-- 📋 **Hardware mock interfaces** for CI/CD environments
-
-## Usage Examples
-
-### Debug Pipeline Issues
-```bash
-# Compare stations vs band scanning modes
-cargo run -- --stations 88.9e6 --debug-pipeline --verbose --format json
-cargo run -- --band fm --debug-pipeline --verbose --format json
-```
-
-### Run Automated Tests
-```bash
-# Unit and integration tests
-cargo test --test integration_test
-
-# With captured output
-cargo test test_frequency_translation_scenarios -- --nocapture
-```
-
-### Create Test Fixtures
-```bash
-# Record I/Q data for testing (when implemented)
-cargo run -- --stations 88.9e6 --capture-iq test_data/88_9_signal.iq --capture-duration 5.0
-```
 
 ## Future Enhancements
 
@@ -234,4 +153,4 @@ Based on research from:
 - **SDRplay/SDRangel**: Sample I/Q file collections
 - **SigMF Standard**: Signal metadata format specification
 
-This framework provides a solid foundation for systematic testing of our SDR scanner application, enabling both development efficiency and high reliability in production.
+This framework provides a solid foundation for systematic testing of SDR applications, enabling both development efficiency and high reliability in production.
