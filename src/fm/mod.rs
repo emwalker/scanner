@@ -124,6 +124,9 @@ impl Candidate {
 
         // Create DSP graph to process this candidate's refined frequency
         // Use the provided center_freq and the refined tune frequency for the FreqXlatingFir
+        // Use the audio analyzer from config (clone since it's now Arc-based)
+        let audio_analyzer = config.audio_analyzer.clone();
+
         let (mut detection_graph, decision_state) = create_detection_graph(
             sdr_rx,
             config.samp_rate,
@@ -133,6 +136,7 @@ impl Candidate {
             refined_frequency,
             Some(signal_tx.clone()), // Pass signal channel to squelch
             device,
+            audio_analyzer,
         )?;
         let detection_cancel_token = detection_graph.cancel_token();
 
@@ -905,6 +909,7 @@ pub fn create_detection_graph(
     tune_freq: f64,
     signal_tx: Option<std::sync::mpsc::SyncSender<crate::types::Signal>>,
     _device: &crate::soapy::Device,
+    audio_analyzer: crate::audio_quality::AudioAnalyzer,
 ) -> rustradio::Result<(Graph, std::sync::Arc<std::sync::atomic::AtomicU8>)> {
     let mut graph = Graph::new();
 
@@ -990,6 +995,7 @@ pub fn create_detection_graph(
         center_freq,
         squelch_disabled: config.disable_squelch,
         fft_size: config.fft_size,
+        audio_analyzer,
     };
     let (squelch_block, decision_state) = SquelchBlock::new(prev, squelch_config);
     graph.add(Box::new(squelch_block));
@@ -1102,6 +1108,8 @@ mod tests {
             disable_squelch: false,
             // IF AGC configuration
             disable_if_agc: false,
+            // Audio analyzer for tests
+            audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
         };
 
         // Create mock source with a signal at +100kHz offset from center

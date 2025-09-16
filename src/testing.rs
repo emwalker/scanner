@@ -667,9 +667,7 @@ pub fn init_test_logging(
                 .with_max_level(level)
                 .with_writer(log_buffer.clone())
                 .finish();
-            tracing::subscriber::set_global_default(subscriber).map_err(|_| {
-                crate::types::ScannerError::Custom("Failed to set subscriber".to_string())
-            })?;
+            tracing::subscriber::set_global_default(subscriber)?;
         }
         Format::Text => {
             let subscriber = FmtSubscriber::builder()
@@ -679,9 +677,7 @@ pub fn init_test_logging(
                 .with_target(false)
                 .with_level(false)
                 .finish();
-            tracing::subscriber::set_global_default(subscriber).map_err(|_| {
-                crate::types::ScannerError::Custom("Failed to set subscriber".to_string())
-            })?;
+            tracing::subscriber::set_global_default(subscriber)?;
         }
         Format::Log => {
             let subscriber = FmtSubscriber::builder()
@@ -689,9 +685,7 @@ pub fn init_test_logging(
                 .with_writer(log_buffer.clone())
                 .with_target(false)
                 .finish();
-            tracing::subscriber::set_global_default(subscriber).map_err(|_| {
-                crate::types::ScannerError::Custom("Failed to set subscriber".to_string())
-            })?;
+            tracing::subscriber::set_global_default(subscriber)?;
         }
     }
 
@@ -754,4 +748,135 @@ pub fn compare_scanning_modes_with_logs(
     )?;
 
     Ok((stations_result, band_result, stations_logs, band_logs))
+}
+
+/// Test helper function to assert that a classifier correctly classifies audio samples
+///
+/// # Arguments
+/// * `classifier` - An instantiated classifier implementing the Classifier trait
+/// * `overrides` - List of (filename, expected_quality) tuples for cases where the classifier
+///   is expected to deviate from the training dataset. An empty list means
+///   the classifier should have perfect accuracy against the training data.
+///
+/// # Usage
+/// A poor classifier will need many overrides to pass the test, while a good classifier
+/// will need minimal or no overrides. This captures the current behavior and protects
+/// against regressions.
+pub fn assert_classifies_audio(
+    classifier: &dyn crate::audio_quality::Classifier,
+    overrides: &[(&str, crate::audio_quality::AudioQuality)],
+) -> crate::types::Result<()> {
+    use std::collections::HashMap;
+
+    // Convert overrides to a HashMap for quick lookup
+    let override_map: HashMap<&str, crate::audio_quality::AudioQuality> =
+        overrides.iter().cloned().collect();
+
+    // Get the training dataset
+    let training_data = crate::audio_quality::get_training_dataset();
+
+    let mut total_tests = 0;
+    let mut correct_classifications = 0;
+    let mut failed_files = Vec::new();
+
+    for (filename, expected_quality) in training_data.iter() {
+        // Check if there's an override for this file
+        let expected_quality = override_map.get(filename).unwrap_or(expected_quality);
+
+        // Construct the path to the audio file
+        let wav_path = std::path::PathBuf::from("tests/data/audio/quality").join(filename);
+
+        // Skip files that don't exist (similar to training logic)
+        if !wav_path.exists() {
+            debug!(filename = %filename, "Audio file not found, skipping test");
+            continue;
+        }
+
+        // Load the audio file
+        let audio_samples = match crate::wave::load_file(&wav_path) {
+            Ok(samples) => samples,
+            Err(e) => {
+                debug!(filename = %filename, error = %e, "Failed to load audio file, skipping");
+                continue;
+            }
+        };
+
+        // Analyze with the classifier
+        match classifier.analyze(&audio_samples, 48000.0) {
+            Ok(result) => {
+                total_tests += 1;
+
+                if result.quality == *expected_quality {
+                    correct_classifications += 1;
+                    debug!(
+                        filename = %filename,
+                        expected = %expected_quality.to_human_string(),
+                        actual = %result.quality.to_human_string(),
+                        confidence = result.confidence,
+                        "Classification correct"
+                    );
+                } else {
+                    failed_files.push((
+                        filename.to_string(),
+                        *expected_quality,
+                        result.quality,
+                        result.confidence,
+                    ));
+                    debug!(
+                        filename = %filename,
+                        expected = %expected_quality.to_human_string(),
+                        actual = %result.quality.to_human_string(),
+                        confidence = result.confidence,
+                        "Classification mismatch"
+                    );
+                }
+            }
+            Err(e) => {
+                debug!(filename = %filename, error = %e, "Classification failed");
+                failed_files.push((
+                    filename.to_string(),
+                    *expected_quality,
+                    crate::audio_quality::AudioQuality::Unknown,
+                    0.0,
+                ));
+            }
+        }
+    }
+
+    // Report results
+    debug!(
+        classifier = classifier.name(),
+        total_tests = total_tests,
+        correct = correct_classifications,
+        accuracy_percent = if total_tests > 0 {
+            (correct_classifications as f32 / total_tests as f32) * 100.0
+        } else {
+            0.0
+        },
+        "Classification test completed"
+    );
+
+    // Assert that all classifications were correct
+    if !failed_files.is_empty() {
+        let mut error_message = format!(
+            "Classifier '{}' failed {} out of {} tests:\n",
+            classifier.name(),
+            failed_files.len(),
+            total_tests
+        );
+
+        for (filename, expected, actual, confidence) in failed_files {
+            error_message.push_str(&format!(
+                "  {} - Expected: {}, Got: {} (confidence: {:.2})\n",
+                filename,
+                expected.to_human_string(),
+                actual.to_human_string(),
+                confidence
+            ));
+        }
+
+        return Err(crate::types::ScannerError::Custom(error_message));
+    }
+
+    Ok(())
 }

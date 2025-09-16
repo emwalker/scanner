@@ -1,16 +1,18 @@
 //! Audio Quality Analysis Module
 //!
-//! This module provides various approaches to audio quality assessment:
-//! - `legacy`: Original audio quality analyzer used in production
-//! - `normalized`: New normalized, gain-invariant metrics for robust testing
-//!
-//! The module is designed to support migration from the legacy system to the
-//! normalized system while preserving calibration results and enabling comprehensive testing.
+//! This module provides a unified interface for audio quality assessment with multiple
+//! classifier implementations:
+//! - `heuristic1`: Original statistical audio quality analyzer
+//! - `heuristic2`: Fast normalized, gain-invariant metrics
+//! - `heuristic3`: Rule-based classification with feature extraction
+//! - `random_forest`: Machine learning classification using Random Forest
 
+pub mod heuristic1;
 pub mod heuristic2;
-pub mod legacy;
-pub mod normalized;
+pub mod heuristic3;
 pub mod random_forest;
+
+use crate::types::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AudioQuality {
@@ -48,41 +50,173 @@ impl AudioQuality {
     }
 
     /// Create from ML prediction score using thresholds calibrated for our actual ML model output
-    pub fn from_score(score: f64) -> Self {
-        if score < -0.5 {
-            AudioQuality::Unknown
-        } else if score < 0.25 {
-            AudioQuality::Static
-        } else if score < 0.4 {
-            AudioQuality::NoAudio
-        } else if score < 0.55 {
-            AudioQuality::Poor
-        } else if score < 0.7 {
-            AudioQuality::Moderate
-        } else {
+    pub fn from_ml_score(score: f64) -> Self {
+        if score >= 3.5 {
             AudioQuality::Good
+        } else if score >= 2.5 {
+            AudioQuality::Moderate
+        } else if score >= 1.5 {
+            AudioQuality::Poor
+        } else if score >= 0.5 {
+            AudioQuality::NoAudio
+        } else if score >= -0.5 {
+            AudioQuality::Static
+        } else {
+            AudioQuality::Unknown
         }
     }
 }
 
-// Re-export the main types for backward compatibility
-pub use legacy::AudioQualityAnalyzer;
+/// Comprehensive audio features for quality assessment
+#[derive(Debug, Clone)]
+pub struct AudioFeatures {
+    // Energy-based features
+    pub rms_energy: f32,
+    pub peak_amplitude: f32,
+    pub dynamic_range: f32,
 
-// Re-export normalized types for new code
-pub use normalized::{AudioQualityMetrics, QualityResult};
+    // Spectral features
+    pub spectral_centroid: f32,
+    pub spectral_rolloff: f32,
+    pub spectral_flux: f32,
+    pub high_freq_energy: f32,
 
-// Re-export heuristic types for rule-based classification
-pub use heuristic2::{
-    AudioFeatures, AudioQualityClassifier as HeuristicClassifier, QualityResult as HeuristicResult,
-};
+    // Temporal features
+    pub zero_crossing_rate: f32,
+    pub silence_ratio: f32,
 
-// Re-export Random Forest types for actual machine learning
-pub use random_forest::{
-    AudioQualityClassifier as RandomForestClassifier, QualityResult as RandomForestResult,
-};
+    // Quality indicators
+    pub snr_estimate: f32,
+    pub harmonic_ratio: f32,
+}
+
+/// Unified result structure for all audio quality classifiers
+#[derive(Debug, Clone)]
+pub struct QualityResult {
+    /// Primary audio quality classification
+    pub quality: AudioQuality,
+    /// Confidence score (0.0 to 1.0)
+    pub confidence: f32,
+    /// Signal strength (0.0 to 1.0)
+    pub signal_strength: f32,
+    /// Detailed audio features (when available)
+    pub features: Option<AudioFeatures>,
+}
+
+/// Trait for audio quality classifiers
+pub trait Classifier: Send + Sync {
+    /// Analyze audio samples and return quality assessment
+    fn analyze(&self, samples: &[f32], sample_rate: f32) -> Result<QualityResult>;
+
+    /// Get the name of this classifier
+    fn name(&self) -> &'static str;
+}
+
+/// Main audio analyzer with pluggable classifier backend
+#[derive(Clone)]
+pub struct AudioAnalyzer {
+    classifier: std::sync::Arc<dyn Classifier>,
+}
+
+impl AudioAnalyzer {
+    /// Create new analyzer with specified classifier
+    pub fn new(classifier: Box<dyn Classifier>) -> Self {
+        Self {
+            classifier: std::sync::Arc::from(classifier),
+        }
+    }
+
+    /// Analyze audio samples using the configured classifier
+    pub fn analyze(&self, samples: &[f32], sample_rate: f32) -> Result<QualityResult> {
+        self.classifier.analyze(samples, sample_rate)
+    }
+
+    /// Get the name of the current classifier
+    pub fn classifier_name(&self) -> &'static str {
+        self.classifier.name()
+    }
+
+    /// Create a pass-through analyzer that always reports good audio quality
+    /// Used when squelch is disabled
+    pub fn pass_through() -> Self {
+        Self {
+            classifier: std::sync::Arc::new(PassThroughClassifier),
+        }
+    }
+
+    /// Create a mock analyzer for testing
+    pub fn mock() -> Self {
+        Self {
+            classifier: std::sync::Arc::new(MockClassifier),
+        }
+    }
+}
+
+/// Trivial classifier that always reports good audio quality
+/// Used when squelch is disabled
+struct PassThroughClassifier;
+
+impl Classifier for PassThroughClassifier {
+    fn analyze(&self, samples: &[f32], _sample_rate: f32) -> Result<QualityResult> {
+        let rms_energy = if samples.is_empty() {
+            0.0
+        } else {
+            (samples.iter().map(|&x| x * x).sum::<f32>() / samples.len() as f32).sqrt()
+        };
+
+        Ok(QualityResult {
+            quality: AudioQuality::Good,
+            confidence: 1.0,
+            signal_strength: rms_energy,
+            features: None,
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "pass_through"
+    }
+}
+
+/// Mock classifier for testing that makes realistic quality decisions
+/// Used in unit tests to avoid complex ML dependencies
+struct MockClassifier;
+
+impl Classifier for MockClassifier {
+    fn analyze(&self, samples: &[f32], _sample_rate: f32) -> Result<QualityResult> {
+        let rms_energy = if samples.is_empty() {
+            0.0
+        } else {
+            (samples.iter().map(|&x| x * x).sum::<f32>() / samples.len() as f32).sqrt()
+        };
+
+        // Simple mock logic based on signal strength
+        let quality = if rms_energy < 0.05 {
+            AudioQuality::Static
+        } else if rms_energy < 0.1 {
+            AudioQuality::Poor
+        } else if rms_energy < 0.3 {
+            AudioQuality::Moderate
+        } else {
+            AudioQuality::Good
+        };
+
+        let confidence = if rms_energy > 0.1 { 0.8 } else { 0.6 };
+
+        Ok(QualityResult {
+            quality,
+            confidence,
+            signal_strength: rms_energy,
+            features: None,
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "mock"
+    }
+}
 
 /// Shared training dataset with human-rated audio quality samples
-/// This centralized list is used by both ML regression and normalized quality analysis
+/// This centralized list is used by ML classifiers for training
 pub fn get_training_dataset() -> Vec<(&'static str, AudioQuality)> {
     vec![
         // Static samples (from our calibration)
@@ -91,34 +225,34 @@ pub fn get_training_dataset() -> Vec<(&'static str, AudioQuality)> {
         ("000.088.299.000Hz-wfm-001.wav", AudioQuality::Static),
         ("000.088.300.000Hz-wfm-001.wav", AudioQuality::Static),
         ("000.088.499.000Hz-wfm-001.wav", AudioQuality::Static),
+        ("000.089.299.000Hz-wfm-001.wav", AudioQuality::Static), // Reclassified based on ML analysis
         ("000.089.500.000Hz-wfm-001.wav", AudioQuality::Static),
         ("000.091.702.000Hz-wfm-001.wav", AudioQuality::Static),
         ("000.093.100.000Hz-wfm-001.wav", AudioQuality::Static),
         ("000.094.500.000Hz-wfm-001.wav", AudioQuality::Static),
+        ("000.094.700.000Hz-wfm-001.wav", AudioQuality::Static),
         ("000.095.500.000Hz-wfm-001.wav", AudioQuality::Static),
         ("000.099.500.000Hz-wfm-001.wav", AudioQuality::Static),
         ("000.101.100.000Hz-wfm-001.wav", AudioQuality::Static),
         ("000.101.100.000Hz-wfm-002.wav", AudioQuality::Static),
-        ("000.089.299.000Hz-wfm-001.wav", AudioQuality::Static), // Reclassified based on ML analysis
-        // NoAudio samples (signal present but no discernible audio content)
-        ("000.096.300.000Hz-wfm-001.wav", AudioQuality::NoAudio),
+        // NoAudio samples
         ("000.088.700.000Hz-wfm-001.wav", AudioQuality::NoAudio), // Reclassified based on ML analysis
         ("000.089.099.000Hz-wfm-001.wav", AudioQuality::NoAudio), // Reclassified based on ML analysis
-        // Poor samples
+        ("000.096.300.000Hz-wfm-001.wav", AudioQuality::NoAudio),
+        // Poor samples (audible but with significant distortion/noise)
         ("000.090.302.000Hz-wfm-001.wav", AudioQuality::Poor),
         ("000.092.101.000Hz-wfm-001.wav", AudioQuality::Poor),
         ("000.093.300.000Hz-wfm-001.wav", AudioQuality::Poor),
+        ("000.093.300.000Hz-wfm-002.wav", AudioQuality::Poor),
         ("000.093.500.000Hz-wfm-001.wav", AudioQuality::Poor),
         ("000.093.700.000Hz-wfm-001.wav", AudioQuality::Poor),
         ("000.094.100.000Hz-wfm-001.wav", AudioQuality::Poor),
-        ("000.093.300.000Hz-wfm-002.wav", AudioQuality::Poor),
-        ("000.094.700.000Hz-wfm-001.wav", AudioQuality::Static),
         ("000.095.700.000Hz-wfm-001.wav", AudioQuality::Poor),
         ("000.097.100.000Hz-wfm-001.wav", AudioQuality::Poor),
         ("000.100.300.000Hz-wfm-001.wav", AudioQuality::Poor),
         ("000.103.500.000Hz-wfm-001.wav", AudioQuality::Poor),
         ("000.107.100.000Hz-wfm-001.wav", AudioQuality::Poor),
-        // Moderate samples
+        // Moderate samples (reasonably clear with some distortion)
         ("000.089.700.000Hz-wfm-001.wav", AudioQuality::Moderate),
         ("000.090.101.000Hz-wfm-001.wav", AudioQuality::Moderate),
         ("000.091.100.000Hz-wfm-001.wav", AudioQuality::Moderate),
@@ -126,7 +260,7 @@ pub fn get_training_dataset() -> Vec<(&'static str, AudioQuality)> {
         ("000.096.900.000Hz-wfm-001.wav", AudioQuality::Moderate),
         ("000.098.500.000Hz-wfm-001.wav", AudioQuality::Moderate),
         ("000.102.500.000Hz-wfm-001.wav", AudioQuality::Moderate),
-        // Good samples
+        // Good samples (clear, high quality audio)
         ("000.088.900.000Hz-wfm-001.wav", AudioQuality::Good),
         ("000.099.100.000Hz-wfm-001.wav", AudioQuality::Good),
         ("000.100.700.000Hz-wfm-001.wav", AudioQuality::Good),

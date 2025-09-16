@@ -349,7 +349,7 @@ impl Window {
             config,
             crate::fm::filter_config::FilterPurpose::Audio,
         )
-        .map_err(|e| e.into())
+        .map_err(Into::into)
     }
 
     fn create_fm_demodulation_chain(
@@ -419,7 +419,7 @@ impl Window {
         crate::fm::pipeline_builder::FmPipelineBuilder::create_audio_decimation_chain(
             prev, graph, quad_rate, config, "Audio",
         )
-        .map_err(|e| e.into())
+        .map_err(Into::into)
     }
 
     fn create_audio_fm_graph(

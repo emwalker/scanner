@@ -6,9 +6,7 @@ use tracing::debug;
 
 /// Load WAV file and return audio samples as normalized f32 values
 pub fn load_file<P: AsRef<Path>>(path: P) -> crate::types::Result<Vec<f32>> {
-    let mut reader = WavReader::open(path.as_ref()).map_err(|e| {
-        crate::types::ScannerError::Custom(format!("Failed to open WAV file: {}", e))
-    })?;
+    let mut reader = WavReader::open(path.as_ref())?;
 
     let spec = reader.spec();
     debug!(
@@ -24,17 +22,13 @@ pub fn load_file<P: AsRef<Path>>(path: P) -> crate::types::Result<Vec<f32>> {
     match spec.sample_format {
         SampleFormat::Float => {
             for sample in reader.samples::<f32>() {
-                samples.push(sample.map_err(|e| {
-                    crate::types::ScannerError::Custom(format!("Failed to read sample: {}", e))
-                })?);
+                samples.push(sample?);
             }
         }
         SampleFormat::Int => {
             let max_val = (1i32 << (spec.bits_per_sample - 1)) as f32;
             for sample in reader.samples::<i32>() {
-                let s = sample.map_err(|e| {
-                    crate::types::ScannerError::Custom(format!("Failed to read sample: {}", e))
-                })?;
+                let s = sample?;
                 samples.push(s as f32 / max_val);
             }
         }

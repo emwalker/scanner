@@ -9,29 +9,39 @@ pub trait ConsoleWriter {
 #[derive(Error, Debug)]
 pub enum ScannerError {
     #[error(transparent)]
-    Sdr(#[from] soapysdr::Error),
-    #[error("Error: {0}")]
-    Custom(String),
-    #[error(transparent)]
     Audio(#[from] cpal::SupportedStreamConfigsError),
     #[error(transparent)]
     AudioBuild(#[from] cpal::BuildStreamError),
-    #[error(transparent)]
-    AudioPlay(#[from] cpal::PlayStreamError),
     #[error(transparent)]
     AudioDevice(#[from] cpal::DefaultStreamConfigError),
     #[error(transparent)]
     AudioDeviceName(#[from] cpal::DeviceNameError),
     #[error(transparent)]
-    RustRadio(#[from] rustradio::Error),
+    AudioPlay(#[from] cpal::PlayStreamError),
     #[error(transparent)]
-    Stderr(#[from] log::SetLoggerError),
+    Bincode(#[from] bincode::Error),
+    #[error("Error: {0}")]
+    Custom(String),
+    #[error(transparent)]
+    Hound(#[from] hound::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("I/Q capture error: {0}")]
     IqCapture(String),
     #[error(transparent)]
+    Log(#[from] log::SetLoggerError),
+    #[error(transparent)]
+    ParseFloat(#[from] std::num::ParseFloatError),
+    #[error(transparent)]
+    RustRadio(#[from] rustradio::Error),
+    #[error(transparent)]
+    Sdr(#[from] soapysdr::Error),
+    #[error(transparent)]
     SerdeJson(#[from] serde_json::Error),
+    #[error(transparent)]
+    SmartCore(#[from] smartcore::error::Failed),
+    #[error("Failed to set tracing subscriber")]
+    TracingSubscriber(#[from] tracing::subscriber::SetGlobalDefaultError),
 }
 
 pub type Result<T> = std::result::Result<T, ScannerError>;
@@ -220,6 +230,8 @@ pub struct ScanningConfig {
     pub disable_squelch: bool,
     // IF AGC configuration
     pub disable_if_agc: bool,
+    // Audio quality analyzer
+    pub audio_analyzer: crate::audio_quality::AudioAnalyzer,
 }
 
 impl Default for ScanningConfig {
@@ -258,6 +270,8 @@ impl Default for ScanningConfig {
             disable_squelch: false,
             // IF AGC defaults
             disable_if_agc: false,
+            // Audio analyzer default (pass-through for testing)
+            audio_analyzer: crate::audio_quality::AudioAnalyzer::pass_through(),
         }
     }
 }

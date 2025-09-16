@@ -1,4 +1,4 @@
-use crate::audio_quality::{AudioQuality, RandomForestClassifier};
+use crate::audio_quality::{AudioAnalyzer, AudioQuality};
 use crate::types::Signal;
 use rustradio::block::{Block, BlockEOF, BlockName, BlockRet};
 use rustradio::stream::ReadStream;
@@ -54,8 +54,9 @@ pub struct SquelchBlock {
     frequency_hz: f64,
     detection_center_freq: f64,
 
-    // CNN-based audio quality analysis (no stored analyzer needed)
+    // Audio quality analysis
     audio_samples: Vec<f32>,
+    audio_analyzer: AudioAnalyzer,
 
     // Squelch configuration
     squelch_disabled: bool,
@@ -70,6 +71,7 @@ pub struct SquelchConfig {
     pub center_freq: f64,
     pub squelch_disabled: bool,
     pub fft_size: usize,
+    pub audio_analyzer: AudioAnalyzer,
 }
 
 impl SquelchBlock {
@@ -77,8 +79,11 @@ impl SquelchBlock {
         let learning_samples_needed = (config.sample_rate * config.learning_duration) as usize;
         let decision_state = Arc::new(AtomicU8::new(Decision::Learning.to_u8()));
 
-        // CNN-based audio quality analysis will be used directly in process_audio
-        debug!("SquelchBlock configured to use CNN-based audio quality analysis");
+        // Audio quality analysis will be used directly in process_audio
+        debug!(
+            analyzer_name = config.audio_analyzer.classifier_name(),
+            "SquelchBlock configured with audio quality analysis"
+        );
 
         let block = Self {
             input,
@@ -93,6 +98,7 @@ impl SquelchBlock {
             frequency_hz: config.frequency_hz,
             detection_center_freq: config.center_freq,
             audio_samples: Vec::with_capacity(learning_samples_needed),
+            audio_analyzer: config.audio_analyzer,
             squelch_disabled: config.squelch_disabled,
         };
 
@@ -100,20 +106,18 @@ impl SquelchBlock {
     }
 
     fn analyze_audio_content(&mut self) -> (AudioQuality, f32) {
-        // Use Random Forest-based audio quality analysis
-        let mut classifier = RandomForestClassifier::new(self._sample_rate);
-
-        // Train the classifier (this could be cached/optimized in production)
-        let quality = match classifier
-            .train()
-            .and_then(|_| classifier.predict(&self.audio_samples))
+        // Use the configured audio analyzer
+        let quality = match self
+            .audio_analyzer
+            .analyze(&self.audio_samples, self._sample_rate)
         {
             Ok(result) => result.quality,
             Err(e) => {
                 debug!(
                     error = %e,
                     frequency_mhz = self.frequency_hz / 1e6,
-                    "Random Forest analysis failed, defaulting to Static"
+                    analyzer = self.audio_analyzer.classifier_name(),
+                    "Audio analysis failed, defaulting to Static"
                 );
                 AudioQuality::Static
             }
@@ -142,7 +146,8 @@ impl SquelchBlock {
             squelch_disabled = self.squelch_disabled,
             frequency_mhz = self.frequency_hz / 1e6,
             samples = self.samples_analyzed,
-            "CNN squelch analysis complete"
+            analyzer = self.audio_analyzer.classifier_name(),
+            "Audio quality squelch analysis complete"
         );
 
         (quality, signal_strength)
@@ -343,6 +348,7 @@ mod tests {
             center_freq: metadata.center_freq,
             squelch_disabled: false, // don't disable squelch for tests
             fft_size: 1024,          // default FFT size for tests
+            audio_analyzer: AudioAnalyzer::mock(), // use mock analyzer for tests
         };
         let (mut squelch, _decision_state) = SquelchBlock::new(input_read_stream, squelch_config);
 

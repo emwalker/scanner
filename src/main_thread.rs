@@ -1,5 +1,5 @@
 use crate::sdr::Device;
-use crate::types::{ConsoleWriter, Logger, Result, ScanningConfig};
+use crate::types::{ConsoleWriter, Logger, Result, ScannerError, ScanningConfig};
 use crate::window::Window;
 use crate::{fm, soapy};
 use std::sync::Arc;
@@ -54,11 +54,7 @@ impl MainThread {
     fn parse_stations(&self, stations_str: &str) -> Result<Vec<f64>> {
         stations_str
             .split(',')
-            .map(|s| {
-                s.trim().parse::<f64>().map_err(|_| {
-                    crate::types::ScannerError::Custom(format!("Invalid station frequency: {}", s))
-                })
-            })
+            .map(|s| s.trim().parse::<f64>().map_err(ScannerError::from))
             .collect()
     }
 
@@ -229,6 +225,7 @@ mod tests {
             window_overlap: 0.75,
             disable_squelch: false,
             disable_if_agc: false,
+            audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
         }
     }
 
