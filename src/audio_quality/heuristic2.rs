@@ -344,6 +344,7 @@ impl super::Classifier for Classifier {
 
 #[cfg(test)]
 mod tests {
+    use crate::audio_quality::AudioQuality;
 
     #[test]
     fn test_classifier_creation() {
@@ -402,106 +403,64 @@ mod tests {
         let classifier = super::Classifier::new(48000.0);
 
         let overrides = [
-            (
-                "000.087.700.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.088.099.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Moderate,
-            ),
-            (
-                "000.088.299.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.088.300.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.088.499.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.088.700.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Moderate,
-            ),
-            (
-                "000.088.900.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.089.099.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Moderate,
-            ),
-            (
-                "000.089.299.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.089.500.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Moderate,
-            ),
-            (
-                "000.090.101.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.091.100.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.091.500.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.091.702.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Moderate,
-            ),
-            (
-                "000.093.100.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.094.500.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.094.700.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.096.300.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Moderate,
-            ),
-            (
-                "000.097.100.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Moderate,
-            ),
-            (
-                "000.098.500.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.099.100.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.099.500.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.100.700.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Moderate,
-            ),
-            (
-                "000.101.100.000Hz-wfm-002.wav",
-                crate::audio_quality::AudioQuality::Poor,
-            ),
-            (
-                "000.103.900.000Hz-wfm-001.wav",
-                crate::audio_quality::AudioQuality::Moderate,
-            ),
+            ("000.087.700.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.088.099.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.088.299.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.088.300.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.088.499.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.088.700.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.088.900.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.088.900.000Hz-wfm-002.wav", AudioQuality::Poor),
+            ("000.088.900.000Hz-wfm-003.wav", AudioQuality::Poor),
+            ("000.089.099.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.089.299.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.089.500.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.089.700.000Hz-wfm-003.wav", AudioQuality::Poor),
+            ("000.090.100.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.090.101.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.090.900.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.091.100.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.091.500.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.091.500.000Hz-wfm-002.wav", AudioQuality::Poor),
+            ("000.091.702.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.092.100.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.092.300.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.092.300.000Hz-wfm-002.wav", AudioQuality::Poor),
+            ("000.092.500.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.092.900.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.093.100.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.093.900.000Hz-wfm-002.wav", AudioQuality::Moderate),
+            ("000.094.500.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.094.700.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.095.100.000Hz-wfm-004.wav", AudioQuality::Moderate),
+            ("000.095.700.000Hz-wfm-002.wav", AudioQuality::Poor),
+            ("000.095.700.000Hz-wfm-003.wav", AudioQuality::Poor),
+            ("000.096.100.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.096.300.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.096.500.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.096.700.000Hz-wfm-004.wav", AudioQuality::Moderate),
+            ("000.096.900.000Hz-wfm-003.wav", AudioQuality::Poor),
+            ("000.097.100.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.097.300.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.098.300.000Hz-wfm-004.wav", AudioQuality::Moderate),
+            ("000.098.500.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.098.500.000Hz-wfm-002.wav", AudioQuality::Moderate),
+            ("000.098.900.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.099.100.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.099.100.000Hz-wfm-003.wav", AudioQuality::Moderate),
+            ("000.099.500.000Hz-wfm-001.wav", AudioQuality::Poor),
+            ("000.100.100.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.100.700.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.100.900.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.101.100.000Hz-wfm-002.wav", AudioQuality::Poor),
+            ("000.101.700.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.102.500.000Hz-wfm-002.wav", AudioQuality::Poor),
+            ("000.103.500.000Hz-wfm-002.wav", AudioQuality::Poor),
+            ("000.103.500.000Hz-wfm-003.wav", AudioQuality::Poor),
+            ("000.103.700.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.103.900.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.104.500.000Hz-wfm-001.wav", AudioQuality::Moderate),
+            ("000.106.500.000Hz-wfm-001.wav", AudioQuality::Moderate),
         ];
 
         crate::testing::assert_classifies_audio(&classifier, &overrides)

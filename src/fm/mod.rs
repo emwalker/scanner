@@ -982,7 +982,7 @@ pub fn create_detection_graph(
         None
     };
 
-    let (audio_capture_block, audio_capture_output) = AudioCaptureBlock::new(prev, audio_capturer);
+    let (audio_capture_block, audio_capture_output) = AudioCaptureBlock::new(prev, None);
     graph.add(Box::new(audio_capture_block));
     let prev = audio_capture_output;
 
@@ -997,6 +997,7 @@ pub fn create_detection_graph(
         threshold: config.squelch_threshold,
         fft_size: config.fft_size,
         audio_analyzer,
+        audio_capturer,
     };
     let (squelch_block, decision_state) = SquelchBlock::new(prev, squelch_config);
     graph.add(Box::new(squelch_block));

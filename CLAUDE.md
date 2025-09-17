@@ -27,3 +27,4 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - In commit messages, omit the "Generated with" line
 - In commit messages, omit the "Co-Authored-By" line
 - There is no need at this time to maintain backwards compatability, as this is a greenfield project.
+- Don't include comments in generated code

@@ -61,6 +61,9 @@ pub struct SquelchBlock {
     // Squelch configuration
     squelch_disabled: bool,
     threshold: AudioQuality,
+
+    // Audio file coordination
+    audio_capturer: Option<crate::file::AudioCaptureSink>,
 }
 
 /// Configuration for squelch block creation
@@ -74,6 +77,7 @@ pub struct SquelchConfig {
     pub threshold: AudioQuality,
     pub fft_size: usize,
     pub audio_analyzer: AudioAnalyzer,
+    pub audio_capturer: Option<crate::file::AudioCaptureSink>,
 }
 
 impl SquelchBlock {
@@ -103,6 +107,7 @@ impl SquelchBlock {
             audio_analyzer: config.audio_analyzer,
             squelch_disabled: config.squelch_disabled,
             threshold: config.threshold,
+            audio_capturer: config.audio_capturer,
         };
 
         (block, decision_state)
@@ -161,6 +166,17 @@ impl SquelchBlock {
         self.audio_samples.push(sample);
         self.samples_analyzed += 1;
 
+        // Also capture samples for audio file if capturer is available
+        if let Some(ref mut capturer) = self.audio_capturer
+            && let Err(e) = capturer.capture_samples(&[sample])
+        {
+            debug!(
+                frequency_mhz = self.frequency_hz / 1e6,
+                error = %e,
+                "Failed to capture audio sample"
+            );
+        }
+
         // Check if learning period is complete and analysis hasn't been done yet
         if self.samples_analyzed >= self.learning_samples_needed && !self.analysis_completed {
             let (audio_quality, signal_strength) = self.analyze_audio_content();
@@ -174,6 +190,22 @@ impl SquelchBlock {
                 self.decision = Decision::Audio;
                 self.decision_state
                     .store(Decision::Audio.to_u8(), Ordering::Relaxed);
+
+                // Coordinate audio file creation - squelch passed
+                if let Some(ref mut capturer) = self.audio_capturer {
+                    if let Err(e) = capturer.create_file_and_flush_buffer() {
+                        debug!(
+                            frequency_mhz = self.frequency_hz / 1e6,
+                            error = %e,
+                            "Failed to create audio file after squelch pass"
+                        );
+                    } else {
+                        debug!(
+                            frequency_mhz = self.frequency_hz / 1e6,
+                            "Squelch passed - created audio file and flushed buffer"
+                        );
+                    }
+                }
 
                 // Push signal to queue if channel is available
                 if let Some(ref tx) = self.signal_tx {
@@ -201,6 +233,15 @@ impl SquelchBlock {
                     "Squelch: Noise detected, blocking output and signaling early exit"
                 );
                 self.decision = Decision::Noise;
+
+                // Coordinate audio file discard - squelch failed
+                if let Some(ref mut capturer) = self.audio_capturer {
+                    capturer.discard_buffer();
+                    debug!(
+                        frequency_mhz = self.frequency_hz / 1e6,
+                        "Squelch failed - discarded audio buffer"
+                    );
+                }
 
                 // Signal that noise was detected
                 self.decision_state
@@ -239,6 +280,22 @@ impl BlockEOF for SquelchBlock {
                 self.decision_state
                     .store(Decision::Audio.to_u8(), Ordering::Relaxed);
 
+                // Coordinate audio file creation - squelch passed at EOF
+                if let Some(ref mut capturer) = self.audio_capturer {
+                    if let Err(e) = capturer.create_file_and_flush_buffer() {
+                        debug!(
+                            frequency_mhz = self.frequency_hz / 1e6,
+                            error = %e,
+                            "Failed to create audio file after squelch pass at EOF"
+                        );
+                    } else {
+                        debug!(
+                            frequency_mhz = self.frequency_hz / 1e6,
+                            "Squelch passed at EOF - created audio file and flushed buffer"
+                        );
+                    }
+                }
+
                 // Push signal to queue if channel is available
                 if let Some(ref tx) = self.signal_tx {
                     let signal = Signal::new_fm(
@@ -265,6 +322,16 @@ impl BlockEOF for SquelchBlock {
                     "Squelch: Noise detected from partial samples at EOF"
                 );
                 self.decision = Decision::Noise;
+
+                // Coordinate audio file discard - squelch failed at EOF
+                if let Some(ref mut capturer) = self.audio_capturer {
+                    capturer.discard_buffer();
+                    debug!(
+                        frequency_mhz = self.frequency_hz / 1e6,
+                        "Squelch failed at EOF - discarded audio buffer"
+                    );
+                }
+
                 self.decision_state
                     .store(Decision::Noise.to_u8(), Ordering::Relaxed);
             }
@@ -353,6 +420,7 @@ mod tests {
             threshold: AudioQuality::Moderate, // default threshold for tests
             fft_size: 1024,          // default FFT size for tests
             audio_analyzer: AudioAnalyzer::mock(), // use mock analyzer for tests
+            audio_capturer: None,    // no audio capture for tests
         };
         let (mut squelch, _decision_state) = SquelchBlock::new(input_read_stream, squelch_config);
 
@@ -441,5 +509,111 @@ mod tests {
     #[test]
     fn test_squelch_with_noise() {
         // assert_squelch_decison("tests/data/audio/noise_88.2MHz_3s.audio", Decision::Noise);
+    }
+
+    #[test]
+    fn test_squelch_file_coordination() -> crate::types::Result<()> {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create audio capturer for testing
+        let audio_config = crate::file::AudioCaptureConfig {
+            output_dir: temp_dir.path().to_str().unwrap().to_string(),
+            sample_rate: 48000.0,
+            capture_duration: 1.0,
+            frequency_hz: 88900000.0,
+            modulation_type: crate::types::ModulationType::WFM,
+        };
+        let capturer = crate::file::AudioCaptureSink::new(audio_config)?;
+
+        // Test squelch pass scenario
+        let (_input_stream, input_read_stream) = WriteStream::new();
+        let squelch_config = SquelchConfig {
+            sample_rate: 48000.0,
+            learning_duration: 0.1, // Short duration for test
+            signal_tx: None,
+            frequency_hz: 88900000.0,
+            center_freq: 88900000.0,
+            squelch_disabled: false,
+            threshold: AudioQuality::Poor, // Low threshold to pass easily
+            fft_size: 1024,
+            audio_analyzer: AudioAnalyzer::mock(),
+            audio_capturer: Some(capturer),
+        };
+        let (mut squelch, _decision_state) = SquelchBlock::new(input_read_stream, squelch_config);
+
+        // Process enough samples to trigger analysis
+        let samples_needed = (48000.0 * 0.1) as usize;
+        for i in 0..samples_needed {
+            let sample = (i as f32 * 0.1).sin(); // Generate test signal
+            squelch.process_sample_for_analysis(sample);
+        }
+
+        // Check that file was created (squelch should pass with mock analyzer)
+        let files: Vec<_> = fs::read_dir(temp_dir.path()).unwrap().collect();
+        assert_eq!(
+            files.len(),
+            1,
+            "Expected exactly one audio file to be created"
+        );
+
+        let file_path = files[0].as_ref().unwrap().path();
+        assert!(file_path.to_str().unwrap().contains("000.088.900.000Hz"));
+        assert!(file_path.to_str().unwrap().ends_with(".wav"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_squelch_file_discard() -> crate::types::Result<()> {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create audio capturer for testing
+        let audio_config = crate::file::AudioCaptureConfig {
+            output_dir: temp_dir.path().to_str().unwrap().to_string(),
+            sample_rate: 48000.0,
+            capture_duration: 1.0,
+            frequency_hz: 88900000.0,
+            modulation_type: crate::types::ModulationType::WFM,
+        };
+        let capturer = crate::file::AudioCaptureSink::new(audio_config)?;
+
+        // Test squelch fail scenario
+        let (_input_stream, input_read_stream) = WriteStream::new();
+        let squelch_config = SquelchConfig {
+            sample_rate: 48000.0,
+            learning_duration: 0.1, // Short duration for test
+            signal_tx: None,
+            frequency_hz: 88900000.0,
+            center_freq: 88900000.0,
+            squelch_disabled: false,
+            threshold: AudioQuality::Good, // High threshold to fail easily
+            fft_size: 1024,
+            audio_analyzer: AudioAnalyzer::mock(),
+            audio_capturer: Some(capturer),
+        };
+        let (mut squelch, _decision_state) = SquelchBlock::new(input_read_stream, squelch_config);
+
+        // Process enough samples to trigger analysis
+        let samples_needed = (48000.0 * 0.1) as usize;
+        for i in 0..samples_needed {
+            let sample = (i as f32 * 0.001).sin() * 0.01; // Generate very weak test signal (RMS < 0.05)
+            squelch.process_sample_for_analysis(sample);
+        }
+
+        // Check that no file was created (squelch should fail with high threshold)
+        let files: Vec<_> = fs::read_dir(temp_dir.path()).unwrap().collect();
+        assert_eq!(
+            files.len(),
+            0,
+            "Expected no audio files to be created when squelch fails"
+        );
+
+        Ok(())
     }
 }

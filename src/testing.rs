@@ -773,15 +773,23 @@ pub fn assert_classifies_audio(
         overrides.iter().cloned().collect();
 
     // Get the training dataset
-    let training_data = crate::audio_quality::get_training_dataset();
+    let training_data = crate::audio_quality::training_dataset();
 
     let mut total_tests = 0;
     let mut correct_classifications = 0;
     let mut failed_files = Vec::new();
+    let mut unnecessary_overrides = Vec::new();
 
-    for (filename, expected_quality) in training_data.iter() {
+    for (filename, training_quality) in training_data.iter() {
+        // Check for unnecessary overrides (override matches training dataset expectation)
+        if let Some(override_quality) = override_map.get(filename)
+            && override_quality == training_quality
+        {
+            unnecessary_overrides.push((filename.to_string(), *training_quality));
+        }
+
         // Check if there's an override for this file
-        let expected_quality = override_map.get(filename).unwrap_or(expected_quality);
+        let expected_quality = override_map.get(filename).unwrap_or(training_quality);
 
         // Construct the path to the audio file
         let wav_path = std::path::PathBuf::from("tests/data/audio/quality").join(filename);
@@ -856,6 +864,29 @@ pub fn assert_classifies_audio(
         "Classification test completed"
     );
 
+    // Check for unnecessary overrides first
+    if !unnecessary_overrides.is_empty() {
+        let mut error_message = format!(
+            "Classifier '{}' has {} unnecessary override(s) that match the training dataset:\n",
+            classifier.name(),
+            unnecessary_overrides.len()
+        );
+
+        for (filename, quality) in unnecessary_overrides {
+            error_message.push_str(&format!(
+                "  {} - Override specifies {}, but training dataset already expects {}\n",
+                filename,
+                quality.to_human_string(),
+                quality.to_human_string()
+            ));
+        }
+
+        error_message
+            .push_str("\nRemove these unnecessary overrides to keep the override list minimal.\n");
+
+        return Err(crate::types::ScannerError::Custom(error_message));
+    }
+
     // Assert that all classifications were correct
     if !failed_files.is_empty() {
         let mut error_message = format!(
@@ -867,7 +898,7 @@ pub fn assert_classifies_audio(
 
         for (filename, expected, actual, confidence) in failed_files {
             error_message.push_str(&format!(
-                "  {} - Expected: {}, Got: {} (confidence: {:.2})\n",
+                "  {} - Expected: {}, Got (possibly via an override): {} (confidence: {:.2})\n",
                 filename,
                 expected.to_human_string(),
                 actual.to_human_string(),
