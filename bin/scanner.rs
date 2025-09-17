@@ -36,54 +36,9 @@ enum Commands {
 
 #[derive(Parser, Debug)]
 struct ScanArgs {
-    #[arg(long)]
-    device_args: Option<String>,
-
-    #[arg(long)]
-    stations: Option<String>,
-
-    #[arg(long, help = "SDR gain in dB (0 to 48 for SDRplay, default 24)")]
-    gain: Option<f64>,
-
-    #[arg(long, default_value_t = Band::Fm)]
-    band: Band,
-
-    #[arg(long, default_value_t = 3)]
-    duration: u64,
-
-    #[arg(long)]
-    peak_scan_duration: Option<f64>,
-
-    /// Maximum number of scanning windows to process (default: all windows)
-    #[arg(long)]
-    scanning_windows: Option<usize>,
-
-    #[arg(long)]
-    verbose: bool,
-
-    #[arg(long)]
-    debug_pipeline: bool,
-
-    #[arg(long)]
-    print_candidates: bool,
-
-    /// Output format: plain text (default)
-    #[arg(long, group = "output_format")]
-    text: bool,
-
-    /// Output format: JSON
-    #[arg(long, group = "output_format")]
-    json: bool,
-
-    /// Output format: structured logging
-    #[arg(long, group = "output_format")]
-    log: bool,
-
-    #[arg(long)]
-    capture_iq: Option<String>,
-
-    #[arg(long, default_value_t = 2.0)]
-    capture_duration: f64,
+    /// AGC settling time in seconds before peak scanning begins
+    #[arg(long, default_value_t = 3.0)]
+    agc_settling_time: f64,
 
     #[arg(long)]
     audio_capture_dir: Option<String>,
@@ -91,61 +46,106 @@ struct ScanArgs {
     #[arg(long, default_value_t = 2.0)]
     audio_capture_duration: f64,
 
-    /// Duration in seconds for squelch to analyze audio vs noise
+    /// Audio quality classifier to use
+    #[arg(long, default_value = "random-forest")]
+    audio_classifier: AudioClassifier,
+
+    #[arg(long, default_value_t = Band::Fm)]
+    band: Band,
+
     #[arg(long, default_value_t = 2.0)]
-    learning_duration: f32,
+    capture_duration: f64,
 
-    /// Frequency tracking method (pll, spectral, correlation)
-    #[arg(long, default_value = "pll")]
-    frequency_tracking: String,
+    #[arg(long)]
+    capture_iq: Option<String>,
 
-    /// Required accuracy for frequency tracking convergence (Hz)
-    #[arg(long, default_value_t = 5000.0)]
-    tracking_accuracy: f64,
+    #[arg(long)]
+    debug_pipeline: bool,
+
+    #[arg(long)]
+    device_args: Option<String>,
 
     /// Disable frequency tracking (use FFT estimates directly)
     #[arg(long)]
     disable_frequency_tracking: bool,
 
-    /// Minimum spectral score threshold for candidate creation (0.0-1.0)
-    #[arg(long, default_value_t = 0.2)]
-    spectral_threshold: f32,
-
-    /// AGC settling time in seconds before peak scanning begins
-    #[arg(long, default_value_t = 3.0)]
-    agc_settling_time: f64,
-
-    /// Window overlap percentage for band scanning (0.0-1.0, where 0.75 = 75% overlap)
-    #[arg(long, default_value_t = 0.75)]
-    window_overlap: f64,
+    /// Disable IF AGC in both detection and audio pipelines (AGC enabled by default)
+    #[arg(long)]
+    disable_if_agc: bool,
 
     /// Disable squelch analysis and generate signals from all candidates regardless of audio quality
     #[arg(long)]
     disable_squelch: bool,
+
+    #[arg(long, default_value_t = 3)]
+    duration: u64,
+
+    /// Frequency tracking method (pll, spectral, correlation)
+    #[arg(long, default_value = "pll")]
+    frequency_tracking: String,
+
+    #[arg(long, help = "SDR gain in dB (0 to 48 for SDRplay, default 24)")]
+    gain: Option<f64>,
+
+    /// Output format: JSON
+    #[arg(long, group = "output_format")]
+    json: bool,
+
+    /// Duration in seconds for squelch to analyze audio vs noise
+    #[arg(long, default_value_t = 2.0)]
+    learning_duration: f32,
+
+    /// Output format: structured logging
+    #[arg(long, group = "output_format")]
+    log: bool,
+
+    /// Path to pre-trained model file (if not specified, auto-discovers latest)
+    #[arg(long)]
+    model_path: Option<String>,
+
+    #[arg(long)]
+    peak_scan_duration: Option<f64>,
+
+    #[arg(long)]
+    print_candidates: bool,
+
+    /// Maximum number of scanning windows to process (default: all windows)
+    #[arg(long)]
+    scanning_windows: Option<usize>,
+
+    /// Minimum spectral score threshold for candidate creation (0.0-1.0)
+    #[arg(long, default_value_t = 0.2)]
+    spectral_threshold: f32,
 
     /// Audio quality threshold for squelch ("static", "no-audio", "poor", "moderate", "good")
     /// Signals below this threshold will be filtered out. Default: "moderate"
     #[arg(long, default_value = "moderate")]
     squelch_threshold: String,
 
-    /// Disable IF AGC in both detection and audio pipelines (AGC enabled by default)
     #[arg(long)]
-    disable_if_agc: bool,
+    stations: Option<String>,
 
-    /// Audio quality classifier to use
-    #[arg(long, default_value = "random-forest")]
-    audio_classifier: AudioClassifier,
+    /// Output format: plain text (default)
+    #[arg(long, group = "output_format")]
+    text: bool,
 
-    /// Path to pre-trained model file (if not specified, auto-discovers latest)
+    /// Required accuracy for frequency tracking convergence (Hz)
+    #[arg(long, default_value_t = 5000.0)]
+    tracking_accuracy: f64,
+
     #[arg(long)]
-    model_path: Option<String>,
+    verbose: bool,
+
+    /// Window overlap percentage for band scanning (0.0-1.0, where 0.75 = 75% overlap)
+    #[arg(long, default_value_t = 0.75)]
+    window_overlap: f64,
 }
 
 #[derive(Parser, Debug)]
 struct TrainArgs {
-    /// Directory containing training audio files
-    #[arg(long, default_value = "tests/data/audio/quality")]
-    training_data_dir: String,
+    /// Model version string
+    #[arg(long, default_value = "0.1.0")]
+    model_version: String,
 
     /// Output path for trained model (if not specified, auto-generates versioned filename)
     #[arg(long)]
@@ -155,9 +155,9 @@ struct TrainArgs {
     #[arg(long, default_value_t = 48000.0)]
     sample_rate: f32,
 
-    /// Model version string
-    #[arg(long, default_value = "0.1.0")]
-    model_version: String,
+    /// Directory containing training audio files
+    #[arg(long, default_value = "tests/data/audio/quality")]
+    training_data_dir: String,
 
     #[arg(long)]
     verbose: bool,
