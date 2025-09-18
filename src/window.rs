@@ -444,11 +444,6 @@ impl Window {
         let (prev, decimation) =
             Self::create_frequency_xlating_filter(prev, &mut graph, frequency_offset, config)?;
 
-        // Add IF AGC using shared pipeline builder
-        let prev = crate::fm::pipeline_builder::FmPipelineBuilder::create_if_agc(
-            prev, &mut graph, config, "audio",
-        );
-
         let decimated_samp_rate = config.samp_rate / decimation as f64;
         let quad_rate = decimated_samp_rate as f32;
 

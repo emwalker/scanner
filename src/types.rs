@@ -255,7 +255,7 @@ impl Default for ScanningConfig {
             peak_scan_duration: None,
             print_candidates: false,
             samp_rate: 2_000_000.0,
-            squelch_learning_duration: 2.0,
+            squelch_learning_duration: 1.0,
 
             // Frequency tracking defaults
             frequency_tracking_method: "pll".to_string(),
@@ -266,7 +266,7 @@ impl Default for ScanningConfig {
             spectral_threshold: 0.2,
 
             // AGC and window defaults
-            agc_settling_time: 3.0,
+            agc_settling_time: 0.45,
             window_overlap: 0.75,
             // Squelch defaults
             disable_squelch: false,

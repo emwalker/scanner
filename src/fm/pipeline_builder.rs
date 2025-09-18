@@ -2,7 +2,7 @@ use crate::fm::filter_config::{FilterPurpose, FmFilterConfig};
 use crate::types::ScanningConfig;
 use rustradio::{
     Complex, Float, blockchain,
-    blocks::{MultiplyConst, RationalResampler},
+    blocks::RationalResampler,
     fir::{self, FirFilter},
     graph::{Graph, GraphRunner},
     stream::ReadStream,
@@ -74,30 +74,6 @@ impl FmPipelineBuilder {
         graph.add(Box::new(freq_xlating_block));
 
         Ok((output, decimation.try_into().unwrap()))
-    }
-
-    /// Create IF AGC stage using gain reduction (signal-specific AGC after frequency translation)
-    /// This handles FM capture effect by attenuating strong signals after frequency translation
-    pub fn create_if_agc(
-        input: ReadStream<Complex>,
-        graph: &mut Graph,
-        config: &ScanningConfig,
-        stage_name: &str,
-    ) -> ReadStream<Complex> {
-        if !config.disable_if_agc {
-            debug!(
-                "Signal-specific IF AGC enabled in {} pipeline after frequency translation (using gain reduction)",
-                stage_name
-            );
-            blockchain![
-                graph,
-                input,
-                MultiplyConst::new(input, Complex::new(0.1, 0.0)) // Reduce strong signals by 10x (-20dB)
-            ]
-        } else {
-            debug!("Signal-specific IF AGC disabled in {} pipeline", stage_name);
-            input
-        }
     }
 
     /// Create audio decimation chain (anti-aliasing filter + rational resampler)

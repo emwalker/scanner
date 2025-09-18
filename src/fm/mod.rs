@@ -367,48 +367,6 @@ fn setup_peak_collection(
     (fft_buffer, planner, fft, read_buffer)
 }
 
-fn run_agc_settling_phase(
-    sdr_rx: &mut tokio::sync::broadcast::Receiver<Complex>,
-    agc_samples_needed: usize,
-    start_time: std::time::Instant,
-    total_duration: f64,
-) -> usize {
-    debug!("Phase 1: AGC settling phase - consuming samples without analysis");
-    let mut agc_samples_consumed = 0;
-
-    while agc_samples_consumed < agc_samples_needed {
-        if start_time.elapsed().as_secs_f64() > total_duration + 1.0 {
-            debug!("AGC settling phase timed out");
-            break;
-        }
-
-        match sdr_rx.try_recv() {
-            Ok(_sample) => {
-                agc_samples_consumed += 1;
-            }
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
-                debug!("SDR samples lagged during AGC settling phase");
-                continue;
-            }
-            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
-                debug!("SDR channel closed during AGC settling");
-                break;
-            }
-        }
-    }
-
-    debug!(
-        agc_samples_consumed = agc_samples_consumed,
-        agc_duration_actual = start_time.elapsed().as_secs_f64(),
-        "AGC settling phase complete"
-    );
-
-    agc_samples_consumed
-}
-
 #[allow(clippy::too_many_arguments)]
 fn run_peak_detection_phase(
     sdr_rx: &mut tokio::sync::broadcast::Receiver<Complex>,
@@ -490,31 +448,23 @@ pub fn collect_peaks(
     mut sdr_rx: tokio::sync::broadcast::Receiver<Complex>,
     center_freq: f64,
 ) -> Result<Vec<Peak>> {
-    let agc_settling_time = config.agc_settling_time;
     let peak_scan_duration = config.peak_scan_duration.unwrap_or(0.5);
-    let total_duration = agc_settling_time + peak_scan_duration;
 
     debug!(
-        agc_settling_seconds = agc_settling_time,
         peak_scan_seconds = peak_scan_duration,
-        total_seconds = total_duration,
-        "Starting AGC settling followed by peak detection scan"
+        "Starting peak detection scan"
     );
 
     let samples_per_second = config.samp_rate as usize;
-    let agc_samples_needed = (samples_per_second as f64 * agc_settling_time) as usize;
     let peak_samples_needed = (samples_per_second as f64 * peak_scan_duration) as usize;
     let start_time = std::time::Instant::now();
 
     debug!(
-        agc_samples = agc_samples_needed,
         peak_samples = peak_samples_needed,
-        "Starting two-phase collection: AGC settling then peak detection"
+        "Starting peak detection"
     );
 
     let (fft_buffer, _planner, fft, read_buffer) = setup_peak_collection(config);
-    let _agc_samples_consumed =
-        run_agc_settling_phase(&mut sdr_rx, agc_samples_needed, start_time, total_duration);
 
     let peaks_map = run_peak_detection_phase(
         &mut sdr_rx,
@@ -525,7 +475,7 @@ pub fn collect_peaks(
         config,
         center_freq,
         start_time,
-        total_duration,
+        peak_scan_duration,
     );
 
     let peaks: Vec<Peak> = peaks_map.into_values().collect();
@@ -932,10 +882,6 @@ pub fn create_detection_graph(
     // Update effective sample rate after decimation
     let decimated_samp_rate = samp_rate / decimation as f64;
 
-    // Add IF AGC using shared pipeline builder
-    let prev =
-        pipeline_builder::FmPipelineBuilder::create_if_agc(prev, &mut graph, config, "detection");
-
     // Skip additional resampling if we're already close to desired quad rate
     let quad_rate = decimated_samp_rate as f32; // Use decimated rate directly to avoid extra resampling
 
@@ -1093,7 +1039,7 @@ mod tests {
             peak_scan_duration: Some(0.1),  // Short duration for testing
             print_candidates: false,
             samp_rate: 1000000.0,
-            squelch_learning_duration: 2.0,
+            squelch_learning_duration: 1.0,
 
             // Frequency tracking configuration
             frequency_tracking_method: "pll".to_string(),
@@ -1104,7 +1050,7 @@ mod tests {
             spectral_threshold: 0.2,
 
             // AGC and window configuration
-            agc_settling_time: 3.0,
+            agc_settling_time: 0.45,
             window_overlap: 0.75,
             // Squelch configuration
             disable_squelch: false,

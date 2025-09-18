@@ -37,7 +37,7 @@ enum Commands {
 #[derive(Parser, Debug)]
 struct ScanArgs {
     /// AGC settling time in seconds before peak scanning begins
-    #[arg(long, default_value_t = 3.0)]
+    #[arg(long, default_value_t = 0.45)]
     agc_settling_time: f64,
 
     #[arg(long)]
@@ -92,7 +92,7 @@ struct ScanArgs {
     json: bool,
 
     /// Duration in seconds for squelch to analyze audio vs noise
-    #[arg(long, default_value_t = 2.0)]
+    #[arg(long, default_value_t = 1.0)]
     learning_duration: f32,
 
     /// Output format: structured logging

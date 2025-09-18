@@ -54,6 +54,7 @@ pub struct SoapySdrManager {
     sdr_source: Arc<Mutex<SoapySdrSource>>,
     samp_rate: f64,
     sdr_gain: f64,
+    agc_settling_time: f64,
     audio_sender: broadcast::Sender<Complex>,
     graph_handle: Option<thread::JoinHandle<()>>,
     cancel_token: Option<CancellationToken>,
@@ -76,6 +77,7 @@ impl SoapySdrManager {
             sdr_source,
             samp_rate: config.samp_rate,
             sdr_gain: config.sdr_gain,
+            agc_settling_time: config.agc_settling_time,
             audio_sender,
             graph_handle: None,
             cancel_token: None,
@@ -117,7 +119,7 @@ impl SoapySdrManager {
             .sdr_source
             .lock()
             .unwrap()
-            .create_raw_source_block(freq, self.samp_rate, self.sdr_gain)?;
+            .create_raw_source_block(freq, self.samp_rate, self.sdr_gain, self.agc_settling_time)?;
 
         graph.add(Box::new(sdr_source_block));
 
@@ -210,6 +212,7 @@ impl SoapySdrSource {
         frequency_hz: f64,
         sample_rate: f64,
         gain_db: f64,
+        agc_settling_time: f64,
     ) -> Result<(
         rustradio::blocks::SoapySdrSource,
         rustradio::stream::ReadStream<Complex>,
@@ -251,9 +254,6 @@ impl SoapySdrSource {
             normalized_gain
         );
 
-        // Sleep for 3 seconds before rustradio source block is instantiated
-        std::thread::sleep(std::time::Duration::from_secs(3));
-
         // Disable AGC to allow manual gain control
         if device.has_gain_mode(soapysdr::Direction::Rx, 0)? {
             debug!("Disabling AGC for manual gain control");
@@ -264,6 +264,12 @@ impl SoapySdrSource {
             rustradio::blocks::SoapySdrSource::builder(&device, frequency_hz, sample_rate)
                 .igain(normalized_gain / 48.0) // Normalize gain_db to 0.0-1.0 range
                 .build()?;
+
+        // device.set_gain_mode(soapysdr::Direction::Rx, 0, true)?;
+
+        // Sleep for AGC settling time before rustradio source block is instantiated
+        let agc_settling_millis = (agc_settling_time * 1000.0) as u64;
+        std::thread::sleep(std::time::Duration::from_millis(agc_settling_millis));
 
         debug!("rustradio SoapySdrSource created successfully");
         Ok((sdr_source_block, sdr_output_stream))
