@@ -221,6 +221,14 @@ fn test_peak_detection_with_synthetic_signal() {
         samp_rate: sample_source.sample_rate(),
         fft_size: 1024,
         peak_detection_threshold: 1.0,
+
+        // Disable Phase 1 and Phase 2 features for baseline test behavior
+        enable_exponential_smoothing: false,
+        enable_multi_frame_averaging: false,
+        enable_coherent_integration: false,
+        enable_moving_average_filter: false,
+        enable_cfar_detection: false,
+
         ..Default::default()
     };
 

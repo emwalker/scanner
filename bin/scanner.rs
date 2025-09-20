@@ -77,6 +77,14 @@ struct ScanArgs {
     #[arg(long)]
     disable_squelch: bool,
 
+    /// Disable Phase 1 signal averaging improvements (exponential smoothing, multi-frame averaging, etc.)
+    #[arg(long)]
+    disable_signal_averaging: bool,
+
+    /// Disable Phase 2 CFAR detection (use fixed threshold instead of adaptive threshold)
+    #[arg(long)]
+    disable_cfar: bool,
+
     #[arg(long, default_value_t = 3)]
     duration: u64,
 
@@ -301,7 +309,17 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         disable_if_agc: args.disable_if_agc,
         // Audio analyzer
         audio_analyzer,
-        // Use defaults for Phase 1 features
+
+        // Phase 1: Signal averaging and smoothing (opt-out via CLI)
+        enable_exponential_smoothing: !args.disable_signal_averaging,
+        enable_multi_frame_averaging: !args.disable_signal_averaging,
+        enable_coherent_integration: !args.disable_signal_averaging,
+        enable_moving_average_filter: !args.disable_signal_averaging,
+
+        // Phase 2: CFAR detection (opt-out via CLI)
+        enable_cfar_detection: !args.disable_cfar,
+
+        // Use defaults for other features
         ..Default::default()
     };
 

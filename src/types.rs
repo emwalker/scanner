@@ -91,6 +91,14 @@ pub enum ModulationType {
     // Future: NFM, Am, Digital, etc.
 }
 
+#[derive(Debug, Clone)]
+pub enum WindowType {
+    Rectangular,
+    Hamming,
+    Hanning,
+    BlackmanHarris,
+}
+
 impl Signal {
     pub fn new_fm(
         frequency_hz: f64,
@@ -243,6 +251,19 @@ pub struct ScanningConfig {
     pub enable_coherent_integration: bool,
     pub enable_moving_average_filter: bool,
     pub moving_average_window_size: usize,
+
+    // Phase 2: CFAR detection configuration
+    pub enable_cfar_detection: bool,
+    pub cfar_threshold_factor: f32,
+    pub cfar_guard_cells: usize,
+    pub cfar_reference_cells: usize,
+    pub cfar_false_alarm_rate: f32,
+
+    // Phase 3: Spectral preprocessing configuration
+    pub enable_windowing: bool,
+    pub window_type: WindowType,
+    pub zero_padding_factor: usize,
+    pub window_overlap_percent: f32,
 }
 
 impl Default for ScanningConfig {
@@ -285,14 +306,27 @@ impl Default for ScanningConfig {
             // Audio analyzer default (pass-through for testing)
             audio_analyzer: crate::audio_quality::AudioAnalyzer::pass_through(),
 
-            // Phase 1 defaults (disabled by default for backward compatibility)
-            enable_exponential_smoothing: false,
+            // Phase 1 defaults (enabled by default for improved performance)
+            enable_exponential_smoothing: true,
             smoothing_alpha: 0.3, // 30% smoothing factor
-            enable_multi_frame_averaging: false,
-            averaging_frames: 8, // Average over 8 frames
-            enable_coherent_integration: false,
-            enable_moving_average_filter: false,
+            enable_multi_frame_averaging: true,
+            averaging_frames: 3, // Average over 3 frames (reduced from 8 to prevent excessive frame discarding)
+            enable_coherent_integration: true,
+            enable_moving_average_filter: true,
             moving_average_window_size: 5, // 5-point moving average
+
+            // Phase 2 defaults (enabled by default for improved performance)
+            enable_cfar_detection: true,
+            cfar_threshold_factor: 10.0, // 10 dB above noise floor
+            cfar_guard_cells: 10,        // Guard cells around target
+            cfar_reference_cells: 50,    // Reference cells for noise estimation
+            cfar_false_alarm_rate: 0.01, // 1% false alarm rate
+
+            // Phase 3 defaults (disabled by default - not yet implemented)
+            enable_windowing: false,
+            window_type: WindowType::Rectangular,
+            zero_padding_factor: 1,
+            window_overlap_percent: 0.0,
         }
     }
 }

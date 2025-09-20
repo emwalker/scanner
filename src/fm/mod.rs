@@ -495,6 +495,69 @@ pub fn collect_peaks(
     Ok(peaks)
 }
 
+/// Extract peaks using CFAR (Constant False Alarm Rate) detection
+#[allow(clippy::needless_range_loop)]
+fn extract_peaks_with_cfar(
+    magnitudes: &[f32],
+    threshold_factor: f32,
+    guard_cells: usize,
+    reference_cells: usize,
+    fft_size: usize,
+    sample_rate: f64,
+    center_freq: f64,
+) -> Vec<Peak> {
+    let mut peaks = Vec::new();
+    let len = magnitudes.len();
+
+    // CFAR detection: for each potential target cell, estimate local noise floor
+    for target_idx in guard_cells + reference_cells..len - guard_cells - reference_cells {
+        // Calculate noise floor using reference cells on both sides of target
+        let mut noise_sum = 0.0;
+        let mut noise_count = 0;
+
+        // Left reference cells (skip guard cells around target)
+        for i in (target_idx - guard_cells - reference_cells)..(target_idx - guard_cells) {
+            noise_sum += magnitudes[i];
+            noise_count += 1;
+        }
+
+        // Right reference cells (skip guard cells around target)
+        for i in (target_idx + guard_cells + 1)..(target_idx + guard_cells + reference_cells + 1) {
+            if i < len {
+                noise_sum += magnitudes[i];
+                noise_count += 1;
+            }
+        }
+
+        if noise_count > 0 {
+            let noise_floor = noise_sum / noise_count as f32;
+            let adaptive_threshold = noise_floor * threshold_factor;
+
+            // Check if target exceeds adaptive threshold and is a local maximum
+            if magnitudes[target_idx] > adaptive_threshold
+                && target_idx > 0
+                && target_idx < len - 1
+                && magnitudes[target_idx] > magnitudes[target_idx - 1]
+                && magnitudes[target_idx] > magnitudes[target_idx + 1]
+            {
+                // Convert FFT bin to frequency
+                let freq_offset = (target_idx as f64 / fft_size as f64) * sample_rate;
+                let freq_hz = center_freq - (sample_rate / 2.0) + freq_offset;
+
+                // Round to nearest 100 kHz to eliminate floating point precision errors
+                let freq_hz_rounded = (freq_hz / 100000.0).round() * 100000.0;
+
+                peaks.push(Peak {
+                    frequency_hz: freq_hz_rounded,
+                    magnitude: magnitudes[target_idx],
+                });
+            }
+        }
+    }
+
+    peaks
+}
+
 /// Extract peaks from FFT magnitudes
 fn extract_peaks_from_magnitudes(
     magnitudes: &[f32],
@@ -639,6 +702,21 @@ fn process_samples_for_peaks(
     fft.process(fft_buffer);
     let mut magnitudes: Vec<f32> = fft_buffer.iter().map(|c| c.norm_sqr()).collect();
 
+    // CFAR detection works best on raw or lightly processed magnitudes
+    // Apply it early, before heavy smoothing that changes noise characteristics
+    if config.enable_cfar_detection {
+        return extract_peaks_with_cfar(
+            &magnitudes,
+            config.cfar_threshold_factor,
+            config.cfar_guard_cells,
+            config.cfar_reference_cells,
+            config.fft_size,
+            config.samp_rate,
+            center_freq,
+        );
+    }
+
+    // For non-CFAR detection, apply Phase 1 improvements to enhance signal quality
     // Apply multi-frame averaging if enabled
     if config.enable_multi_frame_averaging {
         let should_extract_peaks = apply_multi_frame_averaging(
@@ -684,6 +762,7 @@ fn process_samples_for_peaks(
         }
     }
 
+    // Use simple threshold detection for Phase 1 processed magnitudes
     extract_peaks_from_magnitudes(
         &magnitudes,
         config.peak_detection_threshold,
@@ -1190,6 +1269,14 @@ mod tests {
             samp_rate: 1000000.0,
             disable_frequency_tracking: true, // Disable for test to keep existing behavior
             audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+
+            // Disable Phase 1 and Phase 2 features for baseline test behavior
+            enable_exponential_smoothing: false,
+            enable_multi_frame_averaging: false,
+            enable_coherent_integration: false,
+            enable_moving_average_filter: false,
+            enable_cfar_detection: false,
+
             ..Default::default()
         };
 

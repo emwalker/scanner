@@ -242,6 +242,17 @@ fn create_test_config() -> ScanningConfig {
         enable_coherent_integration: false,
         enable_moving_average_filter: false,
         moving_average_window_size: 5,
+        // Phase 2 defaults
+        enable_cfar_detection: false,
+        cfar_threshold_factor: 10.0,
+        cfar_guard_cells: 10,
+        cfar_reference_cells: 50,
+        cfar_false_alarm_rate: 0.01,
+        // Phase 3 defaults (disabled for benchmarking baseline performance)
+        enable_windowing: false,
+        window_type: scanner::types::WindowType::Rectangular,
+        zero_padding_factor: 1,
+        window_overlap_percent: 0.0,
     }
 }
 
