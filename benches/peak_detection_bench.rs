@@ -188,7 +188,7 @@ fn benchmark_performance_regression(c: &mut Criterion) {
                 let duration = start.elapsed();
 
                 // Assert performance requirement in benchmark
-                // Increased threshold to account for Phase 1 parameter overhead
+                // Increased threshold to account for signal averaging parameter overhead
                 if duration.as_millis() > 2000 {
                     panic!(
                         "Performance regression detected: {}ms > 2000ms threshold",
@@ -234,7 +234,7 @@ fn create_test_config() -> ScanningConfig {
         squelch_threshold: scanner::audio_quality::AudioQuality::Moderate,
         disable_if_agc: false,
         audio_analyzer: scanner::audio_quality::AudioAnalyzer::mock(),
-        // Phase 1 defaults
+        // Signal averaging defaults
         enable_exponential_smoothing: false,
         smoothing_alpha: 0.3,
         enable_multi_frame_averaging: false,
@@ -242,13 +242,13 @@ fn create_test_config() -> ScanningConfig {
         enable_coherent_integration: false,
         enable_moving_average_filter: false,
         moving_average_window_size: 5,
-        // Phase 2 defaults
+        // CFAR detection defaults
         enable_cfar_detection: false,
         cfar_threshold_factor: 10.0,
         cfar_guard_cells: 10,
         cfar_reference_cells: 50,
         cfar_false_alarm_rate: 0.01,
-        // Phase 3 defaults (disabled for benchmarking baseline performance)
+        // Spectral preprocessing defaults (disabled for benchmarking baseline performance)
         enable_windowing: false,
         window_type: scanner::types::WindowType::Rectangular,
         zero_padding_factor: 1,

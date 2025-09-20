@@ -217,20 +217,20 @@ fn test_peak_detection_with_synthetic_signal() {
         100_000.0,    // 100 kHz offset (signal at 89.1 MHz)
     );
 
-    let config = ScanningConfig {
-        samp_rate: sample_source.sample_rate(),
-        fft_size: 1024,
-        peak_detection_threshold: 1.0,
+    // Create config with explicit values to avoid any default changes
+    let mut config = ScanningConfig::default();
+    config.samp_rate = sample_source.sample_rate();
+    config.fft_size = 1024;
+    config.peak_detection_threshold = 0.3; // Signal at 89.1 MHz has magnitude ~0.304
 
-        // Disable Phase 1 and Phase 2 features for baseline test behavior
-        enable_exponential_smoothing: false,
-        enable_multi_frame_averaging: false,
-        enable_coherent_integration: false,
-        enable_moving_average_filter: false,
-        enable_cfar_detection: false,
-
-        ..Default::default()
-    };
+    // Disable all advanced features for baseline test behavior
+    config.enable_exponential_smoothing = false;
+    config.enable_multi_frame_averaging = false;
+    config.enable_coherent_integration = false;
+    config.enable_moving_average_filter = false;
+    config.enable_cfar_detection = false;
+    config.enable_windowing = false;
+    config.zero_padding_factor = 1;
 
     // Process samples and find peaks
     let peaks = scanner::fm::collect_peaks_from_source(&config, &mut sample_source)

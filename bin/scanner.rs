@@ -65,6 +65,10 @@ struct ScanArgs {
     #[arg(long)]
     device_args: Option<String>,
 
+    /// Disable CFAR detection (use fixed threshold instead of adaptive threshold)
+    #[arg(long)]
+    disable_cfar: bool,
+
     /// Disable frequency tracking (use FFT estimates directly)
     #[arg(long)]
     disable_frequency_tracking: bool,
@@ -73,17 +77,17 @@ struct ScanArgs {
     #[arg(long)]
     disable_if_agc: bool,
 
-    /// Disable squelch analysis and generate signals from all candidates regardless of audio quality
-    #[arg(long)]
-    disable_squelch: bool,
-
-    /// Disable Phase 1 signal averaging improvements (exponential smoothing, multi-frame averaging, etc.)
+    /// Disable signal averaging improvements (exponential smoothing, multi-frame averaging, etc.)
     #[arg(long)]
     disable_signal_averaging: bool,
 
-    /// Disable Phase 2 CFAR detection (use fixed threshold instead of adaptive threshold)
+    /// Disable spectral preprocessing (windowing, zero-padding)
     #[arg(long)]
-    disable_cfar: bool,
+    disable_spectral_preprocessing: bool,
+
+    /// Disable squelch analysis and generate signals from all candidates regardless of audio quality
+    #[arg(long)]
+    disable_squelch: bool,
 
     #[arg(long, default_value_t = 3)]
     duration: u64,
@@ -310,14 +314,17 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         // Audio analyzer
         audio_analyzer,
 
-        // Phase 1: Signal averaging and smoothing (opt-out via CLI)
+        // Signal averaging and smoothing (opt-out via CLI)
         enable_exponential_smoothing: !args.disable_signal_averaging,
         enable_multi_frame_averaging: !args.disable_signal_averaging,
         enable_coherent_integration: !args.disable_signal_averaging,
         enable_moving_average_filter: !args.disable_signal_averaging,
 
-        // Phase 2: CFAR detection (opt-out via CLI)
+        // CFAR detection (opt-out via CLI)
         enable_cfar_detection: !args.disable_cfar,
+
+        // Spectral preprocessing (opt-out via CLI)
+        enable_windowing: !args.disable_spectral_preprocessing,
 
         // Use defaults for other features
         ..Default::default()

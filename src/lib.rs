@@ -8,6 +8,7 @@ pub mod iq_capture;
 pub mod logging;
 pub mod main_thread;
 pub mod mpsc;
+pub mod peaks;
 pub mod sdr;
 #[cfg(feature = "soapysdr")]
 pub mod soapy;

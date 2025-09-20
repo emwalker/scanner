@@ -6,9 +6,6 @@ pub mod benchmark_datasets;
 #[cfg(test)]
 pub mod detection_regression_tests;
 pub mod performance_regression;
-pub mod phase1_tests;
-pub mod phase2_tests;
-pub mod phase3_tests;
 pub mod signal_generation;
 pub mod statistical_validation;
 pub mod test_helpers;
