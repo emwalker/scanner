@@ -173,6 +173,6 @@ mod tests {
 
         // This test would need a proper input stream in a real scenario
         // For now, just test that we can create the filter
-        assert_eq!(taps.len() > 0, true);
+        assert!(!taps.is_empty());
     }
 }

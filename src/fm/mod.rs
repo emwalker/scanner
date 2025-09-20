@@ -385,6 +385,13 @@ fn run_peak_detection_phase(
     let mut peaks_map: BTreeMap<u64, Peak> = BTreeMap::new();
     let mut peak_samples_collected = 0;
 
+    // Initialize exponential smoothing, coherent integration, and multi-frame averaging state
+    let mut smoothed_magnitudes: Option<Vec<f32>> = None;
+    let mut coherent_integration_accumulator: Option<Vec<f32>> = None;
+    let mut integration_cycles = 0;
+    let mut multi_frame_accumulator: Option<Vec<f32>> = None;
+    let mut frame_count = 0;
+
     while peak_samples_collected < peak_samples_needed {
         if start_time.elapsed().as_secs_f64() > total_duration + 1.0 {
             debug!("Peak detection phase timed out");
@@ -404,6 +411,11 @@ fn run_peak_detection_phase(
                         &fft,
                         config,
                         center_freq,
+                        &mut smoothed_magnitudes,
+                        &mut coherent_integration_accumulator,
+                        &mut integration_cycles,
+                        &mut multi_frame_accumulator,
+                        &mut frame_count,
                     );
 
                     for peak in batch_peaks {
@@ -516,7 +528,92 @@ fn extract_peaks_from_magnitudes(
     peaks
 }
 
+/// Apply moving average filter to smooth magnitude spectra across frequency bins
+fn apply_moving_average_filter(magnitudes: &mut [f32], window_size: usize) {
+    if window_size <= 1 || magnitudes.len() < window_size {
+        return; // No filtering needed for window size 1 or insufficient data
+    }
+
+    let half_window = window_size / 2;
+    let mut filtered = vec![0.0; magnitudes.len()];
+
+    for (i, filtered_val) in filtered.iter_mut().enumerate().take(magnitudes.len()) {
+        let start = i.saturating_sub(half_window);
+        let end = (i + half_window + 1).min(magnitudes.len());
+        let window_len = end - start;
+
+        let sum: f32 = magnitudes[start..end].iter().sum();
+        *filtered_val = sum / window_len as f32;
+    }
+
+    // Copy filtered values back to original array
+    magnitudes.copy_from_slice(&filtered);
+}
+
+/// Apply coherent integration to accumulate signal power across multiple scan periods
+fn apply_coherent_integration(
+    magnitudes: &mut [f32],
+    accumulator: &mut Option<Vec<f32>>,
+    cycles: &mut usize,
+) {
+    *cycles += 1;
+
+    if let Some(acc) = accumulator {
+        // Accumulate magnitudes with current values
+        for (current, accumulated) in magnitudes.iter().zip(acc.iter_mut()) {
+            *accumulated += current;
+        }
+
+        // Copy accumulated and averaged values back to magnitudes
+        let cycle_count = *cycles as f32;
+        for (magnitude, accumulated) in magnitudes.iter_mut().zip(acc.iter()) {
+            *magnitude = *accumulated / cycle_count;
+        }
+    } else {
+        // First cycle - initialize accumulator with current values
+        *accumulator = Some(magnitudes.to_vec());
+    }
+}
+
+/// Apply multi-frame averaging to accumulate magnitudes over multiple FFT frames
+fn apply_multi_frame_averaging(
+    magnitudes: &mut [f32],
+    accumulator: &mut Option<Vec<f32>>,
+    frame_count: &mut usize,
+    target_frames: usize,
+) -> bool {
+    *frame_count += 1;
+
+    if let Some(acc) = accumulator {
+        // Accumulate current frame
+        for (current, accumulated) in magnitudes.iter().zip(acc.iter_mut()) {
+            *accumulated += current;
+        }
+
+        // Check if we've reached the target number of frames
+        if *frame_count >= target_frames {
+            // Average the accumulated values and copy back
+            for (magnitude, accumulated) in magnitudes.iter_mut().zip(acc.iter()) {
+                *magnitude = *accumulated / target_frames as f32;
+            }
+
+            // Reset for next averaging cycle
+            *frame_count = 0;
+            *accumulator = None;
+            return true; // Signal that averaging is complete
+        }
+
+        // Not enough frames yet - don't extract peaks this cycle
+        false
+    } else {
+        // First frame - initialize accumulator
+        *accumulator = Some(magnitudes.to_vec());
+        false // Need more frames
+    }
+}
+
 /// Process a batch of samples through FFT and extract peaks
+#[allow(clippy::too_many_arguments)]
 fn process_samples_for_peaks(
     read_buffer: &[Complex],
     samples_read: usize,
@@ -524,6 +621,11 @@ fn process_samples_for_peaks(
     fft: &std::sync::Arc<dyn rustfft::Fft<f32>>,
     config: &ScanningConfig,
     center_freq: f64,
+    smoothed_magnitudes: &mut Option<Vec<f32>>,
+    coherent_integration_accumulator: &mut Option<Vec<f32>>,
+    integration_cycles: &mut usize,
+    multi_frame_accumulator: &mut Option<Vec<f32>>,
+    frame_count: &mut usize,
 ) -> Vec<Peak> {
     // Copy samples to FFT buffer
     for (i, sample) in read_buffer
@@ -535,7 +637,52 @@ fn process_samples_for_peaks(
     }
 
     fft.process(fft_buffer);
-    let magnitudes: Vec<f32> = fft_buffer.iter().map(|c| c.norm_sqr()).collect();
+    let mut magnitudes: Vec<f32> = fft_buffer.iter().map(|c| c.norm_sqr()).collect();
+
+    // Apply multi-frame averaging if enabled
+    if config.enable_multi_frame_averaging {
+        let should_extract_peaks = apply_multi_frame_averaging(
+            &mut magnitudes,
+            multi_frame_accumulator,
+            frame_count,
+            config.averaging_frames,
+        );
+
+        // If we haven't accumulated enough frames yet, return empty peaks
+        if !should_extract_peaks {
+            return Vec::new();
+        }
+    }
+
+    // Apply moving average filter on magnitude spectra if enabled
+    if config.enable_moving_average_filter {
+        apply_moving_average_filter(&mut magnitudes, config.moving_average_window_size);
+    }
+
+    // Apply coherent integration across scan periods if enabled
+    if config.enable_coherent_integration {
+        apply_coherent_integration(
+            &mut magnitudes,
+            coherent_integration_accumulator,
+            integration_cycles,
+        );
+    }
+
+    // Apply exponential smoothing if enabled
+    if config.enable_exponential_smoothing {
+        if let Some(smoothed) = smoothed_magnitudes {
+            // Apply exponential smoothing: smoothed[i] = alpha * current[i] + (1-alpha) * smoothed[i]
+            let alpha = config.smoothing_alpha;
+            for (&current, smoothed_val) in magnitudes.iter().zip(smoothed.iter_mut()) {
+                *smoothed_val = alpha * current + (1.0 - alpha) * *smoothed_val;
+            }
+            // Copy smoothed values back to magnitudes for peak detection
+            magnitudes.copy_from_slice(smoothed);
+        } else {
+            // First frame - initialize smoothed magnitudes with current values
+            *smoothed_magnitudes = Some(magnitudes.clone());
+        }
+    }
 
     extract_peaks_from_magnitudes(
         &magnitudes,
@@ -561,6 +708,13 @@ pub fn collect_peaks_from_source(
     let mut planner = rustfft::FftPlanner::new();
     let fft = planner.plan_fft_forward(config.fft_size);
 
+    // Initialize exponential smoothing, coherent integration, and multi-frame averaging state
+    let mut smoothed_magnitudes: Option<Vec<f32>> = None;
+    let mut coherent_integration_accumulator: Option<Vec<f32>> = None;
+    let mut integration_cycles = 0;
+    let mut multi_frame_accumulator: Option<Vec<f32>> = None;
+    let mut frame_count = 0;
+
     // Calculate sampling parameters
     let samples_per_second = sample_source.sample_rate() as usize;
     let total_samples_needed = (samples_per_second as f64 * peak_scan_duration) as usize;
@@ -582,6 +736,11 @@ pub fn collect_peaks_from_source(
                     &fft,
                     config,
                     sample_source.center_frequency(),
+                    &mut smoothed_magnitudes,
+                    &mut coherent_integration_accumulator,
+                    &mut integration_cycles,
+                    &mut multi_frame_accumulator,
+                    &mut frame_count,
                 );
                 for peak in batch_peaks {
                     let rounded_freq = (peak.frequency_hz / 100000.0).round() as u64;
@@ -1024,42 +1183,14 @@ mod tests {
     #[test]
     fn test_collect_peaks_from_mock_source() {
         let config = ScanningConfig {
-            audio_buffer_size: 4096,
-            audio_sample_rate: 48000,
-            band: crate::types::Band::Fm,
-            capture_audio_duration: 3.0,
-            capture_audio: None,
-            capture_duration: 2.0,
-            capture_iq: None,
-            debug_pipeline: false,
             duration: 1,
-            sdr_gain: 24.0,
-            scanning_windows: None,
             fft_size: 1024,
             peak_detection_threshold: 0.01, // Low threshold for testing
             peak_scan_duration: 0.1,        // Short duration for testing
-            print_candidates: false,
             samp_rate: 1000000.0,
-            squelch_learning_duration: 1.0,
-
-            // Frequency tracking configuration
-            frequency_tracking_method: "pll".to_string(),
-            tracking_accuracy: 5000.0,
             disable_frequency_tracking: true, // Disable for test to keep existing behavior
-
-            // Spectral analysis configuration
-            spectral_threshold: 0.2,
-
-            // AGC and window configuration
-            agc_settling_time: 0.45,
-            window_overlap: 0.75,
-            // Squelch configuration
-            disable_squelch: false,
-            squelch_threshold: crate::audio_quality::AudioQuality::Moderate,
-            // IF AGC configuration
-            disable_if_agc: false,
-            // Audio analyzer for tests
             audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+            ..Default::default()
         };
 
         // Create mock source with a signal at +100kHz offset from center

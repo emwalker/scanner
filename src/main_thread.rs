@@ -142,7 +142,7 @@ impl ConsoleWriter for DefaultConsoleWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Band, ScanningConfig};
+    use crate::types::ScanningConfig;
     use std::sync::{Arc, Mutex};
 
     // Mock implementations for testing
@@ -201,32 +201,11 @@ mod tests {
     fn create_test_config() -> ScanningConfig {
         ScanningConfig {
             audio_buffer_size: 8192,
-            audio_sample_rate: 48000,
-            band: Band::Fm,
-            capture_audio_duration: 3.0,
-            capture_audio: None,
-            capture_duration: 2.0,
-            capture_iq: None,
-            debug_pipeline: false,
-            duration: 3,
-            sdr_gain: 24.0,
             scanning_windows: Some(2),
             fft_size: 1024,
-            peak_detection_threshold: 1.0,
             peak_scan_duration: 1.5,
-            print_candidates: false,
-            samp_rate: 2_000_000.0,
-            squelch_learning_duration: 1.0,
-            frequency_tracking_method: "pll".to_string(),
-            tracking_accuracy: 5000.0,
-            disable_frequency_tracking: false,
-            spectral_threshold: 0.2,
-            agc_settling_time: 0.45,
-            window_overlap: 0.75,
-            disable_squelch: false,
-            squelch_threshold: crate::audio_quality::AudioQuality::Moderate,
-            disable_if_agc: false,
             audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+            ..Default::default()
         }
     }
 

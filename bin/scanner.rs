@@ -301,6 +301,8 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         disable_if_agc: args.disable_if_agc,
         // Audio analyzer
         audio_analyzer,
+        // Use defaults for Phase 1 features
+        ..Default::default()
     };
 
     let driver = args.device_args.as_deref().unwrap_or(DEFAULT_DRIVER);

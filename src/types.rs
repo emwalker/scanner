@@ -234,6 +234,15 @@ pub struct ScanningConfig {
     pub disable_if_agc: bool,
     // Audio quality analyzer
     pub audio_analyzer: crate::audio_quality::AudioAnalyzer,
+
+    // Phase 1: Signal averaging and smoothing configuration
+    pub enable_exponential_smoothing: bool,
+    pub smoothing_alpha: f32,
+    pub enable_multi_frame_averaging: bool,
+    pub averaging_frames: usize,
+    pub enable_coherent_integration: bool,
+    pub enable_moving_average_filter: bool,
+    pub moving_average_window_size: usize,
 }
 
 impl Default for ScanningConfig {
@@ -275,6 +284,15 @@ impl Default for ScanningConfig {
             disable_if_agc: false,
             // Audio analyzer default (pass-through for testing)
             audio_analyzer: crate::audio_quality::AudioAnalyzer::pass_through(),
+
+            // Phase 1 defaults (disabled by default for backward compatibility)
+            enable_exponential_smoothing: false,
+            smoothing_alpha: 0.3, // 30% smoothing factor
+            enable_multi_frame_averaging: false,
+            averaging_frames: 8, // Average over 8 frames
+            enable_coherent_integration: false,
+            enable_moving_average_filter: false,
+            moving_average_window_size: 5, // 5-point moving average
         }
     }
 }

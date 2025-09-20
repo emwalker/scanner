@@ -4,6 +4,7 @@
 
 pub mod benchmark_datasets;
 pub mod performance_regression;
+pub mod phase1_tests;
 pub mod signal_generation;
 pub mod statistical_validation;
 pub mod test_helpers;
