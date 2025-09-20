@@ -18,7 +18,7 @@ pub struct IqFileMetadata {
     // Peak detection parameters used during scanning
     pub fft_size: usize,
     pub peak_detection_threshold: f32,
-    pub peak_scan_duration: Option<f64>,
+    pub peak_scan_duration: f64,
     pub driver: String, // SDR driver used (e.g., "driver=sdrplay")
 }
 
@@ -31,7 +31,7 @@ impl IqFileMetadata {
         total_samples: usize,
         fft_size: usize,
         peak_detection_threshold: f32,
-        peak_scan_duration: Option<f64>,
+        peak_scan_duration: f64,
         driver: String,
     ) -> Self {
         Self {

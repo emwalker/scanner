@@ -23,7 +23,7 @@ pub struct IqCaptureBlock {
     capture_duration: f64,
     fft_size: usize,
     peak_detection_threshold: f32,
-    peak_scan_duration: Option<f64>,
+    peak_scan_duration: f64,
     driver: String,
 }
 
@@ -37,7 +37,7 @@ impl IqCaptureBlock {
         capture_duration: f64,
         fft_size: usize,
         peak_detection_threshold: f32,
-        peak_scan_duration: Option<f64>,
+        peak_scan_duration: f64,
         driver: String,
     ) -> Result<(Self, ReadStream<Complex>)> {
         let max_samples = (sample_rate * capture_duration) as usize;

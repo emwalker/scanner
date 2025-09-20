@@ -7,6 +7,6 @@
   "expected_candidates": [],
   "fft_size": 1024,
   "peak_detection_threshold": 1.0,
-  "peak_scan_duration": null,
+  "peak_scan_duration": 1.5,
   "driver": "driver=sdrplay"
 }

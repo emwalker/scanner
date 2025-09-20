@@ -213,7 +213,7 @@ mod tests {
             scanning_windows: Some(2),
             fft_size: 1024,
             peak_detection_threshold: 1.0,
-            peak_scan_duration: None,
+            peak_scan_duration: 1.5,
             print_candidates: false,
             samp_rate: 2_000_000.0,
             squelch_learning_duration: 1.0,

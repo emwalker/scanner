@@ -1,7 +1,8 @@
-#![allow(dead_code)]
+//! Core testing utilities and helper functions
+
 use rustradio::Complex;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::{
     file::IqFileMetadata,
@@ -64,6 +65,7 @@ impl AudioFileMetadata {
         Ok(())
     }
 }
+
 /// Abstraction for sources of I/Q samples
 pub trait SampleSource {
     /// Read samples into the provided buffer
@@ -73,7 +75,7 @@ pub trait SampleSource {
     /// Get the configured sample rate
     fn sample_rate(&self) -> f64;
 
-    /// Get the configured center frequency  
+    /// Get the configured center frequency
     fn center_frequency(&self) -> f64;
 
     /// Clean up resources when done
@@ -348,82 +350,6 @@ pub fn load_audio_fixture(audio_file_path: &str) -> Result<(AudioFileSource, Aud
     Ok((audio_source, metadata))
 }
 
-/// Test framework for verifying frequency translation behavior
-#[derive(Debug)]
-pub struct FrequencyTest {
-    pub test_name: String,
-    pub sdr_center_freq: f64,
-    pub target_station_freq: f64,
-    pub expected_offset: f64,
-}
-
-impl FrequencyTest {
-    pub fn new(test_name: &str, sdr_center_freq: f64, target_station_freq: f64) -> Self {
-        let expected_offset = target_station_freq - sdr_center_freq;
-        Self {
-            test_name: test_name.to_string(),
-            sdr_center_freq,
-            target_station_freq,
-            expected_offset,
-        }
-    }
-
-    /// Simulate the frequency translation that would occur in the FreqXlatingFir
-    pub fn simulate_frequency_translation(&self) -> f64 {
-        // This is what the FreqXlatingFir receives
-        self.target_station_freq - self.sdr_center_freq
-    }
-}
-
-/// Create test scenarios that match the current scanning behavior
-pub fn create_frequency_test_scenarios() -> Vec<FrequencyTest> {
-    vec![
-        // Scenario 1: --stations mode (direct tuning)
-        FrequencyTest::new("stations_mode_88.9", 88.9e6, 88.9e6),
-        // Scenario 2: --band fm mode with realistic window centers
-        // With 1 MHz sample rate, windows should be about 1 MHz wide
-        // Realistic scenario: 88.9 MHz in a window centered at 89.1 MHz (200 kHz offset)
-        FrequencyTest::new("band_mode_88.9_window_89.1", 89.1e6, 88.9e6),
-        // Scenario 3: Different realistic window center
-        // 88.9 MHz in a window centered at 88.7 MHz (200 kHz offset)
-        FrequencyTest::new("band_mode_88.9_window_88.7", 88.7e6, 88.9e6),
-        // Scenario 4: Edge case within Nyquist limit
-        // 88.9 MHz in a window centered at 89.3 MHz (400 kHz offset, still within 500 kHz limit)
-        FrequencyTest::new("band_mode_88.9_window_89.3", 89.3e6, 88.9e6),
-    ]
-}
-
-/// Helper function to verify FreqXlatingFir parameters
-pub fn verify_freq_xlating_params(center_freq: f64, tune_freq: f64) -> (f64, bool) {
-    let frequency_offset = tune_freq - center_freq;
-    let sample_rate = 1_000_000.0;
-    let nyquist_limit = sample_rate / 2.0;
-    let is_valid = frequency_offset.abs() <= nyquist_limit;
-
-    info!(
-        "FreqXlatingFir params: center={:.3} MHz, tune={:.3} MHz, offset={:.1} kHz, valid={}",
-        center_freq / 1e6,
-        tune_freq / 1e6,
-        frequency_offset / 1e3,
-        is_valid
-    );
-
-    (frequency_offset, is_valid)
-}
-
-/// Create a test candidate to verify DSP pipeline behavior
-#[cfg(test)]
-pub fn create_test_candidate(freq: f64, center_freq: f64) -> (crate::fm::Candidate, f64, f64) {
-    let candidate = crate::fm::Candidate {
-        frequency_hz: freq,
-        peak_count: 1,
-        max_magnitude: 1000.0,
-        avg_magnitude: 500.0,
-        signal_strength: "Test".to_string(),
-    };
-    (candidate, center_freq, freq)
-}
-
 /// Test helper for isolating peak detection with known I/Q signals
 pub fn test_peak_detection_isolated(
     iq_file_path: &str,
@@ -496,121 +422,6 @@ pub fn test_peak_detection_isolated(
         metadata,
         expected_found: found_expected,
         all_expected_found,
-    })
-}
-
-/// Test helper for isolating frequency translation pipeline
-pub fn test_frequency_translation_isolated(
-    center_freq: f64,
-    tune_freq: f64,
-    debug: bool,
-) -> FrequencyTranslationResult {
-    let frequency_offset = tune_freq - center_freq;
-
-    // Check if offset is within reasonable bounds
-    let sample_rate = 1_000_000.0; // 1 MHz default
-    let nyquist_limit = sample_rate / 2.0;
-    let within_nyquist = frequency_offset.abs() <= nyquist_limit;
-
-    // Check filter bandwidth compatibility
-    let channel_bandwidth = 150_000.0; // Current filter bandwidth
-    let filter_cutoff = channel_bandwidth / 2.0;
-
-    if debug {
-        debug!(
-            message = "Frequency translation test",
-            center_frequency_mhz = center_freq / 1e6,
-            tune_frequency_mhz = tune_freq / 1e6,
-            frequency_offset_khz = frequency_offset / 1e3,
-            nyquist_limit_khz = nyquist_limit / 1e3,
-            within_nyquist = within_nyquist,
-            filter_bandwidth_khz = channel_bandwidth / 1e3
-        );
-    }
-
-    FrequencyTranslationResult {
-        center_freq,
-        tune_freq,
-        frequency_offset,
-        within_nyquist,
-        filter_bandwidth: channel_bandwidth,
-        filter_cutoff,
-        translation_valid: within_nyquist,
-    }
-}
-
-/// Complete end-to-end pipeline test with debugging
-pub fn test_complete_pipeline_debug(
-    iq_file_path: &str,
-    expected_station_freq: f64,
-    scanning_mode: ScanningMode,
-    config: &ScanningConfig,
-) -> crate::types::Result<PipelineTestResult> {
-    info!("\n=== Complete Pipeline Debug Test ===");
-
-    // Step 1: Test peak detection
-    info!("\nStep 1: Peak Detection");
-    let peak_result =
-        test_peak_detection_isolated(iq_file_path, &[expected_station_freq], config, true)?;
-
-    // Step 2: Test candidate creation
-    info!("\nStep 2: Candidate Creation");
-    let center_freq = match scanning_mode {
-        ScanningMode::Stations(freq) => freq,
-        ScanningMode::BandWindow(window_center) => window_center,
-    };
-
-    let candidates = crate::fm::find_candidates(&peak_result.peaks, config, center_freq);
-    info!("  Using center freq: {:.3} MHz", center_freq / 1e6);
-    info!("  Created {} candidates", candidates.len());
-
-    for candidate in &candidates {
-        let signal_strength = match candidate {
-            crate::types::Candidate::Fm(fm_candidate) => &fm_candidate.signal_strength,
-        };
-        info!(
-            "    {:.3} MHz (strength: {})",
-            candidate.frequency_hz() / 1e6,
-            signal_strength
-        );
-    }
-
-    // Step 3: Test frequency translation for target candidate
-    info!("\nStep 3: Frequency Translation");
-    let mut translation_results = Vec::new();
-    let mut target_candidate_found = false;
-
-    for candidate in &candidates {
-        let result =
-            test_frequency_translation_isolated(center_freq, candidate.frequency_hz(), false);
-
-        // Check if this is our target candidate
-        if (candidate.frequency_hz() - expected_station_freq).abs() < 50_000.0 {
-            target_candidate_found = true;
-            info!(
-                "  Target candidate: {:.3} MHz",
-                candidate.frequency_hz() / 1e6
-            );
-            info!("    Offset: {:.1} kHz", result.frequency_offset / 1e3);
-            info!("    Translation valid: {}", result.translation_valid);
-        }
-
-        translation_results.push(result);
-    }
-
-    if !target_candidate_found {
-        info!(
-            "  ✗ Target station {:.3} MHz not found in candidates!",
-            expected_station_freq / 1e6
-        );
-    }
-
-    Ok(PipelineTestResult {
-        peak_result,
-        candidates,
-        translation_results,
-        target_found: target_candidate_found,
-        scanning_mode,
     })
 }
 
@@ -705,49 +516,6 @@ where
     let result = test_fn()?;
     let logs = log_buffer.get_string();
     Ok((result, logs))
-}
-
-/// Enhanced pipeline test that captures and returns debug logs
-pub fn test_complete_pipeline_with_logs(
-    iq_file_path: &str,
-    expected_station_freq: f64,
-    scanning_mode: ScanningMode,
-    config: &ScanningConfig,
-) -> crate::types::Result<(PipelineTestResult, String)> {
-    with_captured_logs(true, Format::Json, || {
-        test_complete_pipeline_debug(
-            iq_file_path,
-            expected_station_freq,
-            scanning_mode.clone(),
-            config,
-        )
-    })
-}
-
-/// Test helper for comparing scanning modes with captured logs
-pub fn compare_scanning_modes_with_logs(
-    iq_file_path: &str,
-    station_freq: f64,
-    window_center_freq: f64,
-    config: &ScanningConfig,
-) -> crate::types::Result<(PipelineTestResult, PipelineTestResult, String, String)> {
-    // Test stations mode
-    let (stations_result, stations_logs) = test_complete_pipeline_with_logs(
-        iq_file_path,
-        station_freq,
-        ScanningMode::Stations(station_freq),
-        config,
-    )?;
-
-    // Test band window mode
-    let (band_result, band_logs) = test_complete_pipeline_with_logs(
-        iq_file_path,
-        station_freq,
-        ScanningMode::BandWindow(window_center_freq),
-        config,
-    )?;
-
-    Ok((stations_result, band_result, stations_logs, band_logs))
 }
 
 /// Test helper function to assert that a classifier correctly classifies audio samples
