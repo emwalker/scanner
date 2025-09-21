@@ -6,6 +6,7 @@
 pub mod averaging;
 pub mod cfar;
 pub mod extraction;
+pub mod multi_frame;
 pub mod windowing;
 
 use crate::testing::SampleSource;
@@ -48,6 +49,20 @@ pub fn collect_peaks_from_source(
         frame_count: 0,
     };
 
+    // Initialize multi-frame integrator if enabled
+    let mut multi_frame_integrator = if config.enable_multi_frame_integration {
+        Some(multi_frame::MultiFrameIntegrator::new(
+            multi_frame::MultiFrameConfig {
+                history_frames: config.multi_frame_history_frames,
+                confirmation_threshold: config.multi_frame_confirmation_threshold,
+                frequency_tolerance: config.multi_frame_frequency_tolerance,
+                max_frame_age: config.multi_frame_max_age,
+            },
+        ))
+    } else {
+        None
+    };
+
     // Calculate sampling parameters
     let samples_per_second = sample_source.sample_rate() as usize;
     let total_samples_needed = (samples_per_second as f64 * peak_scan_duration) as usize;
@@ -71,7 +86,15 @@ pub fn collect_peaks_from_source(
                     sample_source.center_frequency(),
                     &mut averaging_state,
                 );
-                for peak in batch_peaks {
+
+                // Process peaks through multi-frame integration if enabled
+                let final_peaks = if let Some(ref mut integrator) = multi_frame_integrator {
+                    integrator.process_frame(batch_peaks)
+                } else {
+                    batch_peaks
+                };
+
+                for peak in final_peaks {
                     let rounded_freq = (peak.frequency_hz / 100000.0).round() as u64;
                     peaks_map
                         .entry(rounded_freq)
@@ -92,6 +115,18 @@ pub fn collect_peaks_from_source(
         }
     }
     let peaks: Vec<Peak> = peaks_map.into_values().collect();
+
+    // Log multi-frame integration statistics if enabled
+    if let Some(ref integrator) = multi_frame_integrator {
+        let stats = integrator.get_statistics();
+        debug!(
+            total_trackers = stats.total_trackers,
+            confirmed_trackers = stats.confirmed_trackers,
+            pending_trackers = stats.pending_trackers,
+            current_frame = stats.current_frame,
+            "Multi-frame integration statistics"
+        );
+    }
 
     debug!("Peak detection scan complete. Found {} peaks.", peaks.len());
 
@@ -218,6 +253,8 @@ mod tests {
             enable_coherent_integration: false,
             enable_moving_average_filter: false,
             enable_cfar_detection: false,
+            enable_windowing: false,
+            enable_multi_frame_integration: false,
 
             ..Default::default()
         };
@@ -225,10 +262,24 @@ mod tests {
         let baseline_peaks = collect_peaks_from_source(&baseline_config, &mut baseline_generator)
             .expect("Failed to collect baseline peaks");
 
-        // Test with both signal averaging and CFAR enabled (current defaults)
+        // Test with both signal averaging and CFAR enabled (exclude newer features)
         let mut combined_generator = create_multi_signal_detection_scenario();
         let combined_config = ScanningConfig {
-            // Use current defaults (both features enabled)
+            audio_buffer_size: 8192,
+            scanning_windows: Some(3),
+            fft_size: 1024,
+            peak_scan_duration: 0.5,
+            audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+
+            // Test combination: Signal averaging + CFAR enabled, newer features disabled
+            enable_exponential_smoothing: true,
+            enable_multi_frame_averaging: true,
+            enable_coherent_integration: true,
+            enable_moving_average_filter: true,
+            enable_cfar_detection: true,
+            enable_windowing: false,
+            enable_multi_frame_integration: false,
+
             ..Default::default()
         };
 

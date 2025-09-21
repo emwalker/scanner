@@ -28,7 +28,7 @@ pub fn validate_variance_reduction(
         // Test with our standard FM band scenario for variance measurement
         let mut generator = create_fm_band_test_scenario();
         let expected_peaks = generator.get_expected_peaks();
-        let peaks = crate::fm::collect_peaks_from_source(config, &mut generator)?;
+        let peaks = crate::peaks::collect_peaks_from_source(config, &mut generator)?;
 
         let mut variance_measurement = VarianceMeasurement::new("FM_Band_Standard", expected_peaks);
         variance_measurement.add_measurement(&peaks);

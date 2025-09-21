@@ -83,7 +83,7 @@ fn measure_peak_detection_performance(
     let start_memory = get_memory_usage_mb();
 
     // Perform peak detection
-    let peaks = crate::fm::collect_peaks_from_source(config, &mut generator)?;
+    let peaks = crate::peaks::collect_peaks_from_source(config, &mut generator)?;
 
     let processing_time = start_time.elapsed();
     let end_memory = get_memory_usage_mb();

@@ -21,7 +21,7 @@ fn test_band_scan_frequency_detection() {
         ..Default::default()
     };
 
-    let peaks = scanner::fm::collect_peaks_from_source(&config, &mut file_source)
+    let peaks = scanner::peaks::collect_peaks_from_source(&config, &mut file_source)
         .expect("Failed to collect peaks from I/Q file");
 
     let candidates = scanner::fm::find_candidates(&peaks, &config, metadata.center_frequency);

@@ -1,7 +1,6 @@
 use crate::{
     file::AudioCaptureBlock,
     fm::squelch::SquelchBlock,
-    testing,
     types::{self, Peak, Result, ScanningConfig},
 };
 use rustradio::blocks::QuadratureDemod;
@@ -352,153 +351,27 @@ impl Candidate {
 /// Collect RF peaks by consuming from a broadcast channel.
 /// This performs FFT analysis to detect spectral peaks above the threshold.
 #[allow(clippy::type_complexity)]
-fn setup_peak_collection(
-    config: &ScanningConfig,
-) -> (
-    Vec<rustfft::num_complex::Complex32>,
-    rustfft::FftPlanner<f32>,
-    std::sync::Arc<dyn rustfft::Fft<f32>>,
-    Vec<Complex>,
-) {
-    let fft_buffer = vec![rustfft::num_complex::Complex32::default(); config.fft_size];
-    let mut planner = rustfft::FftPlanner::new();
-    let fft = planner.plan_fft_forward(config.fft_size);
-    let read_buffer = vec![Complex::default(); config.fft_size];
-    (fft_buffer, planner, fft, read_buffer)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_peak_detection_phase(
-    sdr_rx: &mut tokio::sync::broadcast::Receiver<Complex>,
-    peak_samples_needed: usize,
-    mut read_buffer: Vec<Complex>,
-    mut fft_buffer: Vec<rustfft::num_complex::Complex32>,
-    fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
-    config: &ScanningConfig,
-    center_freq: f64,
-    start_time: std::time::Instant,
-    total_duration: f64,
-) -> std::collections::BTreeMap<u64, Peak> {
-    use std::collections::BTreeMap;
-
-    debug!("Peak detection phase - analyzing samples for spectral peaks");
-    let mut peaks_map: BTreeMap<u64, Peak> = BTreeMap::new();
-    let mut peak_samples_collected = 0;
-
-    // Initialize signal averaging state
-    let mut averaging_state = crate::peaks::SignalAveragingState {
-        smoothed_magnitudes: None,
-        coherent_integration_accumulator: None,
-        integration_cycles: 0,
-        multi_frame_accumulator: None,
-        frame_count: 0,
-    };
-
-    while peak_samples_collected < peak_samples_needed {
-        if start_time.elapsed().as_secs_f64() > total_duration + 1.0 {
-            debug!("Peak detection phase timed out");
-            break;
-        }
-
-        match sdr_rx.try_recv() {
-            Ok(sample) => {
-                read_buffer[peak_samples_collected % config.fft_size] = sample;
-                peak_samples_collected += 1;
-
-                if peak_samples_collected % config.fft_size == 0 {
-                    let batch_peaks = crate::peaks::process_samples_for_peaks(
-                        &read_buffer,
-                        config.fft_size,
-                        &mut fft_buffer,
-                        &fft,
-                        config,
-                        center_freq,
-                        &mut averaging_state,
-                    );
-
-                    for peak in batch_peaks {
-                        let rounded_freq = (peak.frequency_hz / 100000.0).round() as u64;
-                        peaks_map
-                            .entry(rounded_freq)
-                            .and_modify(|e| {
-                                if peak.magnitude > e.magnitude {
-                                    *e = peak.clone();
-                                }
-                            })
-                            .or_insert(peak);
-                    }
-                }
-            }
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
-                thread::sleep(Duration::from_micros(100));
-                continue;
-            }
-            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
-                debug!("Peak collection lagged behind SDR stream");
-                continue;
-            }
-            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
-                debug!("SDR broadcast channel closed during peak collection");
-                break;
-            }
-        }
-    }
-
-    debug!(
-        peak_samples_collected = peak_samples_collected,
-        total_duration_actual = start_time.elapsed().as_secs_f64(),
-        "Peak detection phase complete"
-    );
-
-    peaks_map
-}
-
 pub fn collect_peaks(
     config: &ScanningConfig,
-    mut sdr_rx: tokio::sync::broadcast::Receiver<Complex>,
+    sdr_rx: tokio::sync::broadcast::Receiver<Complex>,
     center_freq: f64,
 ) -> Result<Vec<Peak>> {
-    let peak_scan_duration = config.peak_scan_duration;
-
     debug!(
-        peak_scan_seconds = peak_scan_duration,
-        "Starting peak detection scan"
+        peak_scan_seconds = config.peak_scan_duration,
+        center_freq_mhz = center_freq / 1e6,
+        "Starting unified peak detection scan"
     );
 
-    let samples_per_second = config.samp_rate as usize;
-    let peak_samples_needed = (samples_per_second as f64 * peak_scan_duration) as usize;
-    let start_time = std::time::Instant::now();
-
-    debug!(
-        peak_samples = peak_samples_needed,
-        "Starting peak detection"
-    );
-
-    let (fft_buffer, _planner, fft, read_buffer) = setup_peak_collection(config);
-
-    let peaks_map = run_peak_detection_phase(
-        &mut sdr_rx,
-        peak_samples_needed,
-        read_buffer,
-        fft_buffer,
-        fft,
-        config,
+    // Create SDR stream adapter to use unified peak detection
+    let mut sdr_source = crate::testing::SdrStreamSource::new(
+        sdr_rx,
+        config.samp_rate,
         center_freq,
-        start_time,
-        peak_scan_duration,
+        config.peak_scan_duration,
     );
 
-    let peaks: Vec<Peak> = peaks_map.into_values().collect();
-    debug!("Peak detection scan complete. Found {} peaks.", peaks.len());
-    Ok(peaks)
-}
-
-/// Collect RF peaks from any SampleSource (for testing and production)
-pub fn collect_peaks_from_source(
-    config: &ScanningConfig,
-    sample_source: &mut dyn testing::SampleSource,
-) -> Result<Vec<Peak>> {
-    crate::peaks::collect_peaks_from_source(config, sample_source)
+    // Use the unified peak detection implementation
+    crate::peaks::collect_peaks_from_source(config, &mut sdr_source)
 }
 
 /// Analyze spectral characteristics around a frequency to determine if it's a main lobe or sidelobe
@@ -943,7 +816,7 @@ mod tests {
             100000.0,   // 100 kHz offset signal
         );
 
-        let peaks = collect_peaks_from_source(&config, &mut mock_source).unwrap();
+        let peaks = crate::peaks::collect_peaks_from_source(&config, &mut mock_source).unwrap();
 
         // Should detect the peak around 89.0 MHz (88.9 + 0.1)
         assert!(!peaks.is_empty(), "Should detect at least one peak");

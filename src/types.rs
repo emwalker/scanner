@@ -264,6 +264,13 @@ pub struct ScanningConfig {
     pub window_type: WindowType,
     pub zero_padding_factor: usize,
     pub window_overlap_percent: f32,
+
+    // Multi-frame integration configuration
+    pub enable_multi_frame_integration: bool,
+    pub multi_frame_history_frames: usize,
+    pub multi_frame_confirmation_threshold: usize,
+    pub multi_frame_frequency_tolerance: f64,
+    pub multi_frame_max_age: f64,
 }
 
 impl Default for ScanningConfig {
@@ -327,6 +334,13 @@ impl Default for ScanningConfig {
             window_type: WindowType::BlackmanHarris,
             zero_padding_factor: 2,
             window_overlap_percent: 0.0,
+
+            // Multi-frame integration defaults (disabled by default until properly tuned)
+            enable_multi_frame_integration: false,
+            multi_frame_history_frames: 5, // Track last 5 frames
+            multi_frame_confirmation_threshold: 2, // Default threshold (adaptive)
+            multi_frame_frequency_tolerance: 25_000.0, // 25 kHz tolerance
+            multi_frame_max_age: 10.0,     // 10 second timeout
         }
     }
 }

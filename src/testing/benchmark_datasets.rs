@@ -239,7 +239,7 @@ pub fn test_peak_detection_against_benchmarks(
         let mut generator = dataset.generate_signals();
         let expected_peaks = dataset.expected_frequencies();
 
-        let peaks = crate::fm::collect_peaks_from_source(config, &mut generator)?;
+        let peaks = crate::peaks::collect_peaks_from_source(config, &mut generator)?;
 
         let tolerance_hz = 50_000.0; // 50 kHz tolerance
         let mut detected_count = 0;

@@ -77,6 +77,10 @@ struct ScanArgs {
     #[arg(long)]
     disable_if_agc: bool,
 
+    /// Enable multi-frame integration (peak persistence tracking) - experimental
+    #[arg(long)]
+    enable_multi_frame_integration: bool,
+
     /// Disable signal averaging improvements (exponential smoothing, multi-frame averaging, etc.)
     #[arg(long)]
     disable_signal_averaging: bool,
@@ -325,6 +329,9 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
 
         // Spectral preprocessing (opt-out via CLI)
         enable_windowing: !args.disable_spectral_preprocessing,
+
+        // Multi-frame integration (opt-in via CLI)
+        enable_multi_frame_integration: args.enable_multi_frame_integration,
 
         // Use defaults for other features
         ..Default::default()

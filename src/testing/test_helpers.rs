@@ -377,7 +377,7 @@ pub fn test_peak_detection_isolated(
         }
     }
 
-    let peaks = crate::fm::collect_peaks_from_source(config, &mut sample_source)?;
+    let peaks = crate::peaks::collect_peaks_from_source(config, &mut sample_source)?;
 
     if debug {
         debug!(
@@ -678,4 +678,87 @@ pub fn assert_classifies_audio(
     }
 
     Ok(())
+}
+
+/// Adapter to make SDR broadcast receiver compatible with SampleSource trait
+/// This allows the unified peak detection code to work with both testing sources and real SDR streams
+pub struct SdrStreamSource {
+    sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+    sample_rate: f64,
+    center_frequency: f64,
+    peak_scan_duration: f64,
+    timeout_us: u64,
+}
+
+impl SdrStreamSource {
+    pub fn new(
+        sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+        sample_rate: f64,
+        center_frequency: f64,
+        peak_scan_duration: f64,
+    ) -> Self {
+        Self {
+            sdr_rx,
+            sample_rate,
+            center_frequency,
+            peak_scan_duration,
+            timeout_us: 100, // 100μs timeout between read attempts
+        }
+    }
+}
+
+impl SampleSource for SdrStreamSource {
+    fn read_samples(&mut self, buffer: &mut [rustradio::Complex]) -> crate::types::Result<usize> {
+        use std::thread;
+        use std::time::Duration;
+
+        let mut samples_read = 0;
+        for slot in buffer.iter_mut() {
+            match self.sdr_rx.try_recv() {
+                Ok(sample) => {
+                    *slot = sample;
+                    samples_read += 1;
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    // If we've read some samples, return what we have
+                    if samples_read > 0 {
+                        break;
+                    }
+                    // Otherwise wait a bit and try again
+                    thread::sleep(Duration::from_micros(self.timeout_us));
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                    // Continue trying - lagged messages are not fatal
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    // Channel closed - return what we have
+                    break;
+                }
+            }
+        }
+        Ok(samples_read)
+    }
+
+    fn sample_rate(&self) -> f64 {
+        self.sample_rate
+    }
+
+    fn center_frequency(&self) -> f64 {
+        self.center_frequency
+    }
+
+    fn peak_scan_duration(&self) -> f64 {
+        self.peak_scan_duration
+    }
+
+    fn deactivate(&mut self) -> crate::types::Result<()> {
+        // Nothing to deactivate for SDR stream source
+        Ok(())
+    }
+
+    fn device_args(&self) -> &str {
+        ""
+    }
 }

@@ -231,9 +231,10 @@ fn test_peak_detection_with_synthetic_signal() {
     config.enable_cfar_detection = false;
     config.enable_windowing = false;
     config.zero_padding_factor = 1;
+    config.enable_multi_frame_integration = false;
 
     // Process samples and find peaks
-    let peaks = scanner::fm::collect_peaks_from_source(&config, &mut sample_source)
+    let peaks = scanner::peaks::collect_peaks_from_source(&config, &mut sample_source)
         .expect("Failed to collect peaks");
 
     println!("Found {} peaks from synthetic signal", peaks.len());

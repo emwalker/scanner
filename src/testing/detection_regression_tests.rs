@@ -29,7 +29,7 @@ fn test_signal_averaging_does_not_reduce_detection_count() {
     };
 
     let baseline_peaks =
-        crate::fm::collect_peaks_from_source(&baseline_config, &mut baseline_generator)
+        crate::peaks::collect_peaks_from_source(&baseline_config, &mut baseline_generator)
             .expect("Failed to collect baseline peaks");
 
     // Test with signal averaging enabled
@@ -48,7 +48,7 @@ fn test_signal_averaging_does_not_reduce_detection_count() {
     };
 
     let averaging_peaks =
-        crate::fm::collect_peaks_from_source(&averaging_config, &mut averaging_generator)
+        crate::peaks::collect_peaks_from_source(&averaging_config, &mut averaging_generator)
             .expect("Failed to collect signal averaging peaks");
 
     println!("Baseline detections: {}", baseline_peaks.len());
@@ -102,12 +102,14 @@ fn test_cfar_does_not_reduce_detection_count() {
         enable_coherent_integration: false,
         enable_moving_average_filter: false,
         enable_cfar_detection: false,
+        enable_windowing: false,
+        enable_multi_frame_integration: false,
 
         ..Default::default()
     };
 
     let baseline_peaks =
-        crate::fm::collect_peaks_from_source(&baseline_config, &mut baseline_generator)
+        crate::peaks::collect_peaks_from_source(&baseline_config, &mut baseline_generator)
             .expect("Failed to collect baseline peaks");
 
     // Test with CFAR enabled
@@ -128,7 +130,7 @@ fn test_cfar_does_not_reduce_detection_count() {
         ..baseline_config.clone()
     };
 
-    let cfar_peaks = crate::fm::collect_peaks_from_source(&cfar_config, &mut cfar_generator)
+    let cfar_peaks = crate::peaks::collect_peaks_from_source(&cfar_config, &mut cfar_generator)
         .expect("Failed to collect CFAR peaks");
 
     println!("Baseline detections: {}", baseline_peaks.len());
@@ -164,23 +166,39 @@ fn test_combined_phases_do_not_drastically_reduce_detection() {
         enable_coherent_integration: false,
         enable_moving_average_filter: false,
         enable_cfar_detection: false,
+        enable_windowing: false,
+        enable_multi_frame_integration: false,
 
         ..Default::default()
     };
 
     let baseline_peaks =
-        crate::fm::collect_peaks_from_source(&baseline_config, &mut baseline_generator)
+        crate::peaks::collect_peaks_from_source(&baseline_config, &mut baseline_generator)
             .expect("Failed to collect baseline peaks");
 
-    // Test with both signal averaging and CFAR enabled (current defaults)
+    // Test with both signal averaging and CFAR enabled (exclude newer features)
     let mut combined_generator = create_multi_signal_detection_scenario();
     let combined_config = ScanningConfig {
-        // Use current defaults (both phases enabled)
+        audio_buffer_size: 8192,
+        scanning_windows: Some(3),
+        fft_size: 1024,
+        peak_scan_duration: 0.5,
+        audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+
+        // Test combination: Signal averaging + CFAR enabled, newer features disabled
+        enable_exponential_smoothing: true,
+        enable_multi_frame_averaging: true,
+        enable_coherent_integration: true,
+        enable_moving_average_filter: true,
+        enable_cfar_detection: true,
+        enable_windowing: false,
+        enable_multi_frame_integration: false,
+
         ..Default::default()
     };
 
     let combined_peaks =
-        crate::fm::collect_peaks_from_source(&combined_config, &mut combined_generator)
+        crate::peaks::collect_peaks_from_source(&combined_config, &mut combined_generator)
             .expect("Failed to collect combined peaks");
 
     println!("Baseline detections: {}", baseline_peaks.len());

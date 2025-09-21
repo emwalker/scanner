@@ -18,7 +18,7 @@ fn benchmark_peak_detection(c: &mut Criterion) {
         b.iter_batched(
             || BenchmarkDataset::fm_band_typical().generate_signals(),
             |mut generator| {
-                black_box(scanner::fm::collect_peaks_from_source(
+                black_box(scanner::peaks::collect_peaks_from_source(
                     &config,
                     &mut generator,
                 ))
@@ -32,7 +32,7 @@ fn benchmark_peak_detection(c: &mut Criterion) {
         b.iter_batched(
             || BenchmarkDataset::weak_signals().generate_signals(),
             |mut generator| {
-                black_box(scanner::fm::collect_peaks_from_source(
+                black_box(scanner::peaks::collect_peaks_from_source(
                     &config,
                     &mut generator,
                 ))
@@ -46,7 +46,7 @@ fn benchmark_peak_detection(c: &mut Criterion) {
         b.iter_batched(
             || BenchmarkDataset::high_interference().generate_signals(),
             |mut generator| {
-                black_box(scanner::fm::collect_peaks_from_source(
+                black_box(scanner::peaks::collect_peaks_from_source(
                     &config,
                     &mut generator,
                 ))
@@ -60,7 +60,7 @@ fn benchmark_peak_detection(c: &mut Criterion) {
         b.iter_batched(
             || BenchmarkDataset::edge_cases().generate_signals(),
             |mut generator| {
-                black_box(scanner::fm::collect_peaks_from_source(
+                black_box(scanner::peaks::collect_peaks_from_source(
                     &config,
                     &mut generator,
                 ))
@@ -93,7 +93,7 @@ fn benchmark_fft_sizes(c: &mut Criterion) {
                     (config, generator)
                 },
                 |(config, mut generator)| {
-                    black_box(scanner::fm::collect_peaks_from_source(
+                    black_box(scanner::peaks::collect_peaks_from_source(
                         &config,
                         &mut generator,
                     ))
@@ -130,7 +130,7 @@ fn benchmark_peak_scan_durations(c: &mut Criterion) {
                         (config, generator)
                     },
                     |(config, mut generator)| {
-                        black_box(scanner::fm::collect_peaks_from_source(
+                        black_box(scanner::peaks::collect_peaks_from_source(
                             &config,
                             &mut generator,
                         ))
@@ -184,7 +184,7 @@ fn benchmark_performance_regression(c: &mut Criterion) {
             },
             |(config, mut generator)| {
                 let start = std::time::Instant::now();
-                let result = scanner::fm::collect_peaks_from_source(&config, &mut generator);
+                let result = scanner::peaks::collect_peaks_from_source(&config, &mut generator);
                 let duration = start.elapsed();
 
                 // Assert performance requirement in benchmark
@@ -253,6 +253,12 @@ fn create_test_config() -> ScanningConfig {
         window_type: scanner::types::WindowType::Rectangular,
         zero_padding_factor: 1,
         window_overlap_percent: 0.0,
+        // Multi-frame integration defaults (disabled for benchmarking baseline performance)
+        enable_multi_frame_integration: false,
+        multi_frame_history_frames: 5,
+        multi_frame_confirmation_threshold: 3,
+        multi_frame_frequency_tolerance: 25_000.0,
+        multi_frame_max_age: 10.0,
     }
 }
 
@@ -261,7 +267,7 @@ fn benchmark_feature_configurations(c: &mut Criterion) {
     let mut group = c.benchmark_group("feature_configurations");
     group
         .sample_size(10)
-        .measurement_time(std::time::Duration::from_secs(15))
+        .measurement_time(std::time::Duration::from_secs(20)) // Increased from 15s to 20s
         .warm_up_time(std::time::Duration::from_secs(3))
         .noise_threshold(0.15);
 
@@ -278,6 +284,10 @@ fn benchmark_feature_configurations(c: &mut Criterion) {
             create_spectral_preprocessing_only_config(),
         ),
         (
+            "multi_frame_integration_only",
+            create_multi_frame_integration_only_config(),
+        ),
+        (
             "signal_averaging_plus_cfar",
             create_signal_averaging_plus_cfar_config(),
         ),
@@ -286,6 +296,14 @@ fn benchmark_feature_configurations(c: &mut Criterion) {
             create_signal_averaging_plus_spectral_config(),
         ),
         ("cfar_plus_spectral", create_cfar_plus_spectral_config()),
+        (
+            "signal_averaging_plus_multi_frame",
+            create_signal_averaging_plus_multi_frame_config(),
+        ),
+        (
+            "cfar_plus_multi_frame",
+            create_cfar_plus_multi_frame_config(),
+        ),
         ("all_features", create_all_features_config()),
     ];
 
@@ -294,7 +312,7 @@ fn benchmark_feature_configurations(c: &mut Criterion) {
             b.iter_batched(
                 || BenchmarkDataset::fm_band_typical().generate_signals(),
                 |mut generator| {
-                    black_box(scanner::fm::collect_peaks_from_source(
+                    black_box(scanner::peaks::collect_peaks_from_source(
                         &config,
                         &mut generator,
                     ))
@@ -341,6 +359,17 @@ fn create_spectral_preprocessing_only_config() -> ScanningConfig {
     config
 }
 
+/// Multi-frame integration only: Peak persistence tracking enabled, others disabled
+fn create_multi_frame_integration_only_config() -> ScanningConfig {
+    let mut config = create_test_config();
+    config.enable_multi_frame_integration = true;
+    config.multi_frame_history_frames = 5;
+    config.multi_frame_confirmation_threshold = 3;
+    config.multi_frame_frequency_tolerance = 25_000.0;
+    config.multi_frame_max_age = 10.0;
+    config
+}
+
 /// Signal averaging + CFAR: Both signal averaging and CFAR enabled
 fn create_signal_averaging_plus_cfar_config() -> ScanningConfig {
     let mut config = create_signal_averaging_only_config();
@@ -369,6 +398,28 @@ fn create_cfar_plus_spectral_config() -> ScanningConfig {
     config
 }
 
+/// Signal averaging + multi-frame integration: Signal averaging and persistence tracking enabled
+fn create_signal_averaging_plus_multi_frame_config() -> ScanningConfig {
+    let mut config = create_signal_averaging_only_config();
+    config.enable_multi_frame_integration = true;
+    config.multi_frame_history_frames = 5;
+    config.multi_frame_confirmation_threshold = 3;
+    config.multi_frame_frequency_tolerance = 25_000.0;
+    config.multi_frame_max_age = 10.0;
+    config
+}
+
+/// CFAR + multi-frame integration: CFAR detection and persistence tracking enabled
+fn create_cfar_plus_multi_frame_config() -> ScanningConfig {
+    let mut config = create_cfar_only_config();
+    config.enable_multi_frame_integration = true;
+    config.multi_frame_history_frames = 5;
+    config.multi_frame_confirmation_threshold = 3;
+    config.multi_frame_frequency_tolerance = 25_000.0;
+    config.multi_frame_max_age = 10.0;
+    config
+}
+
 /// All features: Complete optimized pipeline (current defaults)
 fn create_all_features_config() -> ScanningConfig {
     // Use the actual default configuration
@@ -380,7 +431,7 @@ fn benchmark_features_across_scenarios(c: &mut Criterion) {
     let mut group = c.benchmark_group("features_across_scenarios");
     group
         .sample_size(10)
-        .measurement_time(std::time::Duration::from_secs(12))
+        .measurement_time(std::time::Duration::from_secs(18)) // Increased from 12s to 18s
         .warm_up_time(std::time::Duration::from_secs(2))
         .noise_threshold(0.15);
 
@@ -392,7 +443,7 @@ fn benchmark_features_across_scenarios(c: &mut Criterion) {
         b.iter_batched(
             || BenchmarkDataset::fm_band_typical().generate_signals(),
             |mut generator| {
-                black_box(scanner::fm::collect_peaks_from_source(
+                black_box(scanner::peaks::collect_peaks_from_source(
                     &baseline_config,
                     &mut generator,
                 ))
@@ -405,7 +456,7 @@ fn benchmark_features_across_scenarios(c: &mut Criterion) {
         b.iter_batched(
             || BenchmarkDataset::fm_band_typical().generate_signals(),
             |mut generator| {
-                black_box(scanner::fm::collect_peaks_from_source(
+                black_box(scanner::peaks::collect_peaks_from_source(
                     &all_features_config,
                     &mut generator,
                 ))
@@ -419,7 +470,7 @@ fn benchmark_features_across_scenarios(c: &mut Criterion) {
         b.iter_batched(
             || BenchmarkDataset::weak_signals().generate_signals(),
             |mut generator| {
-                black_box(scanner::fm::collect_peaks_from_source(
+                black_box(scanner::peaks::collect_peaks_from_source(
                     &baseline_config,
                     &mut generator,
                 ))
@@ -432,7 +483,7 @@ fn benchmark_features_across_scenarios(c: &mut Criterion) {
         b.iter_batched(
             || BenchmarkDataset::weak_signals().generate_signals(),
             |mut generator| {
-                black_box(scanner::fm::collect_peaks_from_source(
+                black_box(scanner::peaks::collect_peaks_from_source(
                     &all_features_config,
                     &mut generator,
                 ))
