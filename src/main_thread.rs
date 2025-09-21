@@ -47,7 +47,7 @@ impl MainThread {
             self.scan_band(device)?;
         }
 
-        self.console_writer.write_info("Scanning complete.");
+        self.console_writer.write_info("Scan complete.");
         Ok(())
     }
 

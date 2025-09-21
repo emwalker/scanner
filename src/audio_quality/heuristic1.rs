@@ -190,15 +190,11 @@ impl Classifier {
 
     /// Classify audio quality using original heuristic approach
     fn classify_quality(&self, samples: &[f32]) -> (super::AudioQuality, f32) {
-        // Require minimum samples for analysis
         if samples.len() < 1024 {
             return (super::AudioQuality::Unknown, 0.0);
         }
 
-        // Calculate signal strength (RMS) first - primary distinguisher
         let signal_strength = self.calculate_rms(samples);
-
-        // Signal strength threshold based on original calibration
         if signal_strength < 0.17 {
             debug!(
                 signal_strength = signal_strength,
@@ -208,107 +204,20 @@ impl Classifier {
             return (super::AudioQuality::Static, 0.9);
         }
 
-        // Calculate other metrics for stations with sufficient signal strength
-        let spectral_flatness = self.calculate_spectral_flatness(samples);
-        let crest_factor = self.calculate_crest_factor(samples);
-        let peak_to_rms = self.calculate_peak_to_rms_ratio(samples);
-        let snr_db = self.estimate_snr_db(samples);
-        let artifact_score = self.detect_artifacts(samples);
-
-        // Classification logic based on multiple metrics
-        let mut good_indicators = 0;
-        let mut moderate_indicators = 0;
-        let mut poor_indicators = 0;
-        let mut static_indicators = 0;
-
-        // Spectral flatness: Lower values indicate tonal content
-        if spectral_flatness < 2.0e-6 {
-            good_indicators += 2; // Extremely strong tonal content gets extra weight
-        } else if spectral_flatness < 0.15 {
-            good_indicators += 1;
-        } else if spectral_flatness < 0.35 {
-            moderate_indicators += 1;
-        } else if spectral_flatness < 0.6 {
-            poor_indicators += 1;
-        } else if spectral_flatness > self.spectral_flatness_threshold {
-            static_indicators += 1;
-        }
-
-        // Crest factor: Higher values indicate dynamic audio content
-        if crest_factor > 14.0 {
-            good_indicators += 1;
-        } else if crest_factor > 11.0 {
-            moderate_indicators += 1;
-        } else if crest_factor > self.crest_factor_threshold {
-            poor_indicators += 1;
-        } else if crest_factor < 4.0 {
-            static_indicators += 1;
-        }
-
-        // Peak-to-RMS ratio (similar to crest factor but in dB)
-        if peak_to_rms > 22.0 {
-            good_indicators += 1;
-        } else if peak_to_rms > 18.0 {
-            moderate_indicators += 1;
-        } else if peak_to_rms > self.peak_to_rms_threshold {
-            poor_indicators += 1;
-        } else {
-            static_indicators += 1;
-        }
-
-        // SNR consideration
-        if snr_db > 25.0 {
-            good_indicators += 1;
-        } else if snr_db > 15.0 {
-            moderate_indicators += 1;
-        } else if snr_db > 8.0 {
-            poor_indicators += 1;
-        } else {
-            static_indicators += 1;
-        }
-
-        // Artifact detection (high artifacts indicate poor quality)
-        if artifact_score > 5.0 {
-            poor_indicators += 1;
-        } else if artifact_score > 2.0 {
-            moderate_indicators += 1;
-        }
-
-        // Final classification based on indicator counts
-        let total_indicators =
-            good_indicators + moderate_indicators + poor_indicators + static_indicators;
-        let confidence = if total_indicators > 0 {
-            (good_indicators + moderate_indicators + poor_indicators) as f32
-                / total_indicators as f32
-        } else {
-            0.5
-        };
-
-        let quality = if static_indicators >= 2
-            || (static_indicators > 0 && good_indicators == 0 && moderate_indicators == 0)
-        {
-            super::AudioQuality::Static
-        } else if good_indicators >= 2 || (good_indicators >= 1 && moderate_indicators >= 1) {
-            super::AudioQuality::Good
-        } else if moderate_indicators >= 2 || moderate_indicators >= 1 || good_indicators >= 1 {
-            super::AudioQuality::Moderate
-        } else if poor_indicators >= 1 {
-            super::AudioQuality::Poor
-        } else {
-            super::AudioQuality::Static
-        };
+        let indicators = self.calculate_quality_indicators(samples);
+        let (quality, confidence) = self.determine_final_quality(indicators.clone());
 
         debug!(
             signal_strength = signal_strength,
-            spectral_flatness = spectral_flatness,
-            crest_factor = crest_factor,
-            peak_to_rms = peak_to_rms,
-            snr_db = snr_db,
-            artifact_score = artifact_score,
-            good_indicators = good_indicators,
-            moderate_indicators = moderate_indicators,
-            poor_indicators = poor_indicators,
-            static_indicators = static_indicators,
+            spectral_flatness = indicators.spectral_flatness,
+            crest_factor = indicators.crest_factor,
+            peak_to_rms = indicators.peak_to_rms,
+            snr_db = indicators.snr_db,
+            artifact_score = indicators.artifact_score,
+            good_indicators = indicators.good_count,
+            moderate_indicators = indicators.moderate_count,
+            poor_indicators = indicators.poor_count,
+            static_indicators = indicators.static_count,
             quality = format!("{:?}", quality),
             confidence = confidence,
             "Heuristic1 statistical analysis complete"
@@ -316,6 +225,145 @@ impl Classifier {
 
         (quality, confidence)
     }
+
+    fn calculate_quality_indicators(&self, samples: &[f32]) -> QualityIndicators {
+        let spectral_flatness = self.calculate_spectral_flatness(samples);
+        let crest_factor = self.calculate_crest_factor(samples);
+        let peak_to_rms = self.calculate_peak_to_rms_ratio(samples);
+        let snr_db = self.estimate_snr_db(samples);
+        let artifact_score = self.detect_artifacts(samples);
+
+        let mut indicators = QualityIndicators {
+            spectral_flatness,
+            crest_factor,
+            peak_to_rms,
+            snr_db,
+            artifact_score,
+            good_count: 0,
+            moderate_count: 0,
+            poor_count: 0,
+            static_count: 0,
+        };
+
+        self.evaluate_spectral_flatness(spectral_flatness, &mut indicators);
+        self.evaluate_crest_factor(crest_factor, &mut indicators);
+        self.evaluate_peak_to_rms(peak_to_rms, &mut indicators);
+        self.evaluate_snr(snr_db, &mut indicators);
+        self.evaluate_artifacts(artifact_score, &mut indicators);
+
+        indicators
+    }
+
+    fn evaluate_spectral_flatness(
+        &self,
+        spectral_flatness: f32,
+        indicators: &mut QualityIndicators,
+    ) {
+        if spectral_flatness < 2.0e-6 {
+            indicators.good_count += 2;
+        } else if spectral_flatness < 0.15 {
+            indicators.good_count += 1;
+        } else if spectral_flatness < 0.35 {
+            indicators.moderate_count += 1;
+        } else if spectral_flatness < 0.6 {
+            indicators.poor_count += 1;
+        } else if spectral_flatness > self.spectral_flatness_threshold {
+            indicators.static_count += 1;
+        }
+    }
+
+    fn evaluate_crest_factor(&self, crest_factor: f32, indicators: &mut QualityIndicators) {
+        if crest_factor > 14.0 {
+            indicators.good_count += 1;
+        } else if crest_factor > 11.0 {
+            indicators.moderate_count += 1;
+        } else if crest_factor > self.crest_factor_threshold {
+            indicators.poor_count += 1;
+        } else if crest_factor < 4.0 {
+            indicators.static_count += 1;
+        }
+    }
+
+    fn evaluate_peak_to_rms(&self, peak_to_rms: f32, indicators: &mut QualityIndicators) {
+        if peak_to_rms > 22.0 {
+            indicators.good_count += 1;
+        } else if peak_to_rms > 18.0 {
+            indicators.moderate_count += 1;
+        } else if peak_to_rms > self.peak_to_rms_threshold {
+            indicators.poor_count += 1;
+        } else {
+            indicators.static_count += 1;
+        }
+    }
+
+    fn evaluate_snr(&self, snr_db: f32, indicators: &mut QualityIndicators) {
+        if snr_db > 25.0 {
+            indicators.good_count += 1;
+        } else if snr_db > 15.0 {
+            indicators.moderate_count += 1;
+        } else if snr_db > 8.0 {
+            indicators.poor_count += 1;
+        } else {
+            indicators.static_count += 1;
+        }
+    }
+
+    fn evaluate_artifacts(&self, artifact_score: f32, indicators: &mut QualityIndicators) {
+        if artifact_score > 5.0 {
+            indicators.poor_count += 1;
+        } else if artifact_score > 2.0 {
+            indicators.moderate_count += 1;
+        }
+    }
+
+    fn determine_final_quality(&self, indicators: QualityIndicators) -> (super::AudioQuality, f32) {
+        let total_indicators = indicators.good_count
+            + indicators.moderate_count
+            + indicators.poor_count
+            + indicators.static_count;
+        let confidence = if total_indicators > 0 {
+            (indicators.good_count + indicators.moderate_count + indicators.poor_count) as f32
+                / total_indicators as f32
+        } else {
+            0.5
+        };
+
+        let quality = if indicators.static_count >= 2
+            || (indicators.static_count > 0
+                && indicators.good_count == 0
+                && indicators.moderate_count == 0)
+        {
+            super::AudioQuality::Static
+        } else if indicators.good_count >= 2
+            || (indicators.good_count >= 1 && indicators.moderate_count >= 1)
+        {
+            super::AudioQuality::Good
+        } else if indicators.moderate_count >= 2
+            || indicators.moderate_count >= 1
+            || indicators.good_count >= 1
+        {
+            super::AudioQuality::Moderate
+        } else if indicators.poor_count >= 1 {
+            super::AudioQuality::Poor
+        } else {
+            super::AudioQuality::Static
+        };
+
+        (quality, confidence)
+    }
+}
+
+#[derive(Clone)]
+struct QualityIndicators {
+    spectral_flatness: f32,
+    crest_factor: f32,
+    peak_to_rms: f32,
+    snr_db: f32,
+    artifact_score: f32,
+    good_count: i32,
+    moderate_count: i32,
+    poor_count: i32,
+    static_count: i32,
 }
 
 impl super::Classifier for Classifier {

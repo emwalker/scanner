@@ -259,6 +259,12 @@ fn create_test_config() -> ScanningConfig {
         multi_frame_confirmation_threshold: 3,
         multi_frame_frequency_tolerance: 25_000.0,
         multi_frame_max_age: 10.0,
+        // Dynamic noise floor defaults (disabled for benchmarking baseline performance)
+        enable_dynamic_noise_floor: false,
+        noise_floor_percentile: 0.25,
+        noise_floor_history_frames: 8,
+        noise_floor_threshold_multiplier: 1.6,
+        noise_floor_adaptation_rate: 0.35,
     }
 }
 
