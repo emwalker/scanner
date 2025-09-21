@@ -259,6 +259,13 @@ pub struct ScanningConfig {
     pub cfar_reference_cells: usize,
     pub cfar_false_alarm_rate: f32,
 
+    // Dynamic noise floor estimation configuration
+    pub enable_dynamic_noise_floor: bool,
+    pub noise_floor_percentile: f32,
+    pub noise_floor_history_frames: usize,
+    pub noise_floor_threshold_multiplier: f32,
+    pub noise_floor_adaptation_rate: f32,
+
     // Spectral preprocessing configuration
     pub enable_windowing: bool,
     pub window_type: WindowType,
@@ -328,6 +335,13 @@ impl Default for ScanningConfig {
             cfar_guard_cells: 10,        // Guard cells around target
             cfar_reference_cells: 50,    // Reference cells for noise estimation
             cfar_false_alarm_rate: 0.01, // 1% false alarm rate
+
+            // Dynamic noise floor estimation defaults (disabled by default until properly tuned)
+            enable_dynamic_noise_floor: false,
+            noise_floor_percentile: 0.25, // 25th percentile (less conservative)
+            noise_floor_history_frames: 8, // Track last 8 frames (faster adaptation)
+            noise_floor_threshold_multiplier: 1.6, // 1.6x above noise floor (more aggressive)
+            noise_floor_adaptation_rate: 0.35, // 35% adaptation rate (faster learning)
 
             // Spectral preprocessing defaults
             enable_windowing: true,

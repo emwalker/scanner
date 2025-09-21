@@ -77,10 +77,6 @@ struct ScanArgs {
     #[arg(long)]
     disable_if_agc: bool,
 
-    /// Enable multi-frame integration (peak persistence tracking) - experimental
-    #[arg(long)]
-    enable_multi_frame_integration: bool,
-
     /// Disable signal averaging improvements (exponential smoothing, multi-frame averaging, etc.)
     #[arg(long)]
     disable_signal_averaging: bool,
@@ -95,6 +91,14 @@ struct ScanArgs {
 
     #[arg(long, default_value_t = 3)]
     duration: u64,
+
+    /// Enable dynamic noise floor estimation (percentile-based adaptive thresholds) - experimental
+    #[arg(long)]
+    enable_dynamic_noise_floor: bool,
+
+    /// Enable multi-frame integration (peak persistence tracking) - experimental
+    #[arg(long)]
+    enable_multi_frame_integration: bool,
 
     /// Frequency tracking method (pll, spectral, correlation)
     #[arg(long, default_value = "pll")]
@@ -329,6 +333,9 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
 
         // Spectral preprocessing (opt-out via CLI)
         enable_windowing: !args.disable_spectral_preprocessing,
+
+        // Dynamic noise floor estimation (opt-in via CLI)
+        enable_dynamic_noise_floor: args.enable_dynamic_noise_floor,
 
         // Multi-frame integration (opt-in via CLI)
         enable_multi_frame_integration: args.enable_multi_frame_integration,
