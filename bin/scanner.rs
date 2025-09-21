@@ -115,7 +115,7 @@ struct ScanArgs {
     #[arg(long)]
     model_path: Option<String>,
 
-    #[arg(long, default_value_t = 1.5)]
+    #[arg(long, default_value_t = 0.1)]
     peak_scan_duration: f64,
 
     #[arg(long)]

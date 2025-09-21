@@ -256,12 +256,202 @@ fn create_test_config() -> ScanningConfig {
     }
 }
 
+/// Comprehensive benchmark comparing different feature configurations
+fn benchmark_feature_configurations(c: &mut Criterion) {
+    let mut group = c.benchmark_group("feature_configurations");
+    group
+        .sample_size(10)
+        .measurement_time(std::time::Duration::from_secs(15))
+        .warm_up_time(std::time::Duration::from_secs(3))
+        .noise_threshold(0.15);
+
+    // Define all configuration combinations to test
+    let configurations = vec![
+        ("baseline", create_baseline_config()),
+        (
+            "signal_averaging_only",
+            create_signal_averaging_only_config(),
+        ),
+        ("cfar_only", create_cfar_only_config()),
+        (
+            "spectral_preprocessing_only",
+            create_spectral_preprocessing_only_config(),
+        ),
+        (
+            "signal_averaging_plus_cfar",
+            create_signal_averaging_plus_cfar_config(),
+        ),
+        (
+            "signal_averaging_plus_spectral",
+            create_signal_averaging_plus_spectral_config(),
+        ),
+        ("cfar_plus_spectral", create_cfar_plus_spectral_config()),
+        ("all_features", create_all_features_config()),
+    ];
+
+    for (config_name, config) in configurations {
+        group.bench_function(config_name, |b| {
+            b.iter_batched(
+                || BenchmarkDataset::fm_band_typical().generate_signals(),
+                |mut generator| {
+                    black_box(scanner::fm::collect_peaks_from_source(
+                        &config,
+                        &mut generator,
+                    ))
+                },
+                BatchSize::SmallInput,
+            )
+        });
+    }
+
+    group.finish();
+}
+
+/// Baseline configuration: All advanced features disabled
+fn create_baseline_config() -> ScanningConfig {
+    create_test_config() // All features already disabled in create_test_config()
+}
+
+/// Signal averaging only: Signal averaging enabled, others disabled
+fn create_signal_averaging_only_config() -> ScanningConfig {
+    let mut config = create_test_config();
+    config.enable_exponential_smoothing = true;
+    config.enable_multi_frame_averaging = true;
+    config.enable_coherent_integration = true;
+    config.enable_moving_average_filter = true;
+    config
+}
+
+/// CFAR only: CFAR detection enabled, others disabled
+fn create_cfar_only_config() -> ScanningConfig {
+    let mut config = create_test_config();
+    config.enable_cfar_detection = true;
+    config.cfar_threshold_factor = 3.0;
+    config.cfar_guard_cells = 10;
+    config.cfar_reference_cells = 50;
+    config
+}
+
+/// Spectral preprocessing only: Windowing and zero-padding enabled, others disabled
+fn create_spectral_preprocessing_only_config() -> ScanningConfig {
+    let mut config = create_test_config();
+    config.enable_windowing = true;
+    config.window_type = scanner::types::WindowType::BlackmanHarris;
+    config.zero_padding_factor = 2;
+    config
+}
+
+/// Signal averaging + CFAR: Both signal averaging and CFAR enabled
+fn create_signal_averaging_plus_cfar_config() -> ScanningConfig {
+    let mut config = create_signal_averaging_only_config();
+    config.enable_cfar_detection = true;
+    config.cfar_threshold_factor = 3.0;
+    config.cfar_guard_cells = 10;
+    config.cfar_reference_cells = 50;
+    config
+}
+
+/// Signal averaging + spectral preprocessing: Signal averaging and windowing enabled
+fn create_signal_averaging_plus_spectral_config() -> ScanningConfig {
+    let mut config = create_signal_averaging_only_config();
+    config.enable_windowing = true;
+    config.window_type = scanner::types::WindowType::BlackmanHarris;
+    config.zero_padding_factor = 2;
+    config
+}
+
+/// CFAR + spectral preprocessing: CFAR and windowing enabled
+fn create_cfar_plus_spectral_config() -> ScanningConfig {
+    let mut config = create_cfar_only_config();
+    config.enable_windowing = true;
+    config.window_type = scanner::types::WindowType::BlackmanHarris;
+    config.zero_padding_factor = 2;
+    config
+}
+
+/// All features: Complete optimized pipeline (current defaults)
+fn create_all_features_config() -> ScanningConfig {
+    // Use the actual default configuration
+    ScanningConfig::default()
+}
+
+/// Benchmark features across different signal scenarios
+fn benchmark_features_across_scenarios(c: &mut Criterion) {
+    let mut group = c.benchmark_group("features_across_scenarios");
+    group
+        .sample_size(10)
+        .measurement_time(std::time::Duration::from_secs(12))
+        .warm_up_time(std::time::Duration::from_secs(2))
+        .noise_threshold(0.15);
+
+    let baseline_config = create_baseline_config();
+    let all_features_config = create_all_features_config();
+
+    // Baseline vs All Features on FM typical signals
+    group.bench_function("baseline_fm_typical", |b| {
+        b.iter_batched(
+            || BenchmarkDataset::fm_band_typical().generate_signals(),
+            |mut generator| {
+                black_box(scanner::fm::collect_peaks_from_source(
+                    &baseline_config,
+                    &mut generator,
+                ))
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("all_features_fm_typical", |b| {
+        b.iter_batched(
+            || BenchmarkDataset::fm_band_typical().generate_signals(),
+            |mut generator| {
+                black_box(scanner::fm::collect_peaks_from_source(
+                    &all_features_config,
+                    &mut generator,
+                ))
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    // Baseline vs All Features on weak signals
+    group.bench_function("baseline_weak_signals", |b| {
+        b.iter_batched(
+            || BenchmarkDataset::weak_signals().generate_signals(),
+            |mut generator| {
+                black_box(scanner::fm::collect_peaks_from_source(
+                    &baseline_config,
+                    &mut generator,
+                ))
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("all_features_weak_signals", |b| {
+        b.iter_batched(
+            || BenchmarkDataset::weak_signals().generate_signals(),
+            |mut generator| {
+                black_box(scanner::fm::collect_peaks_from_source(
+                    &all_features_config,
+                    &mut generator,
+                ))
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     benchmark_peak_detection,
     benchmark_fft_sizes,
     benchmark_peak_scan_durations,
     benchmark_signal_generation,
-    benchmark_performance_regression
+    benchmark_performance_regression,
+    benchmark_feature_configurations,
+    benchmark_features_across_scenarios
 );
 criterion_main!(benches);
