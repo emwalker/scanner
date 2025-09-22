@@ -2,7 +2,7 @@ use rustradio::Complex;
 use scanner::testing::MockSampleSource;
 use scanner::testing::SampleSource;
 use scanner::types::{Band, ScanningConfig};
-use tracing::info;
+use tracing::debug;
 
 /// Test the band scanning window calculation logic in isolation
 #[test]
@@ -15,10 +15,10 @@ fn test_band_scanning_window_calculation() {
     let band = Band::Fm;
     let windows = band.windows(config.samp_rate, config.window_overlap);
 
-    info!("=== Band Scanning Window Analysis ===");
-    info!("Sample rate: {:.1} MHz", config.samp_rate / 1e6);
-    info!("Band: FM (88-108 MHz)");
-    info!("Number of windows: {}", windows.len());
+    debug!("=== Band Scanning Window Analysis ===");
+    debug!("Sample rate: {:.1} MHz", config.samp_rate / 1e6);
+    debug!("Band: FM (88-108 MHz)");
+    debug!("Number of windows: {}", windows.len());
 
     // Test our known station frequency
     let target_freq = 88.9e6;
@@ -29,7 +29,7 @@ fn test_band_scanning_window_calculation() {
         let window_start = window_center - (usable_bandwidth / 2.0);
         let window_end = window_center + (usable_bandwidth / 2.0);
 
-        info!(
+        debug!(
             "Window {}: Center {:.3} MHz, Range [{:.3} - {:.3}] MHz",
             i + 1,
             window_center / 1e6,
@@ -41,7 +41,7 @@ fn test_band_scanning_window_calculation() {
         if target_freq >= window_start && target_freq <= window_end {
             let offset = target_freq - window_center;
             target_windows.push((i + 1, *window_center, offset));
-            info!("  🎯 Contains 88.9 MHz (offset: {:.1} kHz)", offset / 1e3);
+            debug!("  🎯 Contains 88.9 MHz (offset: {:.1} kHz)", offset / 1e3);
         }
     }
 
@@ -52,9 +52,9 @@ fn test_band_scanning_window_calculation() {
     );
 
     // Verify the fundamental expectation that 88.9 MHz can be processed
-    info!("✅ 88.9 MHz appears in {} window(s)", target_windows.len());
+    debug!("✅ 88.9 MHz appears in {} window(s)", target_windows.len());
     for (window_num, center, offset) in &target_windows {
-        info!(
+        debug!(
             "   Window {} (center: {:.3} MHz, offset: {:.1} kHz)",
             window_num,
             center / 1e6,

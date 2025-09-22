@@ -114,8 +114,6 @@ mod tests {
     /// Test that exponential smoothing reduces noise across consecutive FFT frames
     #[test]
     fn test_exponential_smoothing_reduces_noise() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         let target_frequency = 88_700_000.0;
 
         // First, verify baseline without smoothing works
@@ -220,8 +218,6 @@ mod tests {
     /// Test that coherent integration improves SNR over multiple scan periods
     #[test]
     fn test_coherent_integration_improves_snr() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         let config = create_test_config();
         let num_runs = 3; // Reduced for faster unit tests
         let target_frequency = 88_700_000.0;
@@ -286,8 +282,6 @@ mod tests {
     /// Test that moving average filter reduces noise spikes in magnitude spectra
     #[test]
     fn test_moving_average_filter_reduces_noise_spikes() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         let mut config = create_test_config();
         config.enable_moving_average_filter = true;
         config.moving_average_window_size = 5;
@@ -317,8 +311,6 @@ mod tests {
     /// Test signal averaging regression: should not reduce detection count significantly
     #[test]
     fn test_signal_averaging_does_not_reduce_detection_count() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         // Create scenario with multiple weak signals that should all be detectable
         let mut baseline_generator = create_multi_signal_detection_scenario();
         let baseline_config = ScanningConfig {

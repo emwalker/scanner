@@ -123,8 +123,6 @@ mod tests {
     /// Test peak extraction with real signal generator
     #[test]
     fn test_extract_peaks_with_signal_generator() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         let config = ScanningConfig {
             audio_buffer_size: 8192,
             scanning_windows: Some(2),

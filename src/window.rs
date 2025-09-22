@@ -53,7 +53,7 @@ impl Window {
         }
     }
 
-    fn get_peaks(&self, device: &dyn Segment) -> Result<Vec<crate::types::Peak>> {
+    fn peaks(&self, device: &dyn Segment) -> Result<Vec<crate::types::Peak>> {
         if self.station_mode {
             // Station mode: Create a single peak at the exact station frequency
             debug!(
@@ -92,10 +92,7 @@ impl Window {
         }
     }
 
-    fn create_candidates_from_peaks(
-        &self,
-        peaks: &[crate::types::Peak],
-    ) -> Vec<crate::types::Candidate> {
+    fn candidates_from_peaks(&self, peaks: &[crate::types::Peak]) -> Vec<crate::types::Candidate> {
         let mut candidates = Vec::new();
 
         if self.station_mode {
@@ -535,12 +532,12 @@ impl Window {
         );
 
         // Get peaks based on mode (station or band scanning)
-        let peaks = self.get_peaks(segment)?;
+        let peaks = self.peaks(segment)?;
 
         if !peaks.is_empty() {
             debug!("Found {} peaks in this window", peaks.len());
             self.debug_peaks(&peaks);
-            let candidates = self.create_candidates_from_peaks(&peaks);
+            let candidates = self.candidates_from_peaks(&peaks);
 
             // Process candidates while SDR is still running
             // Candidate analysis now properly waits for detection graphs to complete

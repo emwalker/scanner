@@ -289,8 +289,6 @@ mod tests {
     /// Integration test: Combined detection regression tests
     #[test]
     fn test_combined_phases_do_not_drastically_reduce_detection() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         let mut baseline_generator = create_multi_signal_detection_scenario();
         let baseline_config = ScanningConfig {
             audio_buffer_size: 8192,

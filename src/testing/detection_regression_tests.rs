@@ -7,8 +7,6 @@ use crate::types::ScanningConfig;
 /// Regression test: Signal averaging should not reduce detection count
 #[test]
 fn test_signal_averaging_does_not_reduce_detection_count() {
-    let _ = tracing_subscriber::fmt::try_init();
-
     // Create scenario with multiple weak signals that should all be detectable
     let mut baseline_generator = create_multi_signal_detection_scenario();
     let baseline_config = ScanningConfig {
@@ -85,8 +83,6 @@ fn test_signal_averaging_does_not_reduce_detection_count() {
 /// Regression test: CFAR should not reduce detection count
 #[test]
 fn test_cfar_does_not_reduce_detection_count() {
-    let _ = tracing_subscriber::fmt::try_init();
-
     // Test CFAR impact without signal averaging interference
     let mut baseline_generator = create_multi_signal_detection_scenario();
     let baseline_config = ScanningConfig {
@@ -150,8 +146,6 @@ fn test_cfar_does_not_reduce_detection_count() {
 /// Regression test: Combined signal averaging + CFAR should not drastically reduce detection
 #[test]
 fn test_combined_phases_do_not_drastically_reduce_detection() {
-    let _ = tracing_subscriber::fmt::try_init();
-
     let mut baseline_generator = create_multi_signal_detection_scenario();
     let baseline_config = ScanningConfig {
         audio_buffer_size: 8192,

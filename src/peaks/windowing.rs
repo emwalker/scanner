@@ -73,8 +73,6 @@ mod tests {
     /// Test that windowing reduces spectral leakage
     #[test]
     fn test_windowing_reduces_spectral_leakage() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         // Test baseline without windowing
         let mut config = create_test_config();
         config.enable_windowing = false;
@@ -108,8 +106,6 @@ mod tests {
     /// Test that zero-padding improves frequency resolution
     #[test]
     fn test_zero_padding_improves_frequency_resolution() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         // Test baseline without zero-padding
         let mut config = create_test_config();
         config.zero_padding_factor = 1; // No padding
@@ -147,8 +143,6 @@ mod tests {
     #[test]
     #[ignore = "Window overlap integration not yet implemented"]
     fn test_window_overlap_captures_edge_signals() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         // Test baseline without overlap
         let mut config = create_test_config();
         config.window_overlap_percent = 0.0; // No overlap
@@ -185,8 +179,6 @@ mod tests {
     /// Test that spectral preprocessing maintains acceptable performance
     #[test]
     fn test_fft_processing_maintains_speed() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         // Measure baseline performance without preprocessing
         let mut config = create_test_config();
         config.enable_windowing = false;

@@ -263,8 +263,6 @@ mod tests {
     /// Test that peak persistence tracking works across frames
     #[test]
     fn test_peak_persistence_tracking() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         let config = MultiFrameConfig::default();
         let mut integrator = MultiFrameIntegrator::new(config.clone());
 
@@ -321,8 +319,6 @@ mod tests {
     /// Test that confirmation logic (N of M frames) reduces false negatives
     #[test]
     fn test_confirmation_logic_reduces_false_negatives() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         let config = MultiFrameConfig {
             history_frames: 4,
             confirmation_threshold: 2, // 2 out of 4 frames
@@ -386,8 +382,6 @@ mod tests {
     /// Test weak signal enhancement through non-coherent integration
     #[test]
     fn test_weak_signal_enhancement() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         let config = MultiFrameConfig::default();
         let mut integrator = MultiFrameIntegrator::new(config);
 
@@ -437,8 +431,6 @@ mod tests {
     /// Test that false positive rate doesn't increase with multi-frame integration
     #[test]
     fn test_no_false_positive_increase() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         let config = MultiFrameConfig {
             history_frames: 5,
             confirmation_threshold: 2, // Not used in weighted confidence approach

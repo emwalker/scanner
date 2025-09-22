@@ -1,0 +1,205 @@
+//! Progress reporting infrastructure for tracking scanning operations
+//!
+//! This module provides traits and implementations for reporting progress
+//! during scanning operations, enabling real-time feedback to users.
+
+use std::sync::{Arc, Mutex};
+
+/// Trait for reporting progress events during scanning operations
+pub trait ProgressReporter: Send + Sync {
+    /// Report a progress event
+    fn report(&self, event: ProgressEvent);
+}
+
+/// A progress event representing a milestone in the scanning process
+#[derive(Debug, Clone)]
+pub struct ProgressEvent {
+    pub event_type: ProgressEventType,
+    pub frequency_hz: f64,
+    pub window_id: usize,
+    pub timestamp: std::time::Instant,
+}
+
+/// Types of progress events that can be reported
+#[derive(Debug, Clone)]
+pub enum ProgressEventType {
+    PeakDetected,
+    CandidateCreated,
+    AudioAnalysisStarted,
+    AudioAnalysisCompleted,
+    SignalGenerated,
+    ThreadCompleted,
+}
+
+/// No-operation progress reporter that does nothing (default behavior)
+pub struct NoOpProgressReporter;
+
+impl ProgressReporter for NoOpProgressReporter {
+    fn report(&self, _event: ProgressEvent) {
+        // Do nothing - maintains existing behavior
+    }
+}
+
+/// Mock progress reporter for testing that captures events
+pub struct MockProgressReporter {
+    events: Arc<Mutex<Vec<ProgressEvent>>>,
+}
+
+impl Default for MockProgressReporter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MockProgressReporter {
+    pub fn new() -> Self {
+        Self {
+            events: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Get all captured events
+    pub fn get_events(&self) -> Vec<ProgressEvent> {
+        self.events.lock().unwrap().clone()
+    }
+
+    /// Get the count of captured events
+    pub fn event_count(&self) -> usize {
+        self.events.lock().unwrap().len()
+    }
+
+    /// Clear all captured events
+    pub fn clear(&self) {
+        self.events.lock().unwrap().clear();
+    }
+}
+
+impl ProgressReporter for MockProgressReporter {
+    fn report(&self, event: ProgressEvent) {
+        self.events.lock().unwrap().push(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_progress_reporter_interface() {
+        let mock_reporter = MockProgressReporter::new();
+
+        // Verify initial state
+        assert_eq!(mock_reporter.event_count(), 0);
+        assert!(mock_reporter.get_events().is_empty());
+
+        // Report a test event
+        let event = ProgressEvent {
+            event_type: ProgressEventType::PeakDetected,
+            frequency_hz: 88_900_000.0,
+            window_id: 1,
+            timestamp: std::time::Instant::now(),
+        };
+
+        mock_reporter.report(event.clone());
+
+        // Verify event was captured
+        assert_eq!(mock_reporter.event_count(), 1);
+        let events = mock_reporter.get_events();
+        assert_eq!(events.len(), 1);
+
+        let captured_event = &events[0];
+        assert_eq!(captured_event.frequency_hz, 88_900_000.0);
+        assert_eq!(captured_event.window_id, 1);
+        match captured_event.event_type {
+            ProgressEventType::PeakDetected => {}
+            _ => panic!("Expected PeakDetected event type"),
+        }
+    }
+
+    #[test]
+    fn test_mock_progress_reporter_multiple_events() {
+        let mock_reporter = MockProgressReporter::new();
+
+        // Report multiple events
+        let events = vec![
+            ProgressEvent {
+                event_type: ProgressEventType::PeakDetected,
+                frequency_hz: 88_900_000.0,
+                window_id: 1,
+                timestamp: std::time::Instant::now(),
+            },
+            ProgressEvent {
+                event_type: ProgressEventType::CandidateCreated,
+                frequency_hz: 88_900_000.0,
+                window_id: 1,
+                timestamp: std::time::Instant::now(),
+            },
+            ProgressEvent {
+                event_type: ProgressEventType::ThreadCompleted,
+                frequency_hz: 88_900_000.0,
+                window_id: 1,
+                timestamp: std::time::Instant::now(),
+            },
+        ];
+
+        for event in events {
+            mock_reporter.report(event);
+        }
+
+        // Verify all events were captured
+        assert_eq!(mock_reporter.event_count(), 3);
+        let captured_events = mock_reporter.get_events();
+        assert_eq!(captured_events.len(), 3);
+
+        // Verify event types in order
+        match captured_events[0].event_type {
+            ProgressEventType::PeakDetected => {}
+            _ => panic!("Expected PeakDetected"),
+        }
+        match captured_events[1].event_type {
+            ProgressEventType::CandidateCreated => {}
+            _ => panic!("Expected CandidateCreated"),
+        }
+        match captured_events[2].event_type {
+            ProgressEventType::ThreadCompleted => {}
+            _ => panic!("Expected ThreadCompleted"),
+        }
+    }
+
+    #[test]
+    fn test_mock_progress_reporter_clear() {
+        let mock_reporter = MockProgressReporter::new();
+
+        // Add some events
+        mock_reporter.report(ProgressEvent {
+            event_type: ProgressEventType::PeakDetected,
+            frequency_hz: 88_900_000.0,
+            window_id: 1,
+            timestamp: std::time::Instant::now(),
+        });
+
+        assert_eq!(mock_reporter.event_count(), 1);
+
+        // Clear events
+        mock_reporter.clear();
+
+        // Verify events are cleared
+        assert_eq!(mock_reporter.event_count(), 0);
+        assert!(mock_reporter.get_events().is_empty());
+    }
+
+    #[test]
+    fn test_no_op_progress_reporter() {
+        let no_op_reporter = NoOpProgressReporter;
+
+        // Should not panic or cause issues
+        no_op_reporter.report(ProgressEvent {
+            event_type: ProgressEventType::PeakDetected,
+            frequency_hz: 88_900_000.0,
+            window_id: 1,
+            timestamp: std::time::Instant::now(),
+        });
+
+        // No way to verify it did nothing, but it shouldn't crash
+    }
+}

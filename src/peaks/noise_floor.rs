@@ -253,8 +253,6 @@ mod tests {
     /// Test that percentile-based noise floor tracks actual noise
     #[test]
     fn test_percentile_noise_floor_tracking() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         let config = NoiseFloorConfig {
             noise_percentile: 0.1,
             history_frames: 5,
@@ -351,8 +349,6 @@ mod tests {
     /// Test performance consistency across RF environments
     #[test]
     fn test_performance_across_environments() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         let config = NoiseFloorConfig {
             adaptation_rate: 0.3,
             ..Default::default()

@@ -2,6 +2,9 @@ use crate::audio_quality::AudioQuality;
 use crate::fm;
 use thiserror::Error;
 
+// Test constants
+pub const TEST_FREQUENCY_HZ: f64 = 88_900_000.0; // 88.9 MHz - common test frequency
+
 pub trait ConsoleWriter {
     fn write_info(&self, message: &str);
     fn write_debug(&self, message: &str);

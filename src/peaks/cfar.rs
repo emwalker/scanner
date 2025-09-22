@@ -81,8 +81,6 @@ mod tests {
     /// Test that CFAR threshold adapts correctly to noise level changes
     #[test]
     fn test_cfar_threshold_adapts_to_noise_level() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         let config = create_test_config();
 
         // Test with low noise scenario
@@ -121,8 +119,6 @@ mod tests {
     /// Test that guard bands prevent signal leakage into noise estimation
     #[test]
     fn test_cfar_guard_bands_prevent_signal_leakage() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         let mut config = create_test_config();
         config.enable_cfar_detection = true;
         config.cfar_guard_cells = 10; // Guard cells around target
@@ -160,8 +156,6 @@ mod tests {
     #[test]
     // TODO: Tune CFAR parameters for consistent false alarm rate
     fn test_cfar_constant_false_alarm_rate() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         let mut config = create_test_config();
         config.enable_cfar_detection = true;
         config.cfar_false_alarm_rate = 0.01; // 1% false alarm rate
@@ -207,8 +201,6 @@ mod tests {
     /// Test that CFAR maintains detection performance despite interference (masking resistance)
     #[test]
     fn test_cfar_resists_strong_signal_masking() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         // Test cell-averaging CFAR vs fixed threshold in presence of strong interferer
         let mut baseline_config = create_test_config();
         baseline_config.enable_cfar_detection = false;
@@ -286,8 +278,6 @@ mod tests {
     /// Test that CFAR detects individual phase tests without reducing detection count
     #[test]
     fn test_cfar_does_not_reduce_detection_count() {
-        let _ = tracing_subscriber::fmt::try_init();
-
         // Test CFAR impact without signal averaging interference
         let mut baseline_generator = create_multi_signal_detection_scenario();
         let baseline_config = ScanningConfig {
