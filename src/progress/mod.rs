@@ -3,6 +3,9 @@
 //! This module provides traits and implementations for reporting progress
 //! during scanning operations, enabling real-time feedback to users.
 
+pub mod display;
+pub mod tracking;
+
 use std::sync::{Arc, Mutex};
 
 /// Trait for reporting progress events during scanning operations
@@ -37,6 +40,24 @@ pub struct NoOpProgressReporter;
 impl ProgressReporter for NoOpProgressReporter {
     fn report(&self, _event: ProgressEvent) {
         // Do nothing - maintains existing behavior
+    }
+}
+
+/// Channel-based progress reporter that sends events via mpsc channel
+pub struct ChannelProgressReporter {
+    sender: std::sync::mpsc::Sender<ProgressEvent>,
+}
+
+impl ChannelProgressReporter {
+    pub fn new(sender: std::sync::mpsc::Sender<ProgressEvent>) -> Self {
+        Self { sender }
+    }
+}
+
+impl ProgressReporter for ChannelProgressReporter {
+    fn report(&self, event: ProgressEvent) {
+        // Send event through channel - ignore errors if receiver is dropped
+        let _ = self.sender.send(event);
     }
 }
 
@@ -186,6 +207,89 @@ mod tests {
         // Verify events are cleared
         assert_eq!(mock_reporter.event_count(), 0);
         assert!(mock_reporter.get_events().is_empty());
+    }
+
+    #[test]
+    fn test_channel_progress_reporter() {
+        use std::sync::mpsc;
+
+        let (sender, receiver) = mpsc::channel();
+        let channel_reporter = ChannelProgressReporter::new(sender);
+
+        // Report a test event
+        let event = ProgressEvent {
+            event_type: ProgressEventType::PeakDetected,
+            frequency_hz: 88_900_000.0,
+            window_id: 1,
+            timestamp: std::time::Instant::now(),
+        };
+
+        channel_reporter.report(event.clone());
+
+        // Verify event was sent through channel
+        let received_event = receiver.recv().expect("Should receive event");
+        assert_eq!(received_event.frequency_hz, 88_900_000.0);
+        assert_eq!(received_event.window_id, 1);
+        match received_event.event_type {
+            ProgressEventType::PeakDetected => {}
+            _ => panic!("Expected PeakDetected event type"),
+        }
+
+        // Report multiple events
+        let events = vec![
+            ProgressEvent {
+                event_type: ProgressEventType::CandidateCreated,
+                frequency_hz: 89_100_000.0,
+                window_id: 2,
+                timestamp: std::time::Instant::now(),
+            },
+            ProgressEvent {
+                event_type: ProgressEventType::ThreadCompleted,
+                frequency_hz: 89_100_000.0,
+                window_id: 2,
+                timestamp: std::time::Instant::now(),
+            },
+        ];
+
+        for event in events {
+            channel_reporter.report(event);
+        }
+
+        // Verify both events were received
+        let event1 = receiver.recv().expect("Should receive first event");
+        let event2 = receiver.recv().expect("Should receive second event");
+
+        assert_eq!(event1.frequency_hz, 89_100_000.0);
+        assert_eq!(event2.frequency_hz, 89_100_000.0);
+        match event1.event_type {
+            ProgressEventType::CandidateCreated => {}
+            _ => panic!("Expected CandidateCreated"),
+        }
+        match event2.event_type {
+            ProgressEventType::ThreadCompleted => {}
+            _ => panic!("Expected ThreadCompleted"),
+        }
+    }
+
+    #[test]
+    fn test_channel_progress_reporter_dropped_receiver() {
+        use std::sync::mpsc;
+
+        let (sender, receiver) = mpsc::channel();
+        let channel_reporter = ChannelProgressReporter::new(sender);
+
+        // Drop receiver to simulate display thread exiting
+        drop(receiver);
+
+        // Reporting should not panic even if receiver is dropped
+        let event = ProgressEvent {
+            event_type: ProgressEventType::PeakDetected,
+            frequency_hz: 88_900_000.0,
+            window_id: 1,
+            timestamp: std::time::Instant::now(),
+        };
+
+        channel_reporter.report(event); // Should not panic
     }
 
     #[test]

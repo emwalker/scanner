@@ -369,7 +369,7 @@ fn run_frequency_tracking(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::progress::{MockProgressReporter, NoOpProgressReporter};
+    use crate::progress::{MockProgressReporter, NoOpProgressReporter, ProgressEventType};
     use crate::types::{ScanningConfig, Signal, TEST_FREQUENCY_HZ};
     use std::sync::mpsc;
     use tokio::sync::broadcast;
@@ -478,6 +478,55 @@ mod tests {
 
         // Note: Signal generation depends on squelch analysis completing,
         // which may not happen in a short test with mock data
+    }
+
+    #[test]
+    fn test_progress_events_emitted() {
+        let config = create_test_config();
+        let sdr_rx = create_mock_sdr_stream();
+        let center_freq = TEST_FREQUENCY_HZ;
+        let (signal_tx, _signal_rx) = mpsc::sync_channel::<Signal>(10);
+        let device = create_mock_device();
+        let progress_reporter = MockProgressReporter::new();
+
+        // Process peak - should emit progress events
+        let result = process_peak_to_signal(
+            TEST_FREQUENCY_HZ,
+            &config,
+            sdr_rx,
+            center_freq,
+            signal_tx,
+            &device,
+            &progress_reporter,
+        );
+
+        assert!(result.is_ok(), "Pipeline should complete successfully");
+
+        // Verify progress events were emitted
+        let events = progress_reporter.get_events();
+        assert!(
+            !events.is_empty(),
+            "Should emit at least one progress event"
+        );
+
+        // Check for expected event types
+        let event_types: Vec<_> = events.iter().map(|e| &e.event_type).collect();
+
+        // Should at least have peak detected event
+        assert!(
+            event_types
+                .iter()
+                .any(|t| matches!(t, ProgressEventType::PeakDetected)),
+            "Should emit PeakDetected event"
+        );
+
+        // Verify all events have correct frequency
+        for event in &events {
+            assert_eq!(
+                event.frequency_hz, TEST_FREQUENCY_HZ,
+                "All events should have correct frequency"
+            );
+        }
     }
 
     #[test]

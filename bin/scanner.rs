@@ -129,6 +129,10 @@ struct ScanArgs {
     #[arg(long)]
     print_candidates: bool,
 
+    /// Show real-time progress during scanning
+    #[arg(long)]
+    progress: bool,
+
     /// Maximum number of scanning windows to process (default: all windows)
     #[arg(long)]
     scanning_windows: Option<usize>,
