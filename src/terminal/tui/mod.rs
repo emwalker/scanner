@@ -1,0 +1,277 @@
+//! TUI module using The Elm Architecture pattern
+
+use crate::terminal::ProgressEvent;
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{Frame, Terminal, backend::CrosstermBackend};
+use std::{
+    io,
+    sync::mpsc,
+    time::{Duration, Instant},
+};
+
+pub mod layout;
+pub mod model;
+pub mod renderers;
+
+use layout::TuiLayout;
+use model::Model;
+use renderers::{console::ConsoleRenderer, header, instructions, progress, spectrum};
+
+/// TUI-based progress display for multiple candidates using The Elm Architecture
+pub struct TuiProgressDisplay {
+    receiver: mpsc::Receiver<ProgressEvent>,
+    model: Model,
+    _last_update: Instant,
+    shutdown_listener: triggered::Listener,
+}
+
+impl TuiProgressDisplay {
+    /// Create new TUI progress display
+    pub fn new(
+        receiver: mpsc::Receiver<ProgressEvent>,
+        shutdown_listener: triggered::Listener,
+    ) -> Self {
+        Self {
+            receiver,
+            model: Model::new(),
+            _last_update: Instant::now(),
+            shutdown_listener,
+        }
+    }
+
+    /// Run the TUI display loop
+    pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Check if we're in an interactive terminal
+        if !self.is_terminal_interactive() {
+            return self.run_text_fallback();
+        }
+
+        self.run_full_tui()
+    }
+
+    /// Run the full TUI with ratatui
+    fn run_full_tui(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Setup terminal with error handling
+        if let Err(_e) = enable_raw_mode() {
+            return self.run_simple_tui();
+        }
+
+        let mut stdout = io::stdout();
+
+        // Use alternate screen mode for full TUI
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = match Terminal::new(backend) {
+            Ok(t) => t,
+            Err(_) => {
+                let _ = disable_raw_mode(); // Try to restore
+                return self.run_simple_tui();
+            }
+        };
+
+        let result = self.run_app(&mut terminal);
+
+        // Restore terminal
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        terminal.show_cursor()?;
+
+        Ok(result?)
+    }
+
+    fn run_app<B: ratatui::backend::Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+    ) -> io::Result<()> {
+        let mut iterations = 0;
+        loop {
+            terminal.draw(|f| self.ui(f))?;
+            iterations += 1;
+
+            if self.model.should_quit || self.shutdown_listener.is_triggered() {
+                break;
+            }
+
+            // Auto-exit after some time if no events to prevent hanging
+            if iterations > 2000 && self.model.is_empty() {
+                // ~100 seconds with no candidates
+                break;
+            }
+
+            // Handle events with timeout
+            if event::poll(Duration::from_millis(50))?
+                && let Ok(Event::Key(key)) = event::read()
+            {
+                match key.code {
+                    KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                        self.model.quit();
+                    }
+                    KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                        self.model.quit();
+                    }
+                    KeyCode::Char('q') => {
+                        self.model.quit();
+                    }
+                    _ => {}
+                }
+            }
+
+            // Process progress events
+            let mut received_events = false;
+            while let Ok(event) = self.receiver.try_recv() {
+                self.model.update(event);
+                received_events = true;
+            }
+
+            // If we received events, reset iteration counter
+            if received_events {
+                iterations = 0;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn ui(&self, f: &mut Frame) {
+        let layout = TuiLayout::new(f.area());
+
+        // Render header
+        header::render_header(f, layout.header, &self.model);
+
+        // Render spectrum visualization
+        spectrum::render_spectrum(f, layout.spectrum, &self.model);
+
+        // Render instructions
+        instructions::render_instructions(f, layout.instructions);
+
+        // Render progress bars
+        progress::render_progress(f, layout.progress, &self.model);
+    }
+
+    /// Check if we're running in an interactive terminal
+    fn is_terminal_interactive(&self) -> bool {
+        use std::io::IsTerminal;
+
+        // Check if stdout is a TTY
+        if !io::stdout().is_terminal() {
+            return false;
+        }
+
+        // Check for CI environment variables
+        if std::env::var("CI").is_ok()
+            || std::env::var("GITHUB_ACTIONS").is_ok()
+            || std::env::var("GITLAB_CI").is_ok()
+            || std::env::var("JENKINS_URL").is_ok()
+        {
+            return false;
+        }
+
+        // Check if TERM is set to something reasonable
+        match std::env::var("TERM") {
+            Ok(term) => !term.is_empty() && term != "dumb",
+            Err(_) => false,
+        }
+    }
+
+    /// Fallback text-based progress display for non-interactive environments
+    fn run_text_fallback(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        ConsoleRenderer::tty_println("┌─ Scanning FM stations ... ───────────────┐");
+        ConsoleRenderer::tty_println("│ Running in text mode                     │");
+        ConsoleRenderer::tty_println("│ Press CTRL-C to exit                     │");
+        ConsoleRenderer::tty_println("└──────────────────────────────────────────┘");
+
+        let mut last_update = Instant::now();
+        let update_interval = Duration::from_millis(1000); // Update every second
+
+        loop {
+            // Process progress events
+            while let Ok(event) = self.receiver.try_recv() {
+                self.model.update(event);
+            }
+
+            // Update display periodically
+            if last_update.elapsed() >= update_interval {
+                ConsoleRenderer::print_text_progress(&self.model);
+                last_update = Instant::now();
+            }
+
+            // Small sleep to prevent busy waiting
+            std::thread::sleep(Duration::from_millis(50));
+
+            // Auto-exit after reasonable time if no activity, or if all candidates are done
+            if (self.model.is_empty() && last_update.elapsed() > Duration::from_secs(30))
+                || (!self.model.is_empty()
+                    && self.model.all_complete()
+                    && last_update.elapsed() > Duration::from_secs(3))
+            {
+                break;
+            }
+        }
+
+        ConsoleRenderer::tty_println("Scanning complete.");
+        Ok(())
+    }
+
+    /// Simple TUI-like display that works without raw mode or alternate screen
+    fn run_simple_tui(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Clear screen and move to top
+        ConsoleRenderer::tty_print("\x1B[2J\x1B[H");
+
+        ConsoleRenderer::tty_println("┌─ Scanning FM stations ... ───────────────┐");
+        ConsoleRenderer::tty_println("│ TUI Mode (Simplified)                    │");
+        ConsoleRenderer::tty_println("│ Press CTRL-C to exit                     │");
+        ConsoleRenderer::tty_println("└──────────────────────────────────────────┘");
+        ConsoleRenderer::tty_println("");
+
+        let mut last_update = Instant::now();
+        let update_interval = Duration::from_millis(500); // Update every 500ms
+        let mut last_candidate_count = 0;
+
+        loop {
+            // Process progress events
+            while let Ok(event) = self.receiver.try_recv() {
+                self.model.update(event);
+            }
+
+            // Update display periodically or when candidates change
+            let current_candidate_count = self.model.candidate_count();
+            if last_update.elapsed() >= update_interval
+                || current_candidate_count != last_candidate_count
+            {
+                // Move cursor up to overwrite previous output
+                if last_candidate_count > 0 {
+                    let lines_to_clear = ConsoleRenderer::calculate_display_lines(&self.model);
+                    ConsoleRenderer::tty_print(&format!("\x1B[{}A", lines_to_clear)); // Move cursor up
+                }
+
+                ConsoleRenderer::print_tui_style_progress(&self.model);
+                last_update = Instant::now();
+                last_candidate_count = current_candidate_count;
+            }
+
+            // Small sleep to prevent busy waiting
+            std::thread::sleep(Duration::from_millis(50));
+
+            // Auto-exit conditions
+            if (self.model.is_empty() && last_update.elapsed() > Duration::from_secs(30))
+                || (!self.model.is_empty()
+                    && self.model.all_complete()
+                    && last_update.elapsed() > Duration::from_secs(3))
+            {
+                break;
+            }
+        }
+
+        ConsoleRenderer::tty_println("\nScanning complete.");
+        Ok(())
+    }
+}

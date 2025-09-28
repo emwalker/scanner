@@ -46,25 +46,12 @@ pub struct Candidate {
 impl Candidate {
     pub fn analyze(
         &self,
-        config: &ScanningConfig,
         sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
-        center_freq: f64,
         signal_tx: std::sync::mpsc::SyncSender<crate::types::Signal>,
-        device: &crate::soapy::Device,
+        context: &crate::pipeline::AnalysisContext,
     ) -> Result<()> {
         // Delegate to the new testable pipeline function
-        use crate::progress::NoOpProgressReporter;
-
-        let progress_reporter = NoOpProgressReporter;
-        crate::pipeline::process_peak_to_signal(
-            self.frequency_hz,
-            config,
-            sdr_rx,
-            center_freq,
-            signal_tx,
-            device,
-            &progress_reporter,
-        )
+        crate::pipeline::process_peak_to_signal(self.frequency_hz, sdr_rx, signal_tx, context)
     }
 }
 
@@ -343,6 +330,8 @@ pub fn create_detection_graph(
     signal_tx: Option<std::sync::mpsc::SyncSender<crate::types::Signal>>,
     _device: &crate::soapy::Device,
     audio_analyzer: crate::audio_quality::AudioAnalyzer,
+    progress_reporter: Option<std::sync::Arc<dyn crate::terminal::ProgressReporter + Send + Sync>>,
+    window_id: usize,
 ) -> rustradio::Result<(Graph, std::sync::Arc<std::sync::atomic::AtomicU8>)> {
     let mut graph = Graph::new();
 
@@ -427,6 +416,8 @@ pub fn create_detection_graph(
         fft_size: config.fft_size,
         audio_analyzer,
         audio_capturer,
+        progress_reporter,
+        window_id,
     };
     let (squelch_block, decision_state) = SquelchBlock::new(prev, squelch_config);
     graph.add(Box::new(squelch_block));

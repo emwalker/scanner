@@ -10,10 +10,10 @@ pub mod main_thread;
 pub mod mpsc;
 pub mod peaks;
 pub mod pipeline;
-pub mod progress;
 pub mod sdr;
 #[cfg(feature = "soapysdr")]
 pub mod soapy;
+pub mod terminal;
 pub mod testing;
 pub mod types;
 pub mod wave;

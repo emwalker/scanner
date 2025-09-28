@@ -1,4 +1,5 @@
 use crate::sdr::Segment;
+use crate::terminal::{ProgressEvent, ProgressEventType, ProgressReporter};
 use crate::types::{Result, ScanningConfig};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, StreamConfig};
@@ -16,6 +17,8 @@ pub struct Window {
     station_mode: bool, // True if this is a specific station frequency, not band scanning
     device: crate::soapy::Device,
     config: ScanningConfig,
+    progress_reporter: Arc<dyn ProgressReporter>,
+    shutdown_listener: triggered::Listener,
 }
 
 impl Window {
@@ -25,6 +28,8 @@ impl Window {
         total_windows: usize,
         device: crate::soapy::Device,
         config: ScanningConfig,
+        progress_reporter: Arc<dyn ProgressReporter>,
+        shutdown_listener: triggered::Listener,
     ) -> Self {
         Self {
             center_freq,
@@ -33,6 +38,8 @@ impl Window {
             station_mode: false,
             device,
             config,
+            progress_reporter,
+            shutdown_listener,
         }
     }
 
@@ -42,6 +49,8 @@ impl Window {
         total_windows: usize,
         device: crate::soapy::Device,
         config: ScanningConfig,
+        progress_reporter: Arc<dyn ProgressReporter>,
+        shutdown_listener: triggered::Listener,
     ) -> Self {
         Self {
             center_freq,
@@ -50,6 +59,8 @@ impl Window {
             station_mode: true,
             device,
             config,
+            progress_reporter,
+            shutdown_listener,
         }
     }
 
@@ -112,11 +123,30 @@ impl Window {
         }
 
         for candidate in crate::fm::find_candidates(peaks, &self.config, self.center_freq) {
+            let candidate_freq = candidate.frequency_hz();
+
+            // Check if this frequency (rounded to nearest 100 kHz) has already been processed
+            let rounded_freq = (candidate_freq / 100000.0).round() * 100000.0;
+            let frequency_khz = (rounded_freq / 1000.0) as u64;
+
+            let already_processed = {
+                let processed = crate::fm::PROCESSED_FREQUENCIES.lock().unwrap();
+                processed.contains(&frequency_khz)
+            };
+
+            if already_processed {
+                debug!(
+                    candidate_frequency_mhz = candidate_freq / 1e6,
+                    "Skipping candidate creation for already processed frequency"
+                );
+                continue;
+            }
+
             if self.config.debug_pipeline {
-                let frequency_offset = candidate.frequency_hz() - self.center_freq;
+                let frequency_offset = candidate_freq - self.center_freq;
                 debug!(
                     message = "Candidate created",
-                    candidate_frequency_mhz = candidate.frequency_hz() / 1e6,
+                    candidate_frequency_mhz = candidate_freq / 1e6,
                     window_center_mhz = self.center_freq / 1e6,
                     frequency_offset_khz = frequency_offset / 1e3,
                     signal_strength = match &candidate {
@@ -143,7 +173,7 @@ impl Window {
         let mut candidate_threads = Vec::new();
         let (signal_tx, signal_rx) = std::sync::mpsc::sync_channel::<crate::types::Signal>(100);
 
-        for candidate in candidates {
+        for candidate in candidates.into_iter() {
             if self.config.print_candidates {
                 tracing::info!(
                     "candidate found at {:.1} MHz",
@@ -152,20 +182,37 @@ impl Window {
                 continue;
             }
 
+            // Report audio analysis started
+            let freq = match &candidate {
+                crate::types::Candidate::Fm(fm_candidate) => fm_candidate.frequency_hz,
+            };
+            let candidate_id = format!("{:.1}-{}", freq / 1e6, self.window_num);
+            self.progress_reporter.report(ProgressEvent {
+                event_type: ProgressEventType::AudioAnalysisStarted,
+                frequency_hz: freq,
+                window_id: self.window_num,
+                candidate_id: Some(candidate_id),
+                audio_quality: None,
+                timestamp: std::time::Instant::now(),
+            });
+
             let sdr_rx = segment.audio_subscriber();
             let signal_tx_clone = signal_tx.clone();
             let config_clone = self.config.clone();
             let center_freq = self.center_freq;
             let device_clone = self.device.clone();
+            let progress_reporter_clone = self.progress_reporter.clone();
+            let window_num = self.window_num;
 
             let handle = thread::spawn(move || -> Result<()> {
-                candidate.analyze(
-                    &config_clone,
-                    sdr_rx,
+                let context = crate::pipeline::AnalysisContext {
+                    config: &config_clone,
                     center_freq,
-                    signal_tx_clone,
-                    &device_clone,
-                )
+                    device: &device_clone,
+                    progress_reporter: progress_reporter_clone,
+                    window_id: window_num,
+                };
+                candidate.analyze(sdr_rx, signal_tx_clone, &context)
             });
             candidate_threads.push(handle);
         }
@@ -264,7 +311,7 @@ impl Window {
         sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
         audio_tx: std::sync::mpsc::SyncSender<f32>,
         config: &ScanningConfig,
-        shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
+        shutdown_listener: &triggered::Listener,
     ) -> Result<()> {
         debug!(
             "Creating audio processing pipeline for {:.1} MHz",
@@ -303,7 +350,7 @@ impl Window {
             remaining = remaining.saturating_sub(sleep_duration);
 
             // Check if shutdown requested
-            if shutdown_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            if shutdown_listener.is_triggered() {
                 debug!("Shutdown requested during audio processing, stopping early");
                 break;
             }
@@ -499,24 +546,45 @@ impl Window {
         stream.play()?;
         debug!("Audio system ready for window {}", self.window_num);
 
-        for signal in sorted_signals {
+        for signal in sorted_signals.iter() {
+            // Report audio playback start
+            let candidate_id = format!("{:.1}-{}", signal.frequency_hz / 1e6, self.window_num);
+            self.progress_reporter.report(ProgressEvent {
+                event_type: ProgressEventType::AudioPlaybackStarted,
+                frequency_hz: signal.frequency_hz,
+                window_id: self.window_num,
+                candidate_id: Some(candidate_id),
+                audio_quality: None,
+                timestamp: std::time::Instant::now(),
+            });
+
             tracing::info!(
                 "playing {:.1} MHz [{}]",
                 signal.frequency_hz / 1e6,
                 signal.audio_quality.to_human_string()
             );
             let sdr_rx = segment.audio_subscriber();
-            let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
             if let Err(e) = Window::process_signal_for_audio(
-                &signal,
+                signal,
                 sdr_rx,
                 audio_tx.clone(),
                 &self.config,
-                shutdown_flag,
+                &self.shutdown_listener,
             ) {
                 debug!("Error processing signal for audio: {}", e);
             }
+
+            // Report audio playback completion
+            let candidate_id = format!("{:.1}-{}", signal.frequency_hz / 1e6, self.window_num);
+            self.progress_reporter.report(ProgressEvent {
+                event_type: ProgressEventType::AudioPlaybackCompleted,
+                frequency_hz: signal.frequency_hz,
+                window_id: self.window_num,
+                candidate_id: Some(candidate_id),
+                audio_quality: None,
+                timestamp: std::time::Instant::now(),
+            });
         }
 
         Ok(())
@@ -534,10 +602,39 @@ impl Window {
         // Get peaks based on mode (station or band scanning)
         let peaks = self.peaks(segment)?;
 
+        // Report peak detection events
+        for peak in peaks.iter() {
+            let candidate_id = format!("{:.1}-{}", peak.frequency_hz / 1e6, self.window_num);
+            self.progress_reporter.report(ProgressEvent {
+                event_type: ProgressEventType::PeakDetected,
+                frequency_hz: peak.frequency_hz,
+                window_id: self.window_num,
+                candidate_id: Some(candidate_id),
+                audio_quality: None,
+                timestamp: std::time::Instant::now(),
+            });
+        }
+
         if !peaks.is_empty() {
             debug!("Found {} peaks in this window", peaks.len());
             self.debug_peaks(&peaks);
             let candidates = self.candidates_from_peaks(&peaks);
+
+            // Report candidate creation events
+            for candidate in candidates.iter() {
+                let freq = match candidate {
+                    crate::types::Candidate::Fm(fm_candidate) => fm_candidate.frequency_hz,
+                };
+                let candidate_id = format!("{:.1}-{}", freq / 1e6, self.window_num);
+                self.progress_reporter.report(ProgressEvent {
+                    event_type: ProgressEventType::CandidateCreated,
+                    frequency_hz: freq,
+                    window_id: self.window_num,
+                    candidate_id: Some(candidate_id),
+                    audio_quality: None,
+                    timestamp: std::time::Instant::now(),
+                });
+            }
 
             // Process candidates while SDR is still running
             // Candidate analysis now properly waits for detection graphs to complete
@@ -562,29 +659,49 @@ impl Window {
 
         let start_time = Instant::now();
         let mut completed = 0;
+        let mut remaining_threads = threads;
 
-        for (i, handle) in threads.into_iter().enumerate() {
-            let remaining_time = timeout.saturating_sub(start_time.elapsed());
+        // Check threads periodically until timeout
+        let check_interval = Duration::from_millis(100);
 
-            if remaining_time.is_zero() {
-                debug!("Thread {} timed out, not waiting for completion", i + 1);
-                break;
+        while !remaining_threads.is_empty() && start_time.elapsed() < timeout {
+            let mut still_running = Vec::new();
+
+            for handle in remaining_threads.into_iter() {
+                if handle.is_finished() {
+                    // Thread has completed, join it to get result
+                    match handle.join() {
+                        Ok(Ok(())) => {
+                            completed += 1;
+                            debug!("Thread {} completed successfully", completed);
+                        }
+                        Ok(Err(e)) => {
+                            completed += 1;
+                            debug!("Thread {} completed with error: {}", completed, e);
+                        }
+                        Err(_) => {
+                            debug!("Thread {} panicked", completed + 1);
+                        }
+                    }
+                } else {
+                    // Thread still running, keep it for next check
+                    still_running.push(handle);
+                }
             }
 
-            // Try to join the thread
-            match handle.join() {
-                Ok(Ok(())) => {
-                    completed += 1;
-                    debug!("Thread {} completed successfully", i + 1);
-                }
-                Ok(Err(e)) => {
-                    completed += 1;
-                    debug!("Thread {} completed with error: {}", i + 1, e);
-                }
-                Err(_) => {
-                    debug!("Thread {} panicked", i + 1);
-                }
+            remaining_threads = still_running;
+
+            if !remaining_threads.is_empty() && start_time.elapsed() < timeout {
+                std::thread::sleep(check_interval);
             }
+        }
+
+        if !remaining_threads.is_empty() {
+            debug!(
+                "{} threads timed out after {:?}",
+                remaining_threads.len(),
+                timeout
+            );
         }
 
         completed

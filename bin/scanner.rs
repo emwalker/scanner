@@ -4,10 +4,21 @@ use scanner::audio_quality::AudioQuality;
 use scanner::logging::DefaultLogger;
 use scanner::main_thread::{DefaultConsoleWriter, MainThread};
 use scanner::soapy;
-use scanner::types::{Band, Format, Result, ScanningConfig};
+use scanner::types::{Band, Format, Logger, Result, ScanningConfig};
 use std::sync::Arc;
+use std::thread;
 
 const DEFAULT_DRIVER: &str = "driver=sdrplay";
+
+/// No-op logger that doesn't initialize tracing to suppress all log output
+struct NoOpLogger;
+
+impl Logger for NoOpLogger {
+    fn init(&self) -> Result<()> {
+        // Don't initialize any tracing subscriber to suppress all output
+        Ok(())
+    }
+}
 
 #[derive(ValueEnum, Clone, Debug)]
 enum AudioClassifier {
@@ -107,6 +118,10 @@ struct ScanArgs {
     #[arg(long, help = "SDR gain in dB (0 to 48 for SDRplay, default 24)")]
     gain: Option<f64>,
 
+    /// Run without TUI interface (default: false, show TUI)
+    #[arg(long)]
+    headless: bool,
+
     /// Output format: JSON
     #[arg(long, group = "output_format")]
     json: bool,
@@ -128,10 +143,6 @@ struct ScanArgs {
 
     #[arg(long)]
     print_candidates: bool,
-
-    /// Show real-time progress during scanning
-    #[arg(long)]
-    progress: bool,
 
     /// Maximum number of scanning windows to process (default: all windows)
     #[arg(long)]
@@ -259,6 +270,13 @@ fn create_audio_analyzer_for_scan(
 }
 
 fn handle_scan_command(args: ScanArgs) -> Result<()> {
+    // Suppress C++ library output globally, except in verbose console mode
+    // Only allow C++ output when verbose is enabled AND we're NOT in TUI mode
+    let allow_cpp_output = args.verbose && args.headless;
+
+    // Set SoapySDR log level to suppress INFO messages unless explicitly allowed
+    scanner::logging::set_soapysdr_log_level(!allow_cpp_output);
+
     // Parse squelch threshold, with --disable-squelch overriding to "static"
     let squelch_threshold = if args.disable_squelch {
         AudioQuality::Static
@@ -349,20 +367,122 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
     };
 
     let driver = args.device_args.as_deref().unwrap_or(DEFAULT_DRIVER);
-    let console_writer = Arc::new(DefaultConsoleWriter);
-    let logger = Arc::new(DefaultLogger::new(args.verbose, format));
 
-    // Initialize logging before SDR operations to suppress library messages
-    scanner::logging::init(logger.as_ref(), args.verbose)?;
+    // Handle TUI display mode (default unless --headless)
+    if !args.headless {
+        use scanner::terminal::ChannelProgressReporter;
+        use scanner::terminal::tui::TuiProgressDisplay;
+        use std::sync::mpsc;
+        use std::thread;
 
-    // Enumerate devices and serialize them to strings for later re-instantiation
-    let device_strings = soapysdr::enumerate(driver)?
-        .into_iter()
-        .map(|args| soapy::Device(format!("{}", args)))
-        .collect::<Vec<soapy::Device>>();
+        // C++ output is already suppressed globally above
 
-    // Create and setup MainThread with device strings
-    MainThread::new(config, console_writer, logger, device_strings)?.run(args.stations)
+        // Create shutdown trigger/listener pair for graceful shutdown
+        let (shutdown_trigger, shutdown_listener) = triggered::trigger();
+
+        // Setup signal handler using ctrlc (works better with terminal raw mode)
+        let signal_trigger = shutdown_trigger.clone();
+        ctrlc::set_handler(move || {
+            tracing::debug!("Signal received, triggering graceful shutdown");
+            signal_trigger.trigger();
+        })
+        .expect("Failed to set signal handler");
+
+        // Create progress channel
+        let (progress_sender, progress_receiver) = mpsc::channel();
+        let progress_reporter = Arc::new(ChannelProgressReporter::new(progress_sender));
+
+        // Enumerate SDR devices while output is suppressed
+        let device_strings = soapysdr::enumerate(driver)?
+            .into_iter()
+            .map(|args| soapy::Device(format!("{}", args)))
+            .collect::<Vec<soapy::Device>>();
+
+        // Clone listeners for each thread
+        let tui_listener = shutdown_listener.clone();
+        let main_listener = shutdown_listener.clone();
+
+        // Spawn TUI in separate thread - TUI will write directly to TTY to bypass suppression
+        let tui_handle = thread::spawn(move || {
+            let mut tui_display = TuiProgressDisplay::new(progress_receiver, tui_listener);
+            tui_display.run()
+        });
+
+        // Disable all logging output during TUI mode to avoid interference
+        // Create a no-op logger that doesn't initialize tracing
+        let logger = Arc::new(NoOpLogger);
+
+        let console_writer = Arc::new(DefaultConsoleWriter);
+        let main_thread = MainThread::new_with_progress(
+            config,
+            console_writer,
+            logger,
+            device_strings,
+            progress_reporter,
+            main_listener,
+        )?;
+
+        // Spawn main thread
+        let main_handle = thread::spawn(move || main_thread.run(args.stations));
+
+        // Wait for TUI to finish (CTRL-C pressed)
+        let _ = tui_handle.join();
+
+        // TUI finished, trigger shutdown for all threads
+        shutdown_trigger.trigger();
+
+        // Wait for main thread to complete gracefully - this allows Drop traits to execute!
+        let _ = main_handle.join();
+
+        // Clean exit - no more exit(0)!
+        Ok(())
+    } else {
+        // Regular mode without TUI
+        let console_writer = Arc::new(DefaultConsoleWriter);
+        let logger = Arc::new(DefaultLogger::new(args.verbose, format));
+
+        // Initialize logging before SDR operations to suppress library messages
+        scanner::logging::init(logger.as_ref(), args.verbose)?;
+
+        // Enumerate devices and serialize them to strings for later re-instantiation
+        let device_strings = soapysdr::enumerate(driver)?
+            .into_iter()
+            .map(|args| soapy::Device(format!("{}", args)))
+            .collect::<Vec<soapy::Device>>();
+
+        // Create shutdown trigger/listener pair for signal handling in non-TUI mode
+        let (shutdown_trigger, shutdown_listener) = triggered::trigger();
+
+        // Setup signal handler using ctrlc (works better with terminal raw mode)
+        let signal_trigger = shutdown_trigger.clone();
+        ctrlc::set_handler(move || {
+            tracing::debug!("Signal received, triggering graceful shutdown");
+            signal_trigger.trigger();
+        })
+        .expect("Failed to set signal handler");
+
+        // Create and setup MainThread with device strings
+        let main_thread = MainThread::new(
+            config,
+            console_writer,
+            logger,
+            device_strings,
+            shutdown_listener,
+        )?;
+
+        // Spawn main thread to allow signal interruption
+        let main_handle = thread::spawn(move || main_thread.run(args.stations));
+
+        // Wait for main thread to complete
+        let result = main_handle
+            .join()
+            .map_err(scanner::types::ScannerError::ThreadJoin)?;
+
+        // Trigger shutdown for signal handler
+        shutdown_trigger.trigger();
+
+        result
+    }
 }
 
 fn generate_versioned_filename(model_version: &str) -> String {

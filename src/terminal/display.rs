@@ -1,6 +1,6 @@
 //! Progress display for real-time scanning feedback
 
-use crate::progress::{ProgressEvent, ProgressEventType};
+use crate::terminal::{ProgressEvent, ProgressEventType};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -88,7 +88,16 @@ impl ProgressDisplay {
             ProgressEventType::AudioAnalysisCompleted => {
                 // Keep current frequency
             }
+            ProgressEventType::CandidateRejected => {
+                // Keep current frequency
+            }
             ProgressEventType::SignalGenerated => {
+                // Keep current frequency
+            }
+            ProgressEventType::AudioPlaybackStarted => {
+                // Keep current frequency
+            }
+            ProgressEventType::AudioPlaybackCompleted => {
                 // Keep current frequency
             }
             ProgressEventType::ThreadCompleted => {
@@ -118,7 +127,7 @@ impl ProgressDisplay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::progress::ProgressEvent;
+    use crate::terminal::ProgressEvent;
     use std::sync::mpsc;
 
     #[test]
@@ -132,18 +141,24 @@ mod tests {
                 event_type: ProgressEventType::PeakDetected,
                 frequency_hz: 88_900_000.0,
                 window_id: 1,
+                candidate_id: Some("88.9-1".to_string()),
+                audio_quality: None,
                 timestamp: Instant::now(),
             },
             ProgressEvent {
                 event_type: ProgressEventType::CandidateCreated,
                 frequency_hz: 89_100_000.0,
                 window_id: 1,
+                candidate_id: Some("89.1-1".to_string()),
+                audio_quality: None,
                 timestamp: Instant::now(),
             },
             ProgressEvent {
                 event_type: ProgressEventType::PeakDetected,
                 frequency_hz: 89_300_000.0,
                 window_id: 2,
+                candidate_id: Some("89.3-2".to_string()),
+                audio_quality: None,
                 timestamp: Instant::now(),
             },
         ];
@@ -192,6 +207,8 @@ mod tests {
                 event_type: ProgressEventType::PeakDetected,
                 frequency_hz: 88_900_000.0,
                 window_id: 3,
+                candidate_id: Some("88.9-3".to_string()),
+                audio_quality: None,
                 timestamp: Instant::now(),
             })
             .expect("Should send event");

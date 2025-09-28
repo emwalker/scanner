@@ -3,48 +3,74 @@
 //! This module provides the testable pipeline function that processes
 //! individual frequency peaks through the complete analysis pipeline.
 
-use crate::progress::ProgressReporter;
+use crate::terminal::ProgressReporter;
 use crate::types::{Result, ScanningConfig, Signal};
 use rustradio::graph::GraphRunner;
+
+/// Context struct to group related parameters for analysis functions
+pub struct AnalysisContext<'a> {
+    pub config: &'a ScanningConfig,
+    pub center_freq: f64,
+    pub device: &'a crate::soapy::Device,
+    pub progress_reporter: std::sync::Arc<dyn ProgressReporter + Send + Sync>,
+    pub window_id: usize,
+}
+
+/// Parameters for squelch monitoring thread
+pub struct SquelchMonitoringParams {
+    pub squelch_learning_duration: f32,
+    pub refined_frequency: f64,
+    pub original_frequency_hz: f64,
+    pub candidate_id: String,
+    pub window_id: usize,
+}
 
 /// Process a single peak through the complete pipeline to generate a signal
 pub fn process_peak_to_signal(
     frequency_hz: f64,
-    config: &ScanningConfig,
     sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
-    center_freq: f64,
     signal_tx: std::sync::mpsc::SyncSender<Signal>,
-    device: &crate::soapy::Device,
-    progress_reporter: &dyn ProgressReporter,
+    context: &AnalysisContext,
 ) -> Result<()> {
-    use crate::progress::{ProgressEvent, ProgressEventType};
+    use crate::terminal::{ProgressEvent, ProgressEventType};
 
     tracing::debug!(
         frequency_hz = frequency_hz / 1e6,
         "Processing peak through pipeline"
     );
 
+    // Generate candidate ID for tracking
+    let candidate_id = format!("{:.1}-{}", frequency_hz / 1e6, context.window_id);
+
     // Report peak detection
-    progress_reporter.report(ProgressEvent {
+    context.progress_reporter.report(ProgressEvent {
         event_type: ProgressEventType::PeakDetected,
         frequency_hz,
-        window_id: 1,
+        window_id: context.window_id,
+        candidate_id: Some(candidate_id.clone()),
+        audio_quality: None,
         timestamp: std::time::Instant::now(),
     });
 
     // Refine frequency using tracking
-    let refined_frequency = refine_frequency(frequency_hz, config, sdr_rx.resubscribe())?;
+    let refined_frequency = refine_frequency(frequency_hz, context.config, sdr_rx.resubscribe())?;
 
-    // Check for frequency deduplication
+    // Check for frequency deduplication - exit early before creating candidates
     if is_frequency_already_processed(refined_frequency)? {
+        tracing::debug!(
+            freq_mhz = refined_frequency / 1e6,
+            "Frequency already processed, skipping candidate creation"
+        );
         return Ok(());
     }
 
-    // Report candidate creation
-    progress_reporter.report(ProgressEvent {
+    // Report candidate creation (only for new frequencies)
+    context.progress_reporter.report(ProgressEvent {
         event_type: ProgressEventType::CandidateCreated,
         frequency_hz: refined_frequency,
-        window_id: 1,
+        window_id: context.window_id,
+        candidate_id: Some(candidate_id.clone()),
+        audio_quality: None,
         timestamp: std::time::Instant::now(),
     });
 
@@ -52,11 +78,10 @@ pub fn process_peak_to_signal(
     run_detection_analysis(
         frequency_hz,
         refined_frequency,
-        config,
         sdr_rx,
-        center_freq,
         signal_tx,
-        device,
+        &candidate_id,
+        context,
     )
 }
 
@@ -123,26 +148,27 @@ fn is_frequency_already_processed(refined_frequency: f64) -> Result<bool> {
 fn run_detection_analysis(
     original_frequency_hz: f64,
     refined_frequency: f64,
-    config: &ScanningConfig,
     sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
-    center_freq: f64,
     signal_tx: std::sync::mpsc::SyncSender<Signal>,
-    device: &crate::soapy::Device,
+    candidate_id: &str,
+    context: &AnalysisContext,
 ) -> Result<()> {
     let station_name = format!("{:.1}FM", refined_frequency / 1e6);
-    let audio_analyzer = config.audio_analyzer.clone();
+    let audio_analyzer = context.config.audio_analyzer.clone();
 
     // Create detection graph
     let (detection_graph, decision_state) = crate::fm::create_detection_graph(
         sdr_rx,
-        config.samp_rate,
+        context.config.samp_rate,
         station_name,
-        config,
-        center_freq,
+        context.config,
+        context.center_freq,
         refined_frequency,
         Some(signal_tx),
-        device,
+        context.device,
         audio_analyzer,
+        Some(context.progress_reporter.clone()),
+        context.window_id,
     )?;
 
     let detection_cancel_token = detection_graph.cancel_token();
@@ -150,23 +176,39 @@ fn run_detection_analysis(
     tracing::debug!(
         "Processing candidate at {:.1} MHz with center freq {:.1} MHz",
         original_frequency_hz / 1e6,
-        center_freq / 1e6
+        context.center_freq / 1e6
     );
 
     // Start detection graph thread
     let detection_handle = spawn_detection_graph_thread(detection_graph, original_frequency_hz);
 
     // Start squelch monitoring thread
+    // Create a channel for sending rejection events from the thread
+    let (rejection_tx, rejection_rx) = std::sync::mpsc::channel();
+
     let timer_handle = spawn_squelch_monitoring_thread(
-        config.squelch_learning_duration,
+        SquelchMonitoringParams {
+            squelch_learning_duration: context.config.squelch_learning_duration,
+            refined_frequency,
+            original_frequency_hz,
+            candidate_id: candidate_id.to_string(),
+            window_id: context.window_id,
+        },
         decision_state,
         detection_cancel_token,
-        refined_frequency,
-        original_frequency_hz,
+        rejection_tx,
     );
 
-    // Wait for completion
-    wait_for_threads_completion(detection_handle, timer_handle, original_frequency_hz)
+    // Wait for completion and handle rejection events
+    wait_for_threads_completion(
+        detection_handle,
+        timer_handle,
+        original_frequency_hz,
+        &*context.progress_reporter,
+        rejection_rx,
+        context.window_id,
+        candidate_id,
+    )
 }
 
 /// Spawn detection graph processing thread
@@ -188,17 +230,16 @@ fn spawn_detection_graph_thread(
 
 /// Spawn squelch monitoring and decision thread
 fn spawn_squelch_monitoring_thread(
-    squelch_learning_duration: f32,
+    params: SquelchMonitoringParams,
     decision_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
     detection_cancel_token: rustradio::graph::CancellationToken,
-    refined_frequency: f64,
-    original_frequency_hz: f64,
+    rejection_sender: std::sync::mpsc::Sender<crate::terminal::ProgressEvent>,
 ) -> std::thread::JoinHandle<()> {
-    let frequency_khz = (refined_frequency / 1000.0) as u64;
+    let frequency_khz = (params.refined_frequency / 1000.0) as u64;
 
     std::thread::spawn(move || {
         let check_interval = std::time::Duration::from_millis(100);
-        let max_wait_time = squelch_learning_duration + 1.0;
+        let max_wait_time = params.squelch_learning_duration + 1.0;
         let total_checks = (max_wait_time * 1000.0) as u32 / 100;
 
         for _check_num in 0..total_checks {
@@ -211,15 +252,37 @@ fn spawn_squelch_monitoring_thread(
             match current_decision {
                 crate::fm::squelch::Decision::Noise => {
                     tracing::debug!("Squelch detected noise, exiting early");
+
+                    // Report candidate rejection
+                    let _ = rejection_sender.send(crate::terminal::ProgressEvent {
+                        event_type: crate::terminal::ProgressEventType::CandidateRejected,
+                        frequency_hz: params.original_frequency_hz,
+                        window_id: params.window_id,
+                        candidate_id: Some(params.candidate_id.clone()),
+                        audio_quality: None,
+                        timestamp: std::time::Instant::now(),
+                    });
+
                     detection_cancel_token.cancel();
                     return;
                 }
                 crate::fm::squelch::Decision::Audio => {
                     tracing::debug!(
                         "squelch detected audio at {:.1} MHz",
-                        original_frequency_hz / 1e6
+                        params.original_frequency_hz / 1e6
                     );
                     mark_frequency_as_processed(frequency_khz);
+
+                    // Report audio analysis completion
+                    let _ = rejection_sender.send(crate::terminal::ProgressEvent {
+                        event_type: crate::terminal::ProgressEventType::AudioAnalysisCompleted,
+                        frequency_hz: params.original_frequency_hz,
+                        window_id: params.window_id,
+                        candidate_id: Some(params.candidate_id.clone()),
+                        audio_quality: None,
+                        timestamp: std::time::Instant::now(),
+                    });
+
                     tracing::debug!("Audio detected, terminating detection graph");
                     detection_cancel_token.cancel();
                     return;
@@ -234,6 +297,17 @@ fn spawn_squelch_monitoring_thread(
             "Squelch did not complete analysis after {:.1} seconds, moving to next candidate",
             max_wait_time
         );
+
+        // Report audio analysis completion (timeout case)
+        let _ = rejection_sender.send(crate::terminal::ProgressEvent {
+            event_type: crate::terminal::ProgressEventType::AudioAnalysisCompleted,
+            frequency_hz: params.original_frequency_hz,
+            window_id: params.window_id,
+            candidate_id: Some(params.candidate_id.clone()),
+            audio_quality: None,
+            timestamp: std::time::Instant::now(),
+        });
+
         detection_cancel_token.cancel();
     })
 }
@@ -250,6 +324,10 @@ fn wait_for_threads_completion(
     detection_handle: std::thread::JoinHandle<()>,
     timer_handle: std::thread::JoinHandle<()>,
     frequency_hz: f64,
+    progress_reporter: &dyn ProgressReporter,
+    rejection_rx: std::sync::mpsc::Receiver<crate::terminal::ProgressEvent>,
+    window_id: usize,
+    candidate_id: &str,
 ) -> Result<()> {
     tracing::debug!(
         "Waiting for detection graph and timer threads to complete for {:.1} MHz",
@@ -272,10 +350,31 @@ fn wait_for_threads_completion(
         );
     }
 
+    // Handle any rejection events that may have been sent
+    // Check multiple times with small delays to catch rejection events
+    for _ in 0..10 {
+        if let Ok(rejection_event) = rejection_rx.try_recv() {
+            progress_reporter.report(rejection_event);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
     tracing::debug!(
         "All detection threads completed for {:.1} MHz",
         frequency_hz / 1e6
     );
+
+    // Report audio analysis completion
+    progress_reporter.report(crate::terminal::ProgressEvent {
+        event_type: crate::terminal::ProgressEventType::AudioAnalysisCompleted,
+        frequency_hz,
+        window_id,
+        candidate_id: Some(candidate_id.to_string()),
+        audio_quality: None,
+        timestamp: std::time::Instant::now(),
+    });
+
     Ok(())
 }
 
@@ -369,7 +468,7 @@ fn run_frequency_tracking(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::progress::{MockProgressReporter, NoOpProgressReporter, ProgressEventType};
+    use crate::terminal::{MockProgressReporter, NoOpProgressReporter, ProgressEventType};
     use crate::types::{ScanningConfig, Signal, TEST_FREQUENCY_HZ};
     use std::sync::mpsc;
     use tokio::sync::broadcast;
@@ -427,15 +526,14 @@ mod tests {
         let progress_reporter = NoOpProgressReporter;
 
         // Process a weak peak - should exit early due to weak signal
-        let result = process_peak_to_signal(
-            TEST_FREQUENCY_HZ,
-            &config,
-            sdr_rx,
+        let context = AnalysisContext {
+            config: &config,
             center_freq,
-            signal_tx,
-            &device,
-            &progress_reporter,
-        );
+            device: &device,
+            progress_reporter: std::sync::Arc::new(progress_reporter),
+            window_id: 1,
+        };
+        let result = process_peak_to_signal(TEST_FREQUENCY_HZ, sdr_rx, signal_tx, &context);
 
         // Should succeed (processing completes without error)
         assert!(result.is_ok(), "Weak peak processing should succeed");
@@ -455,16 +553,21 @@ mod tests {
         let (signal_tx, _signal_rx) = mpsc::sync_channel::<Signal>(10);
         let device = create_mock_device();
         let progress_reporter = MockProgressReporter::new();
+        let progress_arc = std::sync::Arc::new(progress_reporter.clone());
 
         // Process a strong peak - should complete pipeline
+        let context = AnalysisContext {
+            config: &config,
+            center_freq,
+            device: &device,
+            progress_reporter: progress_arc,
+            window_id: 1,
+        };
         let result = process_peak_to_signal(
             TEST_FREQUENCY_HZ + 100_000.0, // Test frequency (center + offset)
-            &config,
             sdr_rx,
-            center_freq,
             signal_tx,
-            &device,
-            &progress_reporter,
+            &context,
         );
 
         // Should succeed
@@ -488,17 +591,17 @@ mod tests {
         let (signal_tx, _signal_rx) = mpsc::sync_channel::<Signal>(10);
         let device = create_mock_device();
         let progress_reporter = MockProgressReporter::new();
+        let progress_arc = std::sync::Arc::new(progress_reporter.clone());
 
         // Process peak - should emit progress events
-        let result = process_peak_to_signal(
-            TEST_FREQUENCY_HZ,
-            &config,
-            sdr_rx,
+        let context = AnalysisContext {
+            config: &config,
             center_freq,
-            signal_tx,
-            &device,
-            &progress_reporter,
-        );
+            device: &device,
+            progress_reporter: progress_arc,
+            window_id: 1,
+        };
+        let result = process_peak_to_signal(TEST_FREQUENCY_HZ, sdr_rx, signal_tx, &context);
 
         assert!(result.is_ok(), "Pipeline should complete successfully");
 
@@ -537,17 +640,18 @@ mod tests {
         let (signal_tx, _signal_rx) = mpsc::sync_channel::<Signal>(10);
         let device = create_mock_device();
         let progress_reporter = MockProgressReporter::new();
+        let progress_arc = std::sync::Arc::new(progress_reporter.clone());
 
         // Process a peak with frequency tracking disabled
-        let result = process_peak_to_signal(
-            TEST_FREQUENCY_HZ + 50_000.0,
-            &config,
-            sdr_rx,
+        let context = AnalysisContext {
+            config: &config,
             center_freq,
-            signal_tx,
-            &device,
-            &progress_reporter,
-        );
+            device: &device,
+            progress_reporter: progress_arc,
+            window_id: 1,
+        };
+        let result =
+            process_peak_to_signal(TEST_FREQUENCY_HZ + 50_000.0, sdr_rx, signal_tx, &context);
 
         // Should succeed
         assert!(
@@ -563,7 +667,7 @@ mod tests {
         assert!(
             matches!(
                 events[0].event_type,
-                crate::progress::ProgressEventType::PeakDetected
+                crate::terminal::ProgressEventType::PeakDetected
             ),
             "First event should be PeakDetected"
         );

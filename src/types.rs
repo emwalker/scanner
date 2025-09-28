@@ -44,6 +44,8 @@ pub enum ScannerError {
     SerdeJson(#[from] serde_json::Error),
     #[error(transparent)]
     SmartCore(#[from] smartcore::error::Failed),
+    #[error("Thread join error")]
+    ThreadJoin(Box<dyn std::any::Any + Send>),
     #[error("Failed to set tracing subscriber")]
     TracingSubscriber(#[from] tracing::subscriber::SetGlobalDefaultError),
 }
@@ -135,16 +137,12 @@ impl Candidate {
 
     pub fn analyze(
         &self,
-        config: &ScanningConfig,
         sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
-        center_freq: f64,
         signal_tx: std::sync::mpsc::SyncSender<Signal>,
-        device: &crate::soapy::Device,
+        context: &crate::pipeline::AnalysisContext,
     ) -> Result<()> {
         match self {
-            Candidate::Fm(candidate) => {
-                candidate.analyze(config, sdr_rx, center_freq, signal_tx, device)
-            }
+            Candidate::Fm(candidate) => candidate.analyze(sdr_rx, signal_tx, context),
         }
     }
 }

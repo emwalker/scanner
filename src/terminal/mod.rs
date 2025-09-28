@@ -5,6 +5,7 @@
 
 pub mod display;
 pub mod tracking;
+pub mod tui;
 
 use std::sync::{Arc, Mutex};
 
@@ -20,6 +21,8 @@ pub struct ProgressEvent {
     pub event_type: ProgressEventType,
     pub frequency_hz: f64,
     pub window_id: usize,
+    pub candidate_id: Option<String>,
+    pub audio_quality: Option<crate::audio_quality::AudioQuality>,
     pub timestamp: std::time::Instant,
 }
 
@@ -30,7 +33,10 @@ pub enum ProgressEventType {
     CandidateCreated,
     AudioAnalysisStarted,
     AudioAnalysisCompleted,
+    CandidateRejected,
     SignalGenerated,
+    AudioPlaybackStarted,
+    AudioPlaybackCompleted,
     ThreadCompleted,
 }
 
@@ -62,6 +68,7 @@ impl ProgressReporter for ChannelProgressReporter {
 }
 
 /// Mock progress reporter for testing that captures events
+#[derive(Clone)]
 pub struct MockProgressReporter {
     events: Arc<Mutex<Vec<ProgressEvent>>>,
 }
@@ -118,6 +125,8 @@ mod tests {
             event_type: ProgressEventType::PeakDetected,
             frequency_hz: 88_900_000.0,
             window_id: 1,
+            candidate_id: Some("88.9-1".to_string()),
+            audio_quality: None,
             timestamp: std::time::Instant::now(),
         };
 
@@ -147,18 +156,24 @@ mod tests {
                 event_type: ProgressEventType::PeakDetected,
                 frequency_hz: 88_900_000.0,
                 window_id: 1,
+                candidate_id: Some("88.9-1".to_string()),
+                audio_quality: None,
                 timestamp: std::time::Instant::now(),
             },
             ProgressEvent {
                 event_type: ProgressEventType::CandidateCreated,
                 frequency_hz: 88_900_000.0,
                 window_id: 1,
+                candidate_id: Some("88.9-1".to_string()),
+                audio_quality: None,
                 timestamp: std::time::Instant::now(),
             },
             ProgressEvent {
                 event_type: ProgressEventType::ThreadCompleted,
                 frequency_hz: 88_900_000.0,
                 window_id: 1,
+                candidate_id: None,
+                audio_quality: None,
                 timestamp: std::time::Instant::now(),
             },
         ];
@@ -196,6 +211,8 @@ mod tests {
             event_type: ProgressEventType::PeakDetected,
             frequency_hz: 88_900_000.0,
             window_id: 1,
+            candidate_id: Some("88.9-1".to_string()),
+            audio_quality: None,
             timestamp: std::time::Instant::now(),
         });
 
@@ -221,6 +238,8 @@ mod tests {
             event_type: ProgressEventType::PeakDetected,
             frequency_hz: 88_900_000.0,
             window_id: 1,
+            candidate_id: Some("88.9-1".to_string()),
+            audio_quality: None,
             timestamp: std::time::Instant::now(),
         };
 
@@ -241,12 +260,16 @@ mod tests {
                 event_type: ProgressEventType::CandidateCreated,
                 frequency_hz: 89_100_000.0,
                 window_id: 2,
+                candidate_id: Some("89.1-2".to_string()),
+                audio_quality: None,
                 timestamp: std::time::Instant::now(),
             },
             ProgressEvent {
                 event_type: ProgressEventType::ThreadCompleted,
                 frequency_hz: 89_100_000.0,
                 window_id: 2,
+                candidate_id: None,
+                audio_quality: None,
                 timestamp: std::time::Instant::now(),
             },
         ];
@@ -286,6 +309,8 @@ mod tests {
             event_type: ProgressEventType::PeakDetected,
             frequency_hz: 88_900_000.0,
             window_id: 1,
+            candidate_id: Some("88.9-1".to_string()),
+            audio_quality: None,
             timestamp: std::time::Instant::now(),
         };
 
@@ -301,6 +326,8 @@ mod tests {
             event_type: ProgressEventType::PeakDetected,
             frequency_hz: 88_900_000.0,
             window_id: 1,
+            candidate_id: Some("88.9-1".to_string()),
+            audio_quality: None,
             timestamp: std::time::Instant::now(),
         });
 

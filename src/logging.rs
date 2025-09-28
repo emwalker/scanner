@@ -1,5 +1,4 @@
 use crate::types::{Format, Logger, Result};
-use gag::Gag;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use tracing::Level;
@@ -48,7 +47,7 @@ impl Write for &TestWriter {
             let mut buffer = buffer.0.lock().unwrap();
             buffer.extend_from_slice(buf);
         } else {
-            // Always write directly to tty to bypass gag redirection
+            // Always write directly to tty to bypass any redirection
             use std::fs::OpenOptions;
             match OpenOptions::new().write(true).open("/dev/tty") {
                 Ok(mut tty) => {
@@ -77,7 +76,7 @@ impl Write for TestWriter {
             let mut buffer = buffer.0.lock().unwrap();
             buffer.extend_from_slice(buf);
         } else {
-            // Always write directly to tty to bypass gag redirection
+            // Always write directly to tty to bypass any redirection
             use std::fs::OpenOptions;
             match OpenOptions::new().write(true).open("/dev/tty") {
                 Ok(mut tty) => {
@@ -138,8 +137,6 @@ impl<'a> MakeWriter<'a> for ImmediateWriter {
     }
 }
 
-// flush() function removed - logging now flushes immediately
-
 // Default Logger implementation for production use
 pub struct DefaultLogger {
     verbose: bool,
@@ -198,9 +195,24 @@ impl Logger for DefaultLogger {
 }
 
 pub fn init(logger: &dyn Logger, verbose: bool) -> Result<()> {
-    let _stdout_gag = if verbose { None } else { Some(Gag::stdout()?) };
-    let _stderr_gag = if verbose { None } else { Some(Gag::stderr()?) };
+    let _ = verbose; // No longer used, keeping for compatibility
     let _ = logger.init();
     soapysdr::configure_logging();
     Ok(())
+}
+
+/// Set SoapySDR log level to suppress unwanted C++ library output
+pub fn set_soapysdr_log_level(suppress_info: bool) {
+    // Import the raw SoapySDR FFI bindings
+    use soapysdr_sys::*;
+
+    unsafe {
+        if suppress_info {
+            // Suppress INFO messages, only show WARNING and above
+            SoapySDR_setLogLevel(SoapySDRLogLevel_SOAPY_SDR_WARNING);
+        } else {
+            // Default level - show INFO and above
+            SoapySDR_setLogLevel(SoapySDRLogLevel_SOAPY_SDR_INFO);
+        }
+    }
 }
