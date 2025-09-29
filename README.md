@@ -10,6 +10,8 @@ $ cargo run -- scan --band fm --headless --verbose --json
 
 At the moment, only basic FM demodulation is working.
 
+<img width="2430" height="1266" alt="Screenshot From 2025-09-28 19-57-40" src="https://github.com/user-attachments/assets/3b7ab99c-498f-46dc-9e9e-5bd7229580fc" />
+
 ## Test bed for coding agents
 
 This project is being used a test bed for experimenting with agentic coding, in order to better understand its strengths and limitations. The coding style may be inconsistent or unnecessarily complex and should not be taken as a reflection of the author's style.
