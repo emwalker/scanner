@@ -1,16 +1,13 @@
 //! Instructions rendering for the bottom of the TUI
 
-use ratatui::{
-    Frame,
-    style::{Color, Style},
-    widgets::Paragraph,
-};
+use crate::terminal::tui::themes::Theme;
+use ratatui::{Frame, style::Style, widgets::Paragraph};
 
 /// Render user instructions
-pub fn render_instructions(f: &mut Frame, area: ratatui::layout::Rect) {
+pub fn render_instructions(f: &mut Frame, area: ratatui::layout::Rect, theme: &dyn Theme) {
     // Elegant instructions with refined language
     let instruction =
-        Paragraph::new("  ⌃C to exit").style(Style::default().fg(Color::Rgb(120, 120, 140)));
+        Paragraph::new("  ⌃C to exit").style(Style::default().fg(theme.instructions_dim()));
     f.render_widget(instruction, area);
 }
 

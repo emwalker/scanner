@@ -16,10 +16,12 @@ use std::{
 pub mod layout;
 pub mod model;
 pub mod renderers;
+pub mod themes;
 
 use layout::TuiLayout;
 use model::Model;
 use renderers::{console::ConsoleRenderer, header, instructions, progress, spectrum};
+use themes::Theme;
 
 /// TUI-based progress display for multiple candidates using The Elm Architecture
 pub struct TuiProgressDisplay {
@@ -27,19 +29,32 @@ pub struct TuiProgressDisplay {
     model: Model,
     _last_update: Instant,
     shutdown_listener: triggered::Listener,
+    theme: Box<dyn Theme>,
 }
 
 impl TuiProgressDisplay {
-    /// Create new TUI progress display
+    /// Create new TUI progress display with default theme
     pub fn new(
         receiver: mpsc::Receiver<ProgressEvent>,
         shutdown_listener: triggered::Listener,
+    ) -> Self {
+        use themes::{Theme, basic::BasicDarkTheme};
+        let theme = Box::new(BasicDarkTheme) as Box<dyn Theme>;
+        Self::new_with_theme(receiver, shutdown_listener, theme)
+    }
+
+    /// Create new TUI progress display with specified theme
+    pub fn new_with_theme(
+        receiver: mpsc::Receiver<ProgressEvent>,
+        shutdown_listener: triggered::Listener,
+        theme: Box<dyn Theme>,
     ) -> Self {
         Self {
             receiver,
             model: Model::new(),
             _last_update: Instant::now(),
             shutdown_listener,
+            theme,
         }
     }
 
@@ -143,18 +158,19 @@ impl TuiProgressDisplay {
 
     fn ui(&self, f: &mut Frame) {
         let layout = TuiLayout::new(f.area());
+        let theme = self.theme.as_ref();
 
         // Render header
-        header::render_header(f, layout.header, &self.model);
+        header::render_header(f, layout.header, &self.model, theme);
 
         // Render spectrum visualization
-        spectrum::render_spectrum(f, layout.spectrum, &self.model);
+        spectrum::render_spectrum(f, layout.spectrum, &self.model, theme);
 
         // Render instructions
-        instructions::render_instructions(f, layout.instructions);
+        instructions::render_instructions(f, layout.instructions, theme);
 
         // Render progress bars
-        progress::render_progress(f, layout.progress, &self.model);
+        progress::render_progress(f, layout.progress, &self.model, theme);
     }
 
     /// Check if we're running in an interactive terminal

@@ -1,19 +1,19 @@
 //! Header rendering for the TUI interface
 
-use crate::terminal::tui::model::Model;
+use crate::terminal::tui::{model::Model, themes::Theme};
 use ratatui::{
     Frame,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
 
 /// Render the application header
-pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model) {
+pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, theme: &dyn Theme) {
     // Create full-width header with sophisticated styling
     let header_width = area.width as usize;
-    let title_text = "Radio Scanner";
-    let subtitle_text = "Monitoring broadcast spectrum • FM • 88–108 MHz";
+    let title_text = theme.title();
+    let subtitle_text = theme.subtitle();
 
     // Calculate statistics
     let total_candidates = model
@@ -43,8 +43,16 @@ pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model) 
     );
     let stats_text_len = stats_text.len();
 
-    // Top border only with rounded corners
-    let top_border = format!("╭{}╮", "─".repeat(header_width.saturating_sub(2)));
+    // Geometric terminal border with precision lines
+    let border_char = theme.header_border();
+    let top_border = format!(
+        "{}{}{}",
+        border_char,
+        border_char
+            .to_string()
+            .repeat(header_width.saturating_sub(2)),
+        border_char
+    );
 
     // Calculate padding for right-aligned stats
     let title_padding = header_width
@@ -61,7 +69,9 @@ pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model) 
         Span::raw(format!("Candidates: {} | Stations: ", total_candidates)),
         Span::styled(
             stations_found.to_string(),
-            Style::default().fg(Color::Green), // Match progress bar green
+            Style::default()
+                .fg(theme.header_accent())
+                .add_modifier(Modifier::BOLD),
         ),
     ];
     let title_line = Line::from(title_spans);
@@ -77,7 +87,7 @@ pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model) 
 
     let title = Paragraph::new(header_content).style(
         Style::default()
-            .fg(Color::Rgb(220, 220, 240))
+            .fg(theme.primary())
             .add_modifier(Modifier::BOLD),
     );
     f.render_widget(title, area);

@@ -4,6 +4,7 @@ use scanner::audio_quality::AudioQuality;
 use scanner::logging::DefaultLogger;
 use scanner::main_thread::{DefaultConsoleWriter, MainThread};
 use scanner::soapy;
+use scanner::terminal::tui::themes::{ThemeName, create_theme};
 use scanner::types::{Band, Format, Logger, Result, ScanningConfig};
 use std::sync::Arc;
 use std::thread;
@@ -174,6 +175,10 @@ struct ScanArgs {
     /// Window overlap percentage for band scanning (0.0-1.0, where 0.75 = 75% overlap)
     #[arg(long, default_value_t = 0.75)]
     window_overlap: f64,
+
+    /// TUI theme selection (basic-dark, basic-light, bladerunner-dark, bladerunner-light, interstellar-dark, interstellar-light, dune-dark, dune-light)
+    #[arg(long, default_value = "basic-dark")]
+    theme: String,
 }
 
 #[derive(Parser, Debug)]
@@ -402,9 +407,17 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         let tui_listener = shutdown_listener.clone();
         let main_listener = shutdown_listener.clone();
 
+        // Parse theme for TUI
+        let theme_name = args
+            .theme
+            .parse::<ThemeName>()
+            .map_err(|e| scanner::types::ScannerError::Custom(format!("Invalid theme: {}", e)))?;
+        let theme = create_theme(&theme_name);
+
         // Spawn TUI in separate thread - TUI will write directly to TTY to bypass suppression
         let tui_handle = thread::spawn(move || {
-            let mut tui_display = TuiProgressDisplay::new(progress_receiver, tui_listener);
+            let mut tui_display =
+                TuiProgressDisplay::new_with_theme(progress_receiver, tui_listener, theme);
             tui_display.run()
         });
 

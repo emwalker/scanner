@@ -1,20 +1,28 @@
 //! Progress bar rendering for candidates and windows
 
-use crate::terminal::tui::model::{CandidateProgress, CandidateStatus, Model};
+use crate::terminal::tui::{
+    model::{CandidateProgress, CandidateStatus, Model},
+    themes::Theme,
+};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
 
 /// Render all progress bars for windows and candidates
-pub fn render_progress(f: &mut Frame, area: ratatui::layout::Rect, model: &Model) {
+pub fn render_progress(
+    f: &mut Frame,
+    area: ratatui::layout::Rect,
+    model: &Model,
+    theme: &dyn Theme,
+) {
     if model.windows.is_empty() {
         let waiting =
             Paragraph::new("  Establishing connection…\n  Preparing to monitor frequencies")
-                .style(Style::default().fg(Color::Rgb(160, 160, 180)));
+                .style(Style::default().fg(theme.instructions_dim()));
         f.render_widget(waiting, area);
         return;
     }
@@ -80,7 +88,7 @@ pub fn render_progress(f: &mut Frame, area: ratatui::layout::Rect, model: &Model
         }
 
         // Render window header
-        render_window_header(f, chunks[chunk_idx], window_id);
+        render_window_header(f, chunks[chunk_idx], window_id, theme);
         chunk_idx += 1;
 
         // Render candidates in this window (preserves insertion order, filtered)
@@ -91,19 +99,29 @@ pub fn render_progress(f: &mut Frame, area: ratatui::layout::Rect, model: &Model
             if chunk_idx >= chunks.len() {
                 break;
             }
-            render_candidate_progress(f, chunks[chunk_idx], candidate);
+            render_candidate_progress(f, chunks[chunk_idx], candidate, theme);
             chunk_idx += 1;
         }
     }
 }
 
 /// Render a window header
-fn render_window_header(f: &mut Frame, area: ratatui::layout::Rect, window_id: usize) {
-    // Sophisticated/elegant window header with refined styling and indentation
-    let header = format!(" ◆ Scan {} ◆", window_id);
+fn render_window_header(
+    f: &mut Frame,
+    area: ratatui::layout::Rect,
+    window_id: usize,
+    theme: &dyn Theme,
+) {
+    // Geometric window indicator with precision framing
+    let header = format!(
+        " {} Scan {} {}",
+        theme.window_bullet(),
+        window_id,
+        theme.window_bullet()
+    );
     let header_widget = Paragraph::new(header).style(
         Style::default()
-            .fg(Color::Rgb(180, 140, 200))
+            .fg(theme.window_header())
             .add_modifier(Modifier::BOLD),
     );
     f.render_widget(header_widget, area);
@@ -114,41 +132,46 @@ fn render_candidate_progress(
     f: &mut Frame,
     area: ratatui::layout::Rect,
     candidate: &CandidateProgress,
+    theme: &dyn Theme,
 ) {
     let freq_mhz = candidate.frequency_hz / 1e6;
 
-    // Sophisticated/elegant status indicators with refined language
+    // Clean geometric status indicators with refined terminology
     let (status_text, status_symbol) = match candidate.status {
-        CandidateStatus::Detected => ("Located", "◦"),
-        CandidateStatus::Analyzing => ("Evaluating", "◐"),
-        CandidateStatus::Rejected => ("Filtered", "◌"),
-        CandidateStatus::Signal => ("Acquired", "●"),
-        CandidateStatus::Playing => ("Playing", "♬"),
-        CandidateStatus::Completed => ("Complete", "◆"),
+        CandidateStatus::Detected => (theme.status_detected_text(), theme.symbol_detected()),
+        CandidateStatus::Analyzing => (theme.status_analyzing_text(), theme.symbol_analyzing()),
+        CandidateStatus::Rejected => (theme.status_rejected_text(), theme.symbol_rejected()),
+        CandidateStatus::Signal => (theme.status_signal_text(), theme.symbol_signal()),
+        CandidateStatus::Playing => (theme.status_playing_text(), theme.symbol_playing()),
+        CandidateStatus::Completed => (theme.status_completed_text(), theme.symbol_completed()),
     };
 
-    // Elegant color palette with muted, tasteful tones
+    // Status colors from theme
     let status_color = match candidate.status {
-        CandidateStatus::Detected => Color::Rgb(255, 215, 0), // Gold
-        CandidateStatus::Analyzing => Color::Rgb(100, 149, 237), // Cornflower blue
-        CandidateStatus::Rejected => Color::Rgb(105, 105, 105), // Dim gray
-        CandidateStatus::Signal => Color::Rgb(70, 130, 180),  // Steel blue
-        CandidateStatus::Playing => Color::Rgb(186, 85, 211), // Medium orchid
-        CandidateStatus::Completed => Color::Rgb(60, 179, 113), // Medium sea green
+        CandidateStatus::Detected => theme.status_detected(),
+        CandidateStatus::Analyzing => theme.status_analyzing(),
+        CandidateStatus::Rejected => theme.status_rejected(),
+        CandidateStatus::Signal => theme.status_signal(),
+        CandidateStatus::Playing => theme.status_playing(),
+        CandidateStatus::Completed => theme.status_completed(),
     };
 
-    // Elegant progress bar with sophisticated Unicode characters
+    // Atmospheric amber progress with geometric precision
     let progress_width = 20;
     let filled = (candidate.completion * progress_width as f64) as usize;
     let progress_bar = if filled == 0 {
-        "⠀".repeat(progress_width)
+        theme.progress_empty().repeat(progress_width)
     } else if filled >= progress_width {
-        "⣿".repeat(progress_width)
+        theme.progress_full().repeat(progress_width)
     } else {
-        // Use Braille patterns for smooth gradations
+        // Gradient-like progression with theme elements
         let full_blocks = filled;
         let remaining = progress_width - filled;
-        format!("{}{}", "⣿".repeat(full_blocks), "⣀".repeat(remaining))
+        format!(
+            "{}{}",
+            theme.progress_full().repeat(full_blocks),
+            theme.progress_empty().repeat(remaining)
+        )
     };
 
     // Create line with separate styling for different parts
@@ -161,23 +184,23 @@ fn render_candidate_progress(
                 crate::audio_quality::AudioQuality::Good => (
                     "Good",
                     Style::default()
-                        .fg(Color::Rgb(60, 179, 113))
+                        .fg(theme.quality_good())
                         .add_modifier(Modifier::BOLD),
                 ),
                 crate::audio_quality::AudioQuality::Moderate => {
-                    ("Moderate", Style::default().fg(Color::Rgb(60, 179, 113)))
+                    ("Moderate", Style::default().fg(theme.quality_moderate()))
                 }
                 crate::audio_quality::AudioQuality::Poor => {
-                    ("Poor", Style::default().fg(Color::Rgb(255, 165, 0)))
+                    ("Poor", Style::default().fg(theme.quality_poor()))
                 }
                 crate::audio_quality::AudioQuality::NoAudio => {
-                    ("No Audio", Style::default().fg(Color::Rgb(255, 165, 0)))
+                    ("No Audio", Style::default().fg(theme.quality_no_audio()))
                 }
                 crate::audio_quality::AudioQuality::Static => {
-                    ("Static", Style::default().fg(Color::Rgb(255, 165, 0)))
+                    ("Static", Style::default().fg(theme.quality_static()))
                 }
                 crate::audio_quality::AudioQuality::Unknown => {
-                    ("Unknown", Style::default().fg(status_color))
+                    ("Unknown", Style::default().fg(theme.quality_unknown()))
                 }
             };
 

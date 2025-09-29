@@ -1,15 +1,20 @@
 //! Spectrum visualization rendering
 
-use crate::terminal::tui::{layout::SpectrumLayout, model::Model};
+use crate::terminal::tui::{layout::SpectrumLayout, model::Model, themes::Theme};
 use ratatui::{
     Frame,
-    style::{Color, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
 
 /// Render spectrum visualization with sliding window indicator
-pub fn render_spectrum(f: &mut Frame, area: ratatui::layout::Rect, model: &Model) {
+pub fn render_spectrum(
+    f: &mut Frame,
+    area: ratatui::layout::Rect,
+    model: &Model,
+    theme: &dyn Theme,
+) {
     // FM band: 88.0 - 108.0 MHz (20 MHz total range)
     let fm_start = 88.0;
     let fm_end = 108.0;
@@ -38,7 +43,7 @@ pub fn render_spectrum(f: &mut Frame, area: ratatui::layout::Rect, model: &Model
     };
 
     // Create spectrum bar - clean baseline
-    let mut spectrum_chars: Vec<char> = vec!['─'; spectrum_width];
+    let mut spectrum_chars: Vec<char> = vec![theme.spectrum_baseline(); spectrum_width];
 
     // Add scanning window indicator
     let window_start = current_freq - window_width_mhz / 2.0;
@@ -49,21 +54,16 @@ pub fn render_spectrum(f: &mut Frame, area: ratatui::layout::Rect, model: &Model
     let window_end_pos = ((window_end - fm_start) / fm_range * spectrum_width as f64)
         .min(spectrum_width as f64 - 1.0) as usize;
 
-    // Mark the scanning window with elegant indicators
+    // Mark the scanning window with theme-appropriate framing
     let end_pos = window_end_pos.min(spectrum_width - 1);
-    for (idx, char) in spectrum_chars
+    let window_char = theme.spectrum_window_char();
+    for (_idx, char) in spectrum_chars
         .iter_mut()
         .enumerate()
         .take(end_pos + 1)
         .skip(window_start_pos)
     {
-        if idx == window_start_pos {
-            *char = '╟'; // Left boundary
-        } else if idx == window_end_pos {
-            *char = '╢'; // Right boundary
-        } else {
-            *char = '▬'; // Window area
-        }
+        *char = window_char; // Use theme window character
     }
 
     // Create layout for spectrum visualization
@@ -84,18 +84,17 @@ pub fn render_spectrum(f: &mut Frame, area: ratatui::layout::Rect, model: &Model
     let mut spans = vec![Span::raw(" ")]; // Leading space
 
     for ch in spectrum_chars.iter() {
-        match ch {
-            '▬' | '╟' | '╢' => {
-                // Highlight scanning window with yellow color
-                spans.push(Span::styled(
-                    ch.to_string(),
-                    Style::default().fg(Color::Yellow),
-                ));
-            }
-            _ => {
-                // Default color for baseline
-                spans.push(Span::raw(ch.to_string()));
-            }
+        if *ch == theme.spectrum_window_char() {
+            // Highlight scanning window with theme color
+            spans.push(Span::styled(
+                ch.to_string(),
+                Style::default()
+                    .fg(theme.spectrum_window())
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            // Default color for baseline
+            spans.push(Span::raw(ch.to_string()));
         }
     }
 
