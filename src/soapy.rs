@@ -7,6 +7,22 @@ use std::thread;
 use tokio::sync::broadcast;
 use tracing::debug;
 
+/// Reset SoapySDR module state by unloading and reloading all modules.
+/// This clears any stale mutex locks from previous runs.
+pub fn reset_soapysdr_state() {
+    unsafe {
+        soapysdr_sys::SoapySDR_unloadModules();
+        soapysdr_sys::SoapySDR_loadModules();
+    }
+}
+
+/// Cleanup SoapySDR state on shutdown by unloading all modules.
+pub fn cleanup_soapysdr_state() {
+    unsafe {
+        soapysdr_sys::SoapySDR_unloadModules();
+    }
+}
+
 // Wrapper for device string that creates soapysdr::Device on-demand
 #[derive(Clone)]
 pub struct Device(pub String);
@@ -71,7 +87,7 @@ pub struct SoapySdrManager {
 impl SoapySdrManager {
     pub fn new(config: &ScanningConfig, center_freq: f64, device: Device) -> Result<Self> {
         let sdr_source = Arc::new(Mutex::new(SoapySdrSource::new(device.clone())?));
-        let (audio_sender, _) = broadcast::channel(524288); // Increased to 512K samples (~256ms at 2MHz for better buffering
+        let (audio_sender, _) = broadcast::channel(524288); // 512K samples (~256ms at 2MHz)
 
         let mut manager = Self {
             sdr_source,
@@ -92,6 +108,7 @@ impl SoapySdrManager {
         };
 
         // Start the SDR graph immediately with the provided center frequency
+        // This ensures samples are available as soon as subscribers are created
         manager.start_sdr_graph(center_freq)?;
 
         Ok(manager)
@@ -181,7 +198,13 @@ impl SoapySdrManager {
 
 impl crate::sdr::Segment for SoapySdrManager {
     fn audio_subscriber(&self) -> broadcast::Receiver<Complex> {
-        self.audio_sender.subscribe()
+        let receiver = self.audio_sender.subscribe();
+        debug!(
+            receiver_len = receiver.len(),
+            sender_receiver_count = self.audio_sender.receiver_count(),
+            "Created new audio subscriber"
+        );
+        receiver
     }
 }
 

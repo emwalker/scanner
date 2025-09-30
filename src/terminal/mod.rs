@@ -20,9 +20,10 @@ pub trait ProgressReporter: Send + Sync {
 pub struct ProgressEvent {
     pub event_type: ProgressEventType,
     pub frequency_hz: f64,
-    pub window_id: usize,
+    pub metadata: crate::window::WindowMetadata,
     pub candidate_id: Option<String>,
     pub audio_quality: Option<crate::audio_quality::AudioQuality>,
+    pub signal_strength: Option<f64>,
     pub timestamp: std::time::Instant,
 }
 
@@ -38,6 +39,25 @@ pub enum ProgressEventType {
     AudioPlaybackStarted,
     AudioPlaybackCompleted,
     ThreadCompleted,
+}
+
+/// Commands sent from TUI to scanner for interactive control
+#[derive(Debug, Clone)]
+pub enum ScannerCommand {
+    /// Pause the scanning process
+    Pause,
+    /// Resume scanning from where it left off
+    ResumeScan,
+    /// Tune to a specific candidate frequency and play audio
+    TuneToCandidate {
+        window_id: usize,
+        center_frequency: f64,    // For spectrum visualization
+        candidate_frequency: f64, // Specific station frequency
+        signal_strength: Option<f64>,
+        audio_quality: Option<crate::audio_quality::AudioQuality>,
+    },
+    /// Stop listening to current station and return to browsing mode
+    StopListening,
 }
 
 /// No-operation progress reporter that does nothing (default behavior)
@@ -124,9 +144,13 @@ mod tests {
         let event = ProgressEvent {
             event_type: ProgressEventType::PeakDetected,
             frequency_hz: 88_900_000.0,
-            window_id: 1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id: 1,
+            },
             candidate_id: Some("88.9-1".to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: std::time::Instant::now(),
         };
 
@@ -139,7 +163,7 @@ mod tests {
 
         let captured_event = &events[0];
         assert_eq!(captured_event.frequency_hz, 88_900_000.0);
-        assert_eq!(captured_event.window_id, 1);
+        assert_eq!(captured_event.metadata.window_id, 1);
         match captured_event.event_type {
             ProgressEventType::PeakDetected => {}
             _ => panic!("Expected PeakDetected event type"),
@@ -155,25 +179,37 @@ mod tests {
             ProgressEvent {
                 event_type: ProgressEventType::PeakDetected,
                 frequency_hz: 88_900_000.0,
-                window_id: 1,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: 88_900_000.0,
+                    window_id: 1,
+                },
                 candidate_id: Some("88.9-1".to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: std::time::Instant::now(),
             },
             ProgressEvent {
                 event_type: ProgressEventType::CandidateCreated,
                 frequency_hz: 88_900_000.0,
-                window_id: 1,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: 88_900_000.0,
+                    window_id: 1,
+                },
                 candidate_id: Some("88.9-1".to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: std::time::Instant::now(),
             },
             ProgressEvent {
                 event_type: ProgressEventType::ThreadCompleted,
                 frequency_hz: 88_900_000.0,
-                window_id: 1,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: 88_900_000.0,
+                    window_id: 1,
+                },
                 candidate_id: None,
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: std::time::Instant::now(),
             },
         ];
@@ -210,9 +246,13 @@ mod tests {
         mock_reporter.report(ProgressEvent {
             event_type: ProgressEventType::PeakDetected,
             frequency_hz: 88_900_000.0,
-            window_id: 1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id: 1,
+            },
             candidate_id: Some("88.9-1".to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: std::time::Instant::now(),
         });
 
@@ -237,9 +277,13 @@ mod tests {
         let event = ProgressEvent {
             event_type: ProgressEventType::PeakDetected,
             frequency_hz: 88_900_000.0,
-            window_id: 1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id: 1,
+            },
             candidate_id: Some("88.9-1".to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: std::time::Instant::now(),
         };
 
@@ -248,7 +292,7 @@ mod tests {
         // Verify event was sent through channel
         let received_event = receiver.recv().expect("Should receive event");
         assert_eq!(received_event.frequency_hz, 88_900_000.0);
-        assert_eq!(received_event.window_id, 1);
+        assert_eq!(received_event.metadata.window_id, 1);
         match received_event.event_type {
             ProgressEventType::PeakDetected => {}
             _ => panic!("Expected PeakDetected event type"),
@@ -259,17 +303,25 @@ mod tests {
             ProgressEvent {
                 event_type: ProgressEventType::CandidateCreated,
                 frequency_hz: 89_100_000.0,
-                window_id: 2,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: 89_100_000.0,
+                    window_id: 2,
+                },
                 candidate_id: Some("89.1-2".to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: std::time::Instant::now(),
             },
             ProgressEvent {
                 event_type: ProgressEventType::ThreadCompleted,
                 frequency_hz: 89_100_000.0,
-                window_id: 2,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: 89_100_000.0,
+                    window_id: 2,
+                },
                 candidate_id: None,
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: std::time::Instant::now(),
             },
         ];
@@ -308,9 +360,13 @@ mod tests {
         let event = ProgressEvent {
             event_type: ProgressEventType::PeakDetected,
             frequency_hz: 88_900_000.0,
-            window_id: 1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id: 1,
+            },
             candidate_id: Some("88.9-1".to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: std::time::Instant::now(),
         };
 
@@ -325,9 +381,13 @@ mod tests {
         no_op_reporter.report(ProgressEvent {
             event_type: ProgressEventType::PeakDetected,
             frequency_hz: 88_900_000.0,
-            window_id: 1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id: 1,
+            },
             candidate_id: Some("88.9-1".to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: std::time::Instant::now(),
         });
 

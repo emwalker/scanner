@@ -89,6 +89,10 @@ impl ColorScheme for DarkTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(130, 170, 190)
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(180, 220, 240) // Brighter blue for selection
+    }
 }
 
 impl SymbolSet for DarkTheme {
@@ -138,6 +142,10 @@ impl SymbolSet for DarkTheme {
 
     fn header_border(&self) -> char {
         '·'
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "◉"
     }
 }
 
@@ -275,6 +283,10 @@ impl ColorScheme for LightTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(50, 90, 120)
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(0, 120, 180) // Bright blue for selection
+    }
 }
 
 impl SymbolSet for LightTheme {
@@ -324,6 +336,10 @@ impl SymbolSet for LightTheme {
 
     fn header_border(&self) -> char {
         '·'
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "◉"
     }
 }
 

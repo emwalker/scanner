@@ -90,6 +90,10 @@ impl ColorScheme for DarkTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(180, 200, 220) // Section steel blue
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for DarkTheme {
@@ -139,6 +143,10 @@ impl SymbolSet for DarkTheme {
 
     fn header_border(&self) -> char {
         '━' // Heavy line
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 
@@ -273,6 +281,10 @@ impl ColorScheme for LightTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(60, 90, 130) // Medium navy
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for LightTheme {
@@ -322,6 +334,10 @@ impl SymbolSet for LightTheme {
 
     fn header_border(&self) -> char {
         '━'
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 

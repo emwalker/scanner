@@ -9,6 +9,25 @@ use std::thread;
 use std::time::Duration;
 use tracing::debug;
 
+/// Metadata about the window that the TUI needs
+#[derive(Debug, Clone, Copy)]
+pub struct WindowMetadata {
+    pub center_frequency_hz: f64,
+    pub window_id: usize,
+}
+
+/// Configuration parameters for creating a Window
+pub struct WindowConfig {
+    pub center_freq: f64,
+    pub window_num: usize,
+    pub total_windows: usize,
+    pub device: crate::soapy::Device,
+    pub config: ScanningConfig,
+    pub progress_reporter: Arc<dyn ProgressReporter>,
+    pub shutdown_listener: triggered::Listener,
+    pub pause_signal: Option<crate::scanner_state::PauseSignal>,
+}
+
 /// Represents a frequency window for band scanning with complete lifecycle management
 pub struct Window {
     center_freq: f64,
@@ -19,27 +38,26 @@ pub struct Window {
     config: ScanningConfig,
     progress_reporter: Arc<dyn ProgressReporter>,
     shutdown_listener: triggered::Listener,
+    metadata: WindowMetadata,
+    pause_signal: Option<crate::scanner_state::PauseSignal>,
 }
 
 impl Window {
-    pub fn new(
-        center_freq: f64,
-        window_num: usize,
-        total_windows: usize,
-        device: crate::soapy::Device,
-        config: ScanningConfig,
-        progress_reporter: Arc<dyn ProgressReporter>,
-        shutdown_listener: triggered::Listener,
-    ) -> Self {
+    pub fn new(window_config: WindowConfig) -> Self {
         Self {
-            center_freq,
-            window_num,
-            total_windows,
+            center_freq: window_config.center_freq,
+            window_num: window_config.window_num,
+            total_windows: window_config.total_windows,
             station_mode: false,
-            device,
-            config,
-            progress_reporter,
-            shutdown_listener,
+            device: window_config.device,
+            config: window_config.config,
+            progress_reporter: window_config.progress_reporter,
+            shutdown_listener: window_config.shutdown_listener,
+            metadata: WindowMetadata {
+                center_frequency_hz: window_config.center_freq,
+                window_id: window_config.window_num,
+            },
+            pause_signal: window_config.pause_signal,
         }
     }
 
@@ -61,6 +79,11 @@ impl Window {
             config,
             progress_reporter,
             shutdown_listener,
+            metadata: WindowMetadata {
+                center_frequency_hz: center_freq,
+                window_id: window_num,
+            },
+            pause_signal: None,
         }
     }
 
@@ -190,9 +213,10 @@ impl Window {
             self.progress_reporter.report(ProgressEvent {
                 event_type: ProgressEventType::AudioAnalysisStarted,
                 frequency_hz: freq,
-                window_id: self.window_num,
+                metadata: self.metadata,
                 candidate_id: Some(candidate_id),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: std::time::Instant::now(),
             });
 
@@ -203,14 +227,26 @@ impl Window {
             let device_clone = self.device.clone();
             let progress_reporter_clone = self.progress_reporter.clone();
             let window_num = self.window_num;
+            let pause_signal_clone = self.pause_signal.clone();
 
             let handle = thread::spawn(move || -> Result<()> {
+                // Early exit if pause requested before we even start
+                if let Some(ref signal) = pause_signal_clone
+                    && signal.is_paused()
+                {
+                    debug!("Candidate thread exiting early due to pause signal");
+                    return Ok(());
+                }
+
                 let context = crate::pipeline::AnalysisContext {
                     config: &config_clone,
                     center_freq,
                     device: &device_clone,
                     progress_reporter: progress_reporter_clone,
-                    window_id: window_num,
+                    metadata: crate::window::WindowMetadata {
+                        center_frequency_hz: center_freq,
+                        window_id: window_num,
+                    },
                 };
                 candidate.analyze(sdr_rx, signal_tx_clone, &context)
             });
@@ -312,6 +348,7 @@ impl Window {
         audio_tx: std::sync::mpsc::SyncSender<f32>,
         config: &ScanningConfig,
         shutdown_listener: &triggered::Listener,
+        pause_signal: Option<&crate::scanner_state::PauseSignal>,
     ) -> Result<()> {
         debug!(
             "Creating audio processing pipeline for {:.1} MHz",
@@ -354,6 +391,14 @@ impl Window {
                 debug!("Shutdown requested during audio processing, stopping early");
                 break;
             }
+
+            // Check if pause requested
+            if let Some(pause) = pause_signal
+                && pause.is_paused()
+            {
+                debug!("Pause requested during audio processing, stopping early");
+                break;
+            }
         }
 
         debug!("Cancelling audio graph...");
@@ -374,6 +419,7 @@ impl Window {
         sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
         graph: &mut rustradio::graph::Graph,
     ) -> rustradio::stream::ReadStream<rustradio::Complex> {
+        debug!("setup_audio_graph_source: receiver_len={}", sdr_rx.len());
         let (source_block, stream) = crate::broadcast::BroadcastSource::new(sdr_rx);
         graph.add(Box::new(source_block));
         stream
@@ -448,9 +494,20 @@ impl Window {
         };
 
         let adaptive_gain = base_gain * gain_adjustment * quality_adjustment;
+        let clamped_gain = adaptive_gain.clamp(0.05, 10.0);
 
-        // Clamp to reasonable bounds to prevent overflow/underflow
-        adaptive_gain.clamp(0.05, 10.0)
+        debug!(
+            signal_strength = signal.signal_strength,
+            audio_quality = ?signal.audio_quality,
+            base_gain = base_gain,
+            gain_adjustment = gain_adjustment,
+            quality_adjustment = quality_adjustment,
+            adaptive_gain = adaptive_gain,
+            clamped_gain = clamped_gain,
+            "Calculated adaptive FM gain"
+        );
+
+        clamped_gain
     }
 
     fn create_audio_decimation_chain(
@@ -549,12 +606,17 @@ impl Window {
         for signal in sorted_signals.iter() {
             // Report audio playback start
             let candidate_id = format!("{:.1}-{}", signal.frequency_hz / 1e6, self.window_num);
+            let signal_metadata = crate::window::WindowMetadata {
+                center_frequency_hz: signal.detection_center_freq,
+                window_id: self.window_num,
+            };
             self.progress_reporter.report(ProgressEvent {
                 event_type: ProgressEventType::AudioPlaybackStarted,
                 frequency_hz: signal.frequency_hz,
-                window_id: self.window_num,
+                metadata: signal_metadata,
                 candidate_id: Some(candidate_id),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: std::time::Instant::now(),
             });
 
@@ -571,6 +633,7 @@ impl Window {
                 audio_tx.clone(),
                 &self.config,
                 &self.shutdown_listener,
+                self.pause_signal.as_ref(),
             ) {
                 debug!("Error processing signal for audio: {}", e);
             }
@@ -580,9 +643,10 @@ impl Window {
             self.progress_reporter.report(ProgressEvent {
                 event_type: ProgressEventType::AudioPlaybackCompleted,
                 frequency_hz: signal.frequency_hz,
-                window_id: self.window_num,
+                metadata: signal_metadata,
                 candidate_id: Some(candidate_id),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: std::time::Instant::now(),
             });
         }
@@ -590,7 +654,173 @@ impl Window {
         Ok(())
     }
 
-    /// Process this window completely: tune SDR, find candidates, run detection/audio, wait for completion
+    /// Play audio for a specific frequency without peak detection
+    /// If duration is None, plays indefinitely until shutdown or interrupted by command
+    pub fn play_frequency(
+        &self,
+        segment: &dyn Segment,
+        target_frequency: f64,
+        signal_strength: Option<f64>,
+        audio_quality: Option<crate::audio_quality::AudioQuality>,
+        duration: Option<std::time::Duration>,
+        command_receiver: Option<&std::sync::mpsc::Receiver<crate::terminal::ScannerCommand>>,
+    ) -> Result<Option<crate::terminal::ScannerCommand>> {
+        debug!("play_frequency: subscribing to segment");
+        let sdr_rx = segment.audio_subscriber();
+        debug!(
+            "play_frequency: subscription created, receiver_len={}",
+            sdr_rx.len()
+        );
+        self.play_frequency_with_receiver(
+            sdr_rx,
+            target_frequency,
+            signal_strength,
+            audio_quality,
+            duration,
+            command_receiver,
+        )
+    }
+
+    pub fn play_frequency_with_receiver(
+        &self,
+        sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+        target_frequency: f64,
+        signal_strength: Option<f64>,
+        audio_quality: Option<crate::audio_quality::AudioQuality>,
+        duration: Option<std::time::Duration>,
+        command_receiver: Option<&std::sync::mpsc::Receiver<crate::terminal::ScannerCommand>>,
+    ) -> Result<Option<crate::terminal::ScannerCommand>> {
+        let duration_desc = match duration {
+            Some(d) => format!("for {:?}", d),
+            None => "indefinitely".to_string(),
+        };
+        debug!(
+            freq_mhz = target_frequency / 1e6,
+            center_mhz = self.center_freq / 1e6,
+            signal_strength = ?signal_strength,
+            audio_quality = ?audio_quality,
+            duration = duration_desc,
+            "Playing selected frequency"
+        );
+
+        let signal = crate::types::Signal {
+            frequency_hz: target_frequency,
+            signal_strength: signal_strength.unwrap_or(0.1) as f32,
+            bandwidth_hz: 200_000.0,
+            modulation: crate::types::ModulationType::WFM,
+            audio_sample_rate: self.config.audio_sample_rate,
+            detected_at: std::time::SystemTime::now(),
+            analysis_duration_ms: 0,
+            detection_center_freq: self.center_freq,
+            audio_quality: audio_quality.unwrap_or(crate::audio_quality::AudioQuality::Unknown),
+        };
+
+        self.play_single_signal_with_receiver(&signal, sdr_rx, duration, command_receiver)
+    }
+
+    fn play_single_signal_with_receiver(
+        &self,
+        signal: &crate::types::Signal,
+        sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+        duration: Option<std::time::Duration>,
+        command_receiver: Option<&std::sync::mpsc::Receiver<crate::terminal::ScannerCommand>>,
+    ) -> Result<Option<crate::terminal::ScannerCommand>> {
+        // Set up audio infrastructure FIRST, matching the detection flow in play_signals
+        // This ensures the audio system is ready to consume samples before we subscribe
+        let audio_buffer_samples = (self.config.audio_sample_rate as f32 * 0.25) as usize;
+        let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<f32>(audio_buffer_samples);
+
+        let (audio_device, supported_config) =
+            Window::setup_audio_device(self.config.audio_sample_rate)?;
+        let sample_format = supported_config.sample_format();
+        let mut stream_config: StreamConfig = supported_config.into();
+        stream_config.buffer_size = BufferSize::Fixed(self.config.audio_buffer_size);
+
+        let stream = match sample_format {
+            SampleFormat::F32 => {
+                Window::create_audio_stream(&audio_device, &stream_config, audio_rx)?
+            }
+            _ => {
+                return Err(crate::types::ScannerError::Custom(
+                    "Unsupported audio format".to_string(),
+                ));
+            }
+        };
+
+        stream.play()?;
+
+        let msg = match duration {
+            Some(d) => format!("playing {:.1} MHz for {:?}", signal.frequency_hz / 1e6, d),
+            None => format!(
+                "playing {:.1} MHz (press CTRL-C to stop)",
+                signal.frequency_hz / 1e6
+            ),
+        };
+        tracing::info!("{}", msg);
+
+        // Create audio graph with the receiver that was subscribed earlier
+        // This minimizes the time between subscription and consumption
+        let mut audio_graph = Window::create_audio_fm_graph(
+            signal,
+            sdr_rx,
+            audio_tx.clone(),
+            &self.config,
+            signal.detection_center_freq,
+        )?;
+
+        let cancel_token = audio_graph.cancel_token();
+        let graph_handle = std::thread::spawn(move || {
+            debug!("Audio graph thread started, running graph...");
+            if let Err(e) = audio_graph.run() {
+                debug!(error = ?e, "Audio graph error");
+            } else {
+                debug!("Audio graph completed successfully");
+            }
+        });
+
+        let check_interval = std::time::Duration::from_millis(50);
+        let mut interrupted_command = None;
+
+        match duration {
+            Some(max_duration) => {
+                let mut elapsed = std::time::Duration::ZERO;
+                while elapsed < max_duration {
+                    std::thread::sleep(check_interval);
+                    elapsed += check_interval;
+
+                    if self.shutdown_listener.is_triggered() {
+                        break;
+                    }
+
+                    if let Some(receiver) = command_receiver
+                        && let Ok(cmd) = receiver.try_recv()
+                    {
+                        interrupted_command = Some(cmd);
+                        break;
+                    }
+                }
+            }
+            None => loop {
+                std::thread::sleep(check_interval);
+
+                if self.shutdown_listener.is_triggered() {
+                    break;
+                }
+
+                if let Some(receiver) = command_receiver
+                    && let Ok(cmd) = receiver.try_recv()
+                {
+                    interrupted_command = Some(cmd);
+                    break;
+                }
+            },
+        }
+
+        cancel_token.cancel();
+        let _ = graph_handle.join();
+        Ok(interrupted_command)
+    }
+
     pub fn process(&self, segment: &dyn Segment) -> Result<()> {
         debug!(
             "Scanning window {} of {} at {:.1} MHz",
@@ -608,9 +838,10 @@ impl Window {
             self.progress_reporter.report(ProgressEvent {
                 event_type: ProgressEventType::PeakDetected,
                 frequency_hz: peak.frequency_hz,
-                window_id: self.window_num,
+                metadata: self.metadata,
                 candidate_id: Some(candidate_id),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: std::time::Instant::now(),
             });
         }
@@ -629,9 +860,10 @@ impl Window {
                 self.progress_reporter.report(ProgressEvent {
                     event_type: ProgressEventType::CandidateCreated,
                     frequency_hz: freq,
-                    window_id: self.window_num,
+                    metadata: self.metadata,
                     candidate_id: Some(candidate_id),
                     audio_quality: None,
+                    signal_strength: None,
                     timestamp: std::time::Instant::now(),
                 });
             }
@@ -665,6 +897,17 @@ impl Window {
         let check_interval = Duration::from_millis(100);
 
         while !remaining_threads.is_empty() && start_time.elapsed() < timeout {
+            // Check pause signal - if paused, stop waiting immediately
+            if let Some(ref signal) = self.pause_signal
+                && signal.is_paused()
+            {
+                debug!(
+                    "Pause signal detected, stopping wait for {} remaining threads",
+                    remaining_threads.len()
+                );
+                return completed;
+            }
+
             let mut still_running = Vec::new();
 
             for handle in remaining_threads.into_iter() {

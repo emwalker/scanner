@@ -21,14 +21,24 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
     let max_lines = (area.height - 2) as usize;
     let mut line_count = 0;
 
-    for window in model.windows.values() {
-        let is_current = window.window_id == model.current_window;
+    // Get displayable windows for selection tracking
+    let displayable_windows = model.get_displayable_windows();
+    let mut candidate_index = 0;
+
+    for (window_id, window) in displayable_windows.iter() {
+        let is_current = **window_id == model.current_window;
         let displayable = window.displayable_candidates(is_current);
 
         for candidate in displayable {
             if line_count >= max_lines {
                 break;
             }
+
+            // Only count non-rejected candidates for selection index
+            // (matches get_selectable_candidates logic)
+            let is_selected = model.selection_mode
+                && candidate.status != CandidateStatus::Rejected
+                && model.selected_candidate_index == Some(candidate_index);
 
             let status_symbol = match candidate.status {
                 CandidateStatus::Detected => "○",
@@ -39,13 +49,17 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
                 CandidateStatus::Completed => "◯",
             };
 
-            let status_color = match candidate.status {
-                CandidateStatus::Detected => theme.status_detected(),
-                CandidateStatus::Analyzing => theme.status_analyzing(),
-                CandidateStatus::Rejected => theme.status_rejected(),
-                CandidateStatus::Signal => theme.status_signal(),
-                CandidateStatus::Playing => theme.status_playing(),
-                CandidateStatus::Completed => theme.status_completed(),
+            let status_color = if is_selected {
+                theme.selection_highlight()
+            } else {
+                match candidate.status {
+                    CandidateStatus::Detected => theme.status_detected(),
+                    CandidateStatus::Analyzing => theme.status_analyzing(),
+                    CandidateStatus::Rejected => theme.status_rejected(),
+                    CandidateStatus::Signal => theme.status_signal(),
+                    CandidateStatus::Playing => theme.status_playing(),
+                    CandidateStatus::Completed => theme.status_completed(),
+                }
             };
 
             let status_text = match candidate.status {
@@ -61,15 +75,25 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
             let progress_pct = (candidate.completion * 100.0) as u8;
             let mini_graph = create_mini_graph(progress_pct);
 
+            let selection_prefix = if is_selected {
+                theme.selection_indicator()
+            } else {
+                " "
+            };
+
             let mut spans = vec![
                 Span::styled(
-                    format!("  {} ", status_symbol),
+                    format!(" {} {} ", selection_prefix, status_symbol),
                     Style::default().fg(status_color),
                 ),
                 Span::styled(
                     format!("{:>5.1} MHz  ", freq_mhz),
                     Style::default()
-                        .fg(theme.primary())
+                        .fg(if is_selected {
+                            theme.selection_highlight()
+                        } else {
+                            theme.primary()
+                        })
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
@@ -99,11 +123,38 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
 
             lines.push(Line::from(spans));
             line_count += 1;
+
+            // Only increment candidate_index for selectable (non-rejected) candidates
+            if candidate.status != CandidateStatus::Rejected {
+                candidate_index += 1;
+            }
         }
 
         if line_count >= max_lines {
             break;
         }
+    }
+
+    // Add "Continue scan" option if in selection mode
+    if model.selection_mode && line_count < max_lines {
+        let is_continue_selected = model.is_continue_scan_selected();
+
+        let color = if is_continue_selected {
+            theme.selection_highlight()
+        } else {
+            theme.instructions_dim()
+        };
+
+        lines.push(Line::from(vec![Span::styled(
+            " Continue scan →",
+            Style::default()
+                .fg(color)
+                .add_modifier(if is_continue_selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        )]));
     }
 
     if lines.is_empty() {

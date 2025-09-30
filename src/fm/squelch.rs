@@ -67,7 +67,7 @@ pub struct SquelchBlock {
 
     // Progress reporting
     progress_reporter: Option<std::sync::Arc<dyn crate::terminal::ProgressReporter + Send + Sync>>,
-    window_id: usize,
+    metadata: crate::window::WindowMetadata,
 }
 
 /// Configuration for squelch block creation
@@ -116,7 +116,10 @@ impl SquelchBlock {
             threshold: config.threshold,
             audio_capturer: config.audio_capturer,
             progress_reporter: config.progress_reporter,
-            window_id: config.window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: config.center_freq,
+                window_id: config.window_id,
+            },
         };
 
         (block, decision_state)
@@ -231,13 +234,14 @@ impl SquelchBlock {
                     // Report signal generation immediately after creation
                     if let Some(ref progress_reporter) = self.progress_reporter {
                         let candidate_id =
-                            format!("{:.1}-{}", self.frequency_hz / 1e6, self.window_id);
+                            format!("{:.1}-{}", self.frequency_hz / 1e6, self.metadata.window_id);
                         progress_reporter.report(crate::terminal::ProgressEvent {
                             event_type: crate::terminal::ProgressEventType::SignalGenerated,
                             frequency_hz: self.frequency_hz,
-                            window_id: self.window_id,
+                            metadata: self.metadata,
                             candidate_id: Some(candidate_id),
                             audio_quality: Some(audio_quality),
+                            signal_strength: Some(signal_strength as f64),
                             timestamp: std::time::Instant::now(),
                         });
                     }
@@ -334,13 +338,14 @@ impl BlockEOF for SquelchBlock {
                     // Report signal generation immediately after creation
                     if let Some(ref progress_reporter) = self.progress_reporter {
                         let candidate_id =
-                            format!("{:.1}-{}", self.frequency_hz / 1e6, self.window_id);
+                            format!("{:.1}-{}", self.frequency_hz / 1e6, self.metadata.window_id);
                         progress_reporter.report(crate::terminal::ProgressEvent {
                             event_type: crate::terminal::ProgressEventType::SignalGenerated,
                             frequency_hz: self.frequency_hz,
-                            window_id: self.window_id,
+                            metadata: self.metadata,
                             candidate_id: Some(candidate_id),
                             audio_quality: Some(audio_quality),
+                            signal_strength: Some(signal_strength as f64),
                             timestamp: std::time::Instant::now(),
                         });
                     }

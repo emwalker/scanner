@@ -93,6 +93,10 @@ impl ColorScheme for BladerunnerDarkTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(255, 140, 0) // Dark orange
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for BladerunnerDarkTheme {
@@ -147,6 +151,10 @@ impl SymbolSet for BladerunnerDarkTheme {
     // Header border
     fn header_border(&self) -> char {
         '═'
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 
@@ -285,6 +293,10 @@ impl ColorScheme for BladerunnerLightTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(184, 134, 11) // Dark amber
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for BladerunnerLightTheme {
@@ -335,6 +347,10 @@ impl SymbolSet for BladerunnerLightTheme {
 
     fn header_border(&self) -> char {
         '═'
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 

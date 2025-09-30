@@ -17,14 +17,30 @@ pub fn render_instructions(
     model: &Model,
     all_themes: &[String],
 ) {
-    let instruction =
-        Paragraph::new("  ⌃C to exit").style(Style::default().fg(theme.instructions_dim()));
-    f.render_widget(instruction, area);
-
     if model.theme_selector_open {
         render_theme_selector(f, area, theme, model, all_themes);
     } else {
-        let theme_display = Paragraph::new(format!("{}  ", theme_name))
+        let left_instructions = if model.selection_mode {
+            "  ⌃C Exit  ↑↓ Browse  ↵ Continue scan"
+        } else {
+            "  ⌃C Exit  ↑↓ Browse"
+        };
+
+        let instruction =
+            Paragraph::new(left_instructions).style(Style::default().fg(theme.instructions_dim()));
+        f.render_widget(instruction, area);
+
+        let right_text = if model.selection_mode {
+            if let Some((_, _, candidate_freq, _, _)) = model.get_selected_candidate_info() {
+                format!("[Listening: {:.1} MHz]  ", candidate_freq / 1e6)
+            } else {
+                format!("{}  ", theme_name)
+            }
+        } else {
+            format!("{}  ", theme_name)
+        };
+
+        let theme_display = Paragraph::new(right_text)
             .alignment(Alignment::Right)
             .style(Style::default().fg(theme.instructions_dim()));
         f.render_widget(theme_display, area);

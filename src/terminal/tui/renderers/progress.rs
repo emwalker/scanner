@@ -27,35 +27,46 @@ pub fn render_progress(
         return;
     }
 
-    // Get windows in order (BTreeMap preserves order automatically)
-    let window_ids: Vec<_> = model.windows.keys().cloned().collect();
+    // Get displayable windows for selection tracking
+    let displayable_windows = model.get_displayable_windows();
 
     // Calculate available space for progress bars
     let available_height = area.height as usize;
     let max_bars = available_height.saturating_sub(5); // RESERVED_TERMINAL_LINES
 
-    // Calculate window sizes that fit in available space
-    let mut window_sizes = Vec::new();
+    // In selection mode, use selectable candidates (no rejected); otherwise use displayable
+    let use_selectable = model.selection_mode;
 
-    // Process windows in chronological order (oldest first)
-    // But we'll fill from the bottom up, so track what fits
+    // Calculate window sizes that fit in available space
     let mut windows_that_fit = Vec::new();
 
-    for &window_id in &window_ids {
-        let window = &model.windows[&window_id];
-        // Only include windows that should be displayed
-        if window.should_display() {
-            let is_current_window = window_id == model.current_window;
-            let displayable_candidates = window.displayable_candidates(is_current_window);
-            let candidate_count = displayable_candidates.len();
-            let window_bars = candidate_count + 1; // +1 for window header
+    for (window_id, window) in displayable_windows.iter() {
+        let is_current_window = **window_id == model.current_window;
+        let candidates = if use_selectable {
+            // In selection mode, never show rejected candidates
+            window
+                .displayable_candidates(is_current_window)
+                .into_iter()
+                .filter(|c| c.status != crate::terminal::tui::model::CandidateStatus::Rejected)
+                .collect::<Vec<_>>()
+        } else {
+            window.displayable_candidates(is_current_window)
+        };
+        let candidate_count = candidates.len();
+        let window_bars = candidate_count + 1; // +1 for window header
 
-            windows_that_fit.push((window_id, candidate_count, window_bars));
-        }
+        windows_that_fit.push((window_id, candidate_count, window_bars));
     }
 
     // Now work backwards to fit as many recent windows as possible
+    let mut window_sizes = Vec::new();
     let mut running_total = 0;
+
+    // Add "Continue scan" line if in selection mode
+    if model.selection_mode {
+        running_total += 1;
+    }
+
     for (window_id, candidate_count, window_bars) in windows_that_fit.iter().rev() {
         if running_total + window_bars <= max_bars {
             window_sizes.insert(0, (*window_id, *candidate_count)); // Insert at front to maintain order
@@ -68,11 +79,14 @@ pub fn render_progress(
         return;
     }
 
-    // Create constraints: 1 line per candidate + 1 line per window header
-    let total_lines = window_sizes
+    // Create constraints: 1 line per candidate + 1 line per window header + 1 for continue scan
+    let mut total_lines = window_sizes
         .iter()
         .map(|(_, count)| count + 1)
         .sum::<usize>();
+    if model.selection_mode {
+        total_lines += 1;
+    }
     let constraints: Vec<Constraint> = (0..total_lines).map(|_| Constraint::Length(1)).collect();
 
     let chunks = Layout::default()
@@ -82,26 +96,63 @@ pub fn render_progress(
 
     // Render all progress bars sequentially
     let mut chunk_idx = 0;
+    let mut candidate_index = 0;
+
     for (window_id, _candidate_count) in window_sizes {
         if chunk_idx >= chunks.len() {
             break;
         }
 
+        // Check if any candidate in this window is selected
+        let window = &model.windows[window_id];
+        let is_current_window = **window_id == model.current_window;
+        let displayable_candidates = if use_selectable {
+            // In selection mode, filter out rejected candidates
+            window
+                .displayable_candidates(is_current_window)
+                .into_iter()
+                .filter(|c| c.status != crate::terminal::tui::model::CandidateStatus::Rejected)
+                .collect::<Vec<_>>()
+        } else {
+            window.displayable_candidates(is_current_window)
+        };
+        let window_candidate_count = displayable_candidates.len();
+
+        let window_has_selection = if let Some(selected_idx) = model.selected_candidate_index {
+            selected_idx >= candidate_index
+                && selected_idx < candidate_index + window_candidate_count
+        } else {
+            false
+        };
+
         // Render window header
-        render_window_header(f, chunks[chunk_idx], window_id, theme);
+        render_window_header(
+            f,
+            chunks[chunk_idx],
+            **window_id,
+            window_has_selection,
+            model,
+            theme,
+        );
         chunk_idx += 1;
 
         // Render candidates in this window (preserves insertion order, filtered)
-        let window = &model.windows[&window_id];
-        let is_current_window = window_id == model.current_window;
-        let displayable_candidates = window.displayable_candidates(is_current_window);
         for candidate in displayable_candidates {
             if chunk_idx >= chunks.len() {
                 break;
             }
-            render_candidate_progress(f, chunks[chunk_idx], candidate, theme);
+            let is_selected =
+                model.selection_mode && model.selected_candidate_index == Some(candidate_index);
+            render_candidate_progress(f, chunks[chunk_idx], candidate, is_selected, theme);
             chunk_idx += 1;
+            candidate_index += 1;
         }
+    }
+
+    // Add "Continue scan" option if in selection mode
+    if model.selection_mode && chunk_idx < chunks.len() {
+        let is_continue_selected = model.is_continue_scan_selected();
+        render_continue_scan(f, chunks[chunk_idx], is_continue_selected, theme);
     }
 }
 
@@ -110,8 +161,12 @@ fn render_window_header(
     f: &mut Frame,
     area: ratatui::layout::Rect,
     window_id: usize,
+    _is_selected: bool,
+    _model: &Model,
     theme: &dyn Theme,
 ) {
+    let color = theme.window_header();
+
     // Geometric window indicator with precision framing
     let header = format!(
         " {} Scan {} {}",
@@ -119,11 +174,8 @@ fn render_window_header(
         window_id,
         theme.window_bullet()
     );
-    let header_widget = Paragraph::new(header).style(
-        Style::default()
-            .fg(theme.window_header())
-            .add_modifier(Modifier::BOLD),
-    );
+    let header_widget =
+        Paragraph::new(header).style(Style::default().fg(color).add_modifier(Modifier::BOLD));
     f.render_widget(header_widget, area);
 }
 
@@ -132,6 +184,7 @@ fn render_candidate_progress(
     f: &mut Frame,
     area: ratatui::layout::Rect,
     candidate: &CandidateProgress,
+    is_selected: bool,
     theme: &dyn Theme,
 ) {
     let freq_mhz = candidate.frequency_hz / 1e6;
@@ -147,13 +200,17 @@ fn render_candidate_progress(
     };
 
     // Status colors from theme
-    let status_color = match candidate.status {
-        CandidateStatus::Detected => theme.status_detected(),
-        CandidateStatus::Analyzing => theme.status_analyzing(),
-        CandidateStatus::Rejected => theme.status_rejected(),
-        CandidateStatus::Signal => theme.status_signal(),
-        CandidateStatus::Playing => theme.status_playing(),
-        CandidateStatus::Completed => theme.status_completed(),
+    let status_color = if is_selected {
+        theme.selection_highlight()
+    } else {
+        match candidate.status {
+            CandidateStatus::Detected => theme.status_detected(),
+            CandidateStatus::Analyzing => theme.status_analyzing(),
+            CandidateStatus::Rejected => theme.status_rejected(),
+            CandidateStatus::Signal => theme.status_signal(),
+            CandidateStatus::Playing => theme.status_playing(),
+            CandidateStatus::Completed => theme.status_completed(),
+        }
     };
 
     // Atmospheric amber progress with geometric precision
@@ -237,6 +294,32 @@ fn render_candidate_progress(
     let gauge = Paragraph::new(line);
 
     f.render_widget(gauge, area);
+}
+
+/// Render "Continue scan" option when in selection mode
+fn render_continue_scan(
+    f: &mut Frame,
+    area: ratatui::layout::Rect,
+    is_selected: bool,
+    theme: &dyn Theme,
+) {
+    let color = if is_selected {
+        theme.selection_highlight()
+    } else {
+        theme.instructions_dim()
+    };
+
+    let line = Line::from(vec![Span::styled(
+        " Continue scan →",
+        Style::default().fg(color).add_modifier(if is_selected {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        }),
+    )]);
+
+    let paragraph = Paragraph::new(line);
+    f.render_widget(paragraph, area);
 }
 
 #[cfg(test)]

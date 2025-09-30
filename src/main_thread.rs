@@ -1,3 +1,4 @@
+use crate::scanner_state::{PauseSignal, ScannerState};
 use crate::sdr::Device;
 use crate::terminal::{NoOpProgressReporter, ProgressReporter};
 use crate::types::{ConsoleWriter, Logger, Result, ScannerError, ScanningConfig};
@@ -13,6 +14,9 @@ pub struct MainThread {
     devices: Vec<soapy::Device>,
     progress_reporter: Arc<dyn ProgressReporter>,
     shutdown_listener: triggered::Listener,
+    command_receiver: Option<std::sync::mpsc::Receiver<crate::terminal::ScannerCommand>>,
+    scanner_state: ScannerState,
+    pause_signal: PauseSignal,
 }
 
 impl MainThread {
@@ -30,6 +34,9 @@ impl MainThread {
             devices,
             progress_reporter: Arc::new(NoOpProgressReporter),
             shutdown_listener,
+            command_receiver: None,
+            scanner_state: ScannerState::new(),
+            pause_signal: PauseSignal::new(),
         })
     }
 
@@ -48,10 +55,21 @@ impl MainThread {
             devices,
             progress_reporter,
             shutdown_listener,
+            command_receiver: None,
+            scanner_state: ScannerState::new(),
+            pause_signal: PauseSignal::new(),
         })
     }
 
-    pub fn run(&self, stations: Option<String>) -> Result<()> {
+    pub fn with_command_receiver(
+        mut self,
+        receiver: std::sync::mpsc::Receiver<crate::terminal::ScannerCommand>,
+    ) -> Self {
+        self.command_receiver = Some(receiver);
+        self
+    }
+
+    pub fn run(mut self, stations: Option<String>) -> Result<()> {
         // Logging is now initialized in main() before SDR operations
 
         // Discover available SDR devices
@@ -62,13 +80,13 @@ impl MainThread {
         }
 
         // Create device from the first available device string
-        let device = &self.devices[0];
+        let device = self.devices[0].clone();
         self.console_writer.write_info("Scanning for stations ...");
 
         if let Some(stations_str) = stations {
-            self.scan_stations(device, &stations_str)?;
+            self.scan_stations(&device, &stations_str)?;
         } else {
-            self.scan_band(device)?;
+            self.scan_band(&device)?;
         }
 
         self.console_writer.write_info("Scan complete.");
@@ -80,6 +98,98 @@ impl MainThread {
             .split(',')
             .map(|s| s.trim().parse::<f64>().map_err(ScannerError::from))
             .collect()
+    }
+
+    fn handle_tune_command(
+        &self,
+        device: &soapy::Device,
+        center_frequency: f64,
+        candidate_frequency: f64,
+        signal_strength: Option<f64>,
+        audio_quality: Option<crate::audio_quality::AudioQuality>,
+    ) -> Result<Option<crate::terminal::ScannerCommand>> {
+        debug!(
+            candidate_mhz = candidate_frequency / 1e6,
+            center_mhz = center_frequency / 1e6,
+            signal_strength = ?signal_strength,
+            audio_quality = ?audio_quality,
+            "Tuning to candidate"
+        );
+        let segment = device.tune(&self.config, center_frequency)?;
+
+        let window = Window::new(crate::window::WindowConfig {
+            center_freq: center_frequency,
+            window_num: 0,
+            total_windows: 1,
+            device: device.clone(),
+            config: self.config.clone(),
+            progress_reporter: self.progress_reporter.clone(),
+            shutdown_listener: self.shutdown_listener.clone(),
+            pause_signal: Some(self.pause_signal.clone()),
+        });
+        window.play_frequency(
+            &*segment,
+            candidate_frequency,
+            signal_strength,
+            audio_quality,
+            None,
+            self.command_receiver.as_ref(),
+        )
+    }
+
+    fn handle_command(
+        &mut self,
+        command: crate::terminal::ScannerCommand,
+        device: &soapy::Device,
+        window_num: usize,
+        _total_windows: usize,
+        _current_paused: bool,
+    ) -> Result<(bool, Option<crate::terminal::ScannerCommand>)> {
+        match command {
+            crate::terminal::ScannerCommand::Pause => {
+                debug!(window = window_num, "Scanner paused");
+                // Set pause signal for immediate thread cancellation
+                self.pause_signal.pause();
+                // Update state machine
+                self.scanner_state.handle_pause(window_num);
+                Ok((true, None))
+            }
+            crate::terminal::ScannerCommand::ResumeScan => {
+                debug!(
+                    window = window_num,
+                    "Scanner resuming - exiting selection mode and continuing scan"
+                );
+                // Clear pause signal
+                self.pause_signal.unpause();
+                // Update state machine to get next window
+                let _next_window = self.scanner_state.handle_resume();
+                Ok((false, None))
+            }
+            crate::terminal::ScannerCommand::TuneToCandidate {
+                window_id: _,
+                center_frequency,
+                candidate_frequency,
+                signal_strength,
+                audio_quality,
+            } => {
+                // Update state machine to Listening mode
+                self.scanner_state.handle_tune(window_num);
+                let next_command = self.handle_tune_command(
+                    device,
+                    center_frequency,
+                    candidate_frequency,
+                    signal_strength,
+                    audio_quality,
+                )?;
+                Ok((true, next_command))
+            }
+            crate::terminal::ScannerCommand::StopListening => {
+                debug!("Stopped listening, returning to browsing mode");
+                // Return to Paused state
+                self.scanner_state.handle_stop_listening();
+                Ok((true, None))
+            }
+        }
     }
 
     fn scan_stations(&self, device: &soapy::Device, stations_str: &str) -> Result<()> {
@@ -124,7 +234,7 @@ impl MainThread {
         Ok(())
     }
 
-    fn scan_band(&self, device: &soapy::Device) -> Result<()> {
+    fn scan_band(&mut self, device: &soapy::Device) -> Result<()> {
         // Clear any previously processed frequencies from earlier scans
         fm::clear_processed_frequencies();
 
@@ -143,25 +253,131 @@ impl MainThread {
             None => window_centers.len(),
         };
 
-        for (i, center_freq) in window_centers.iter().enumerate().take(windows_to_process) {
+        let mut paused = false;
+        let mut i = 0;
+
+        while i < windows_to_process {
+            debug!(
+                iteration = i,
+                total = windows_to_process,
+                paused = paused,
+                "Start of scan loop iteration"
+            );
+
+            // Collect commands without holding borrow of self
+            let mut commands = Vec::new();
+            if let Some(receiver) = &self.command_receiver {
+                while let Ok(command) = receiver.try_recv() {
+                    commands.push(command);
+                }
+            }
+
+            // Process commands
+            for command in commands {
+                let (new_paused, next_cmd) =
+                    self.handle_command(command, device, i + 1, window_centers.len(), paused)?;
+                paused = new_paused;
+                if let Some(cmd) = next_cmd {
+                    let (final_paused, _) =
+                        self.handle_command(cmd, device, i + 1, window_centers.len(), paused)?;
+                    paused = final_paused;
+                }
+            }
+
+            if paused {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+
+            debug!(
+                window = i + 1,
+                total = windows_to_process,
+                paused = paused,
+                "Not paused, will process window"
+            );
+
             // Check for shutdown before processing each window
             if self.shutdown_listener.is_triggered() {
                 debug!("Shutdown requested, stopping band scanning");
                 break;
             }
 
-            let window = Window::new(
-                *center_freq,
-                i + 1,
-                window_centers.len(),
-                device.clone(),
-                self.config.clone(),
-                self.progress_reporter.clone(),
-                self.shutdown_listener.clone(),
-            );
-            let segment = device.tune(&self.config, *center_freq)?;
+            if let Some(receiver) = &self.command_receiver
+                && let Ok(command) = receiver.try_recv()
+            {
+                let (new_paused, next_cmd) =
+                    self.handle_command(command, device, i + 1, window_centers.len(), paused)?;
+                paused = new_paused;
+                if let Some(cmd) = next_cmd {
+                    let (final_paused, _) =
+                        self.handle_command(cmd, device, i + 1, window_centers.len(), paused)?;
+                    paused = final_paused;
+                }
+                if paused {
+                    continue;
+                }
+            }
+
+            let center_freq = window_centers[i];
+            let window = Window::new(crate::window::WindowConfig {
+                center_freq,
+                window_num: i + 1,
+                total_windows: window_centers.len(),
+                device: device.clone(),
+                config: self.config.clone(),
+                progress_reporter: self.progress_reporter.clone(),
+                shutdown_listener: self.shutdown_listener.clone(),
+                pause_signal: Some(self.pause_signal.clone()),
+            });
+            let segment = device.tune(&self.config, center_freq)?;
+
+            if let Some(receiver) = &self.command_receiver
+                && let Ok(command) = receiver.try_recv()
+            {
+                let (new_paused, next_cmd) =
+                    self.handle_command(command, device, i + 1, window_centers.len(), paused)?;
+                paused = new_paused;
+                if let Some(cmd) = next_cmd {
+                    let (final_paused, _) =
+                        self.handle_command(cmd, device, i + 1, window_centers.len(), paused)?;
+                    paused = final_paused;
+                }
+                if paused {
+                    continue;
+                }
+            }
+
             window.process(&*segment)?;
+
+            // Collect commands without holding borrow of self
+            let mut commands = Vec::new();
+            if let Some(receiver) = &self.command_receiver {
+                while let Ok(command) = receiver.try_recv() {
+                    commands.push(command);
+                }
+            }
+
+            // Process commands
+            for command in commands {
+                let (new_paused, next_cmd) =
+                    self.handle_command(command, device, i + 1, window_centers.len(), paused)?;
+                paused = new_paused;
+                if let Some(cmd) = next_cmd {
+                    let (final_paused, _) =
+                        self.handle_command(cmd, device, i + 1, window_centers.len(), paused)?;
+                    paused = final_paused;
+                }
+            }
+
+            debug!(
+                completed_window = i + 1,
+                next_window = i + 2,
+                remaining = windows_to_process - i - 1,
+                "Window complete, advancing to next"
+            );
+            i += 1;
         }
+        debug!("Scan band complete - all windows processed");
         Ok(())
     }
 }

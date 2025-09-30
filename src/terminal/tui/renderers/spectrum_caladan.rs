@@ -22,15 +22,22 @@ pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
     let mut lines = Vec::new();
     let content_width = area.width.saturating_sub(6) as usize;
 
-    let window_start = model.windows.get(&model.current_window).map(|w| {
-        if !w.candidates.is_empty() {
-            let center = w.candidates.iter().map(|c| c.frequency_hz).sum::<f64>()
-                / w.candidates.len() as f64;
-            center - window_width / 2.0
-        } else {
-            fm_start
-        }
-    });
+    // Use selected candidate's center frequency if in selection mode, otherwise current window
+    let window_start = if model.selection_mode {
+        model
+            .get_selected_candidate_info()
+            .map(|(_, center_freq, _, _, _)| center_freq - window_width / 2.0)
+    } else {
+        model.windows.get(&model.current_window).map(|w| {
+            if !w.candidates.is_empty() {
+                let center = w.candidates.iter().map(|c| c.frequency_hz).sum::<f64>()
+                    / w.candidates.len() as f64;
+                center - window_width / 2.0
+            } else {
+                fm_start
+            }
+        })
+    };
 
     lines.push(wrap_with_bracket(
         render_frequency_labels(content_width, fm_start, fm_range, theme),
@@ -407,6 +414,9 @@ mod tests {
         fn window_header(&self) -> Color {
             Color::Blue
         }
+        fn selection_highlight(&self) -> Color {
+            Color::Cyan
+        }
     }
 
     impl crate::terminal::tui::themes::SymbolSet for MockTheme {
@@ -445,6 +455,9 @@ mod tests {
         }
         fn header_border(&self) -> char {
             '─'
+        }
+        fn selection_indicator(&self) -> &'static str {
+            ">"
         }
     }
 
@@ -611,18 +624,26 @@ mod tests {
             candidates: vec![
                 CandidateProgress {
                     frequency_hz: 89.9e6,
-                    window_id: 1,
+                    metadata: crate::window::WindowMetadata {
+                        center_frequency_hz: 89.9e6,
+                        window_id: 1,
+                    },
                     status: CandidateStatus::Signal,
                     completion: 0.8,
                     audio_quality: Some(AudioQuality::Good),
+                    signal_strength: Some(0.5),
                     last_update: std::time::Instant::now(),
                 },
                 CandidateProgress {
                     frequency_hz: 90.5e6,
-                    window_id: 1,
+                    metadata: crate::window::WindowMetadata {
+                        center_frequency_hz: 90.5e6,
+                        window_id: 1,
+                    },
                     status: CandidateStatus::Signal,
                     completion: 0.6,
                     audio_quality: Some(AudioQuality::Moderate),
+                    signal_strength: Some(0.4),
                     last_update: std::time::Instant::now(),
                 },
             ],
@@ -659,10 +680,14 @@ mod tests {
             window_id: 1,
             candidates: vec![CandidateProgress {
                 frequency_hz: 91.8e6,
-                window_id: 1,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: 91.8e6,
+                    window_id: 1,
+                },
                 status: CandidateStatus::Signal,
                 completion: 1.0,
                 audio_quality: Some(AudioQuality::Good),
+                signal_strength: Some(0.5),
                 last_update: std::time::Instant::now(),
             }],
             is_complete: false,
@@ -693,18 +718,26 @@ mod tests {
             candidates: vec![
                 CandidateProgress {
                     frequency_hz: 89.9e6,
-                    window_id: 1,
+                    metadata: crate::window::WindowMetadata {
+                        center_frequency_hz: 89.9e6,
+                        window_id: 1,
+                    },
                     status: CandidateStatus::Signal,
                     completion: 0.8,
                     audio_quality: Some(AudioQuality::Good),
+                    signal_strength: Some(0.5),
                     last_update: std::time::Instant::now(),
                 },
                 CandidateProgress {
                     frequency_hz: 90.5e6,
-                    window_id: 1,
+                    metadata: crate::window::WindowMetadata {
+                        center_frequency_hz: 90.5e6,
+                        window_id: 1,
+                    },
                     status: CandidateStatus::Rejected,
                     completion: 1.0,
                     audio_quality: Some(AudioQuality::NoAudio),
+                    signal_strength: Some(0.1),
                     last_update: std::time::Instant::now(),
                 },
             ],

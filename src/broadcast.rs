@@ -83,6 +83,13 @@ impl BlockEOF for BroadcastSource {
 
 impl Block for BroadcastSource {
     fn work(&mut self) -> Result<BlockRet<'_>> {
+        static WORK_CALL_COUNT: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        let count = WORK_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count.is_multiple_of(10000) {
+            debug!(count, "BroadcastSource work() called");
+        }
+
         let mut out = self.output.write_buf()?;
         if out.is_empty() {
             debug!("BroadcastSource: output buffer empty, waiting");
@@ -103,12 +110,11 @@ impl Block for BroadcastSource {
                     n += 1;
                     samples_received += 1;
                 }
-                Err(broadcast::error::TryRecvError::Empty) => break,
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    break;
+                }
                 Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
-                    // Only log significant lag events to reduce spam
-                    if skipped > 5000 {
-                        debug!("BroadcastSource: lagged, skipped {} samples", skipped);
-                    }
+                    debug!("BroadcastSource: lagged, skipped {} samples", skipped);
                     continue;
                 }
                 Err(broadcast::error::TryRecvError::Closed) => {

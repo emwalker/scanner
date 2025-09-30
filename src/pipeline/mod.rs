@@ -13,7 +13,7 @@ pub struct AnalysisContext<'a> {
     pub center_freq: f64,
     pub device: &'a crate::soapy::Device,
     pub progress_reporter: std::sync::Arc<dyn ProgressReporter + Send + Sync>,
-    pub window_id: usize,
+    pub metadata: crate::window::WindowMetadata,
 }
 
 /// Parameters for squelch monitoring thread
@@ -22,7 +22,7 @@ pub struct SquelchMonitoringParams {
     pub refined_frequency: f64,
     pub original_frequency_hz: f64,
     pub candidate_id: String,
-    pub window_id: usize,
+    pub metadata: crate::window::WindowMetadata,
 }
 
 /// Process a single peak through the complete pipeline to generate a signal
@@ -40,15 +40,16 @@ pub fn process_peak_to_signal(
     );
 
     // Generate candidate ID for tracking
-    let candidate_id = format!("{:.1}-{}", frequency_hz / 1e6, context.window_id);
+    let candidate_id = format!("{:.1}-{}", frequency_hz / 1e6, context.metadata.window_id);
 
     // Report peak detection
     context.progress_reporter.report(ProgressEvent {
         event_type: ProgressEventType::PeakDetected,
         frequency_hz,
-        window_id: context.window_id,
+        metadata: context.metadata,
         candidate_id: Some(candidate_id.clone()),
         audio_quality: None,
+        signal_strength: None,
         timestamp: std::time::Instant::now(),
     });
 
@@ -68,9 +69,10 @@ pub fn process_peak_to_signal(
     context.progress_reporter.report(ProgressEvent {
         event_type: ProgressEventType::CandidateCreated,
         frequency_hz: refined_frequency,
-        window_id: context.window_id,
+        metadata: context.metadata,
         candidate_id: Some(candidate_id.clone()),
         audio_quality: None,
+        signal_strength: None,
         timestamp: std::time::Instant::now(),
     });
 
@@ -168,7 +170,7 @@ fn run_detection_analysis(
         context.device,
         audio_analyzer,
         Some(context.progress_reporter.clone()),
-        context.window_id,
+        context.metadata.window_id,
     )?;
 
     let detection_cancel_token = detection_graph.cancel_token();
@@ -192,7 +194,7 @@ fn run_detection_analysis(
             refined_frequency,
             original_frequency_hz,
             candidate_id: candidate_id.to_string(),
-            window_id: context.window_id,
+            metadata: context.metadata,
         },
         decision_state,
         detection_cancel_token,
@@ -206,7 +208,7 @@ fn run_detection_analysis(
         original_frequency_hz,
         &*context.progress_reporter,
         rejection_rx,
-        context.window_id,
+        context.metadata.window_id,
         candidate_id,
     )
 }
@@ -257,9 +259,10 @@ fn spawn_squelch_monitoring_thread(
                     let _ = rejection_sender.send(crate::terminal::ProgressEvent {
                         event_type: crate::terminal::ProgressEventType::CandidateRejected,
                         frequency_hz: params.original_frequency_hz,
-                        window_id: params.window_id,
+                        metadata: params.metadata,
                         candidate_id: Some(params.candidate_id.clone()),
                         audio_quality: None,
+                        signal_strength: None,
                         timestamp: std::time::Instant::now(),
                     });
 
@@ -277,9 +280,10 @@ fn spawn_squelch_monitoring_thread(
                     let _ = rejection_sender.send(crate::terminal::ProgressEvent {
                         event_type: crate::terminal::ProgressEventType::AudioAnalysisCompleted,
                         frequency_hz: params.original_frequency_hz,
-                        window_id: params.window_id,
+                        metadata: params.metadata,
                         candidate_id: Some(params.candidate_id.clone()),
                         audio_quality: None,
+                        signal_strength: None,
                         timestamp: std::time::Instant::now(),
                     });
 
@@ -302,9 +306,10 @@ fn spawn_squelch_monitoring_thread(
         let _ = rejection_sender.send(crate::terminal::ProgressEvent {
             event_type: crate::terminal::ProgressEventType::AudioAnalysisCompleted,
             frequency_hz: params.original_frequency_hz,
-            window_id: params.window_id,
+            metadata: params.metadata,
             candidate_id: Some(params.candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: std::time::Instant::now(),
         });
 
@@ -326,7 +331,7 @@ fn wait_for_threads_completion(
     frequency_hz: f64,
     progress_reporter: &dyn ProgressReporter,
     rejection_rx: std::sync::mpsc::Receiver<crate::terminal::ProgressEvent>,
-    window_id: usize,
+    _window_id: usize,
     candidate_id: &str,
 ) -> Result<()> {
     tracing::debug!(
@@ -352,8 +357,11 @@ fn wait_for_threads_completion(
 
     // Handle any rejection events that may have been sent
     // Check multiple times with small delays to catch rejection events
+    // Extract metadata from the first rejection event if available
+    let mut received_metadata = None;
     for _ in 0..10 {
         if let Ok(rejection_event) = rejection_rx.try_recv() {
+            received_metadata = Some(rejection_event.metadata);
             progress_reporter.report(rejection_event);
             break;
         }
@@ -365,15 +373,19 @@ fn wait_for_threads_completion(
         frequency_hz / 1e6
     );
 
-    // Report audio analysis completion
-    progress_reporter.report(crate::terminal::ProgressEvent {
-        event_type: crate::terminal::ProgressEventType::AudioAnalysisCompleted,
-        frequency_hz,
-        window_id,
-        candidate_id: Some(candidate_id.to_string()),
-        audio_quality: None,
-        timestamp: std::time::Instant::now(),
-    });
+    // Report audio analysis completion - use metadata from rejection event or create fallback
+    // This shouldn't normally be needed as the squelch thread should send completion events
+    if let Some(metadata) = received_metadata {
+        progress_reporter.report(crate::terminal::ProgressEvent {
+            event_type: crate::terminal::ProgressEventType::AudioAnalysisCompleted,
+            frequency_hz,
+            metadata,
+            candidate_id: Some(candidate_id.to_string()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: std::time::Instant::now(),
+        });
+    }
 
     Ok(())
 }
@@ -531,7 +543,10 @@ mod tests {
             center_freq,
             device: &device,
             progress_reporter: std::sync::Arc::new(progress_reporter),
-            window_id: 1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: center_freq,
+                window_id: 1,
+            },
         };
         let result = process_peak_to_signal(TEST_FREQUENCY_HZ, sdr_rx, signal_tx, &context);
 
@@ -561,7 +576,10 @@ mod tests {
             center_freq,
             device: &device,
             progress_reporter: progress_arc,
-            window_id: 1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: center_freq,
+                window_id: 1,
+            },
         };
         let result = process_peak_to_signal(
             TEST_FREQUENCY_HZ + 100_000.0, // Test frequency (center + offset)
@@ -599,7 +617,10 @@ mod tests {
             center_freq,
             device: &device,
             progress_reporter: progress_arc,
-            window_id: 1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: center_freq,
+                window_id: 1,
+            },
         };
         let result = process_peak_to_signal(TEST_FREQUENCY_HZ, sdr_rx, signal_tx, &context);
 
@@ -648,7 +669,10 @@ mod tests {
             center_freq,
             device: &device,
             progress_reporter: progress_arc,
-            window_id: 1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: center_freq,
+                window_id: 1,
+            },
         };
         let result =
             process_peak_to_signal(TEST_FREQUENCY_HZ + 50_000.0, sdr_rx, signal_tx, &context);

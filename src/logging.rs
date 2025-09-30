@@ -22,42 +22,62 @@ impl LogBuffer {
     }
 }
 
-/// A custom writer that can either buffer logs for testing or write directly for immediate output
+enum WriterMode {
+    Buffered(LogBuffer),
+    File(Arc<Mutex<std::fs::File>>),
+    Immediate,
+}
+
+/// A custom writer that can either buffer logs for testing, write to file, or write directly
 pub struct TestWriter {
-    buffer: Option<LogBuffer>,
+    mode: WriterMode,
 }
 
 impl TestWriter {
     pub fn new(buffer: LogBuffer) -> Self {
         Self {
-            buffer: Some(buffer),
+            mode: WriterMode::Buffered(buffer),
         }
     }
 
     /// Create a writer that outputs immediately (for main application)
     pub fn new_immediate() -> Self {
-        Self { buffer: None }
+        Self {
+            mode: WriterMode::Immediate,
+        }
+    }
+
+    /// Create a writer that outputs to a file
+    pub fn new_file(file: Arc<Mutex<std::fs::File>>) -> Self {
+        Self {
+            mode: WriterMode::File(file),
+        }
     }
 }
 
 impl Write for &TestWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if let Some(buffer) = &self.buffer {
-            // Buffer for tests
-            let mut buffer = buffer.0.lock().unwrap();
-            buffer.extend_from_slice(buf);
-        } else {
-            // Always write directly to tty to bypass any redirection
-            use std::fs::OpenOptions;
-            match OpenOptions::new().write(true).open("/dev/tty") {
-                Ok(mut tty) => {
-                    tty.write_all(buf)?;
-                    tty.flush()?;
-                }
-                Err(_) => {
-                    // Fallback to stdout if TTY is not available (e.g., in tests or when piped)
-                    io::stdout().write_all(buf)?;
-                    io::stdout().flush()?;
+        match &self.mode {
+            WriterMode::Buffered(buffer) => {
+                let mut buffer = buffer.0.lock().unwrap();
+                buffer.extend_from_slice(buf);
+            }
+            WriterMode::File(file) => {
+                let mut file = file.lock().unwrap();
+                file.write_all(buf)?;
+                file.flush()?;
+            }
+            WriterMode::Immediate => {
+                use std::fs::OpenOptions;
+                match OpenOptions::new().write(true).open("/dev/tty") {
+                    Ok(mut tty) => {
+                        tty.write_all(buf)?;
+                        tty.flush()?;
+                    }
+                    Err(_) => {
+                        io::stdout().write_all(buf)?;
+                        io::stdout().flush()?;
+                    }
                 }
             }
         }
@@ -65,28 +85,36 @@ impl Write for &TestWriter {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        if let WriterMode::File(file) = &self.mode {
+            file.lock().unwrap().flush()?;
+        }
         Ok(())
     }
 }
 
 impl Write for TestWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if let Some(buffer) = &self.buffer {
-            // Buffer for tests
-            let mut buffer = buffer.0.lock().unwrap();
-            buffer.extend_from_slice(buf);
-        } else {
-            // Always write directly to tty to bypass any redirection
-            use std::fs::OpenOptions;
-            match OpenOptions::new().write(true).open("/dev/tty") {
-                Ok(mut tty) => {
-                    tty.write_all(buf)?;
-                    tty.flush()?;
-                }
-                Err(_) => {
-                    // Fallback to stdout if TTY is not available (e.g., in tests or when piped)
-                    io::stdout().write_all(buf)?;
-                    io::stdout().flush()?;
+        match &self.mode {
+            WriterMode::Buffered(buffer) => {
+                let mut buffer = buffer.0.lock().unwrap();
+                buffer.extend_from_slice(buf);
+            }
+            WriterMode::File(file) => {
+                let mut file = file.lock().unwrap();
+                file.write_all(buf)?;
+                file.flush()?;
+            }
+            WriterMode::Immediate => {
+                use std::fs::OpenOptions;
+                match OpenOptions::new().write(true).open("/dev/tty") {
+                    Ok(mut tty) => {
+                        tty.write_all(buf)?;
+                        tty.flush()?;
+                    }
+                    Err(_) => {
+                        io::stdout().write_all(buf)?;
+                        io::stdout().flush()?;
+                    }
                 }
             }
         }
@@ -94,14 +122,22 @@ impl Write for TestWriter {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        use std::fs::OpenOptions;
-        match OpenOptions::new().write(true).open("/dev/tty") {
-            Ok(mut tty) => {
-                tty.flush()?;
+        match &self.mode {
+            WriterMode::File(file) => {
+                file.lock().unwrap().flush()?;
             }
-            Err(_) => {
-                io::stdout().flush()?;
+            WriterMode::Immediate => {
+                use std::fs::OpenOptions;
+                match OpenOptions::new().write(true).open("/dev/tty") {
+                    Ok(mut tty) => {
+                        tty.flush()?;
+                    }
+                    Err(_) => {
+                        io::stdout().flush()?;
+                    }
+                }
             }
+            WriterMode::Buffered(_) => {}
         }
         Ok(())
     }
@@ -137,15 +173,51 @@ impl<'a> MakeWriter<'a> for ImmediateWriter {
     }
 }
 
+/// File writer for logging to a file
+pub struct FileWriter {
+    file: Arc<Mutex<std::fs::File>>,
+}
+
+impl FileWriter {
+    pub fn new(file: std::fs::File) -> Self {
+        Self {
+            file: Arc::new(Mutex::new(file)),
+        }
+    }
+}
+
+impl<'a> MakeWriter<'a> for FileWriter {
+    type Writer = TestWriter;
+
+    fn make_writer(&self) -> Self::Writer {
+        TestWriter::new_file(self.file.clone())
+    }
+
+    fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Self::Writer {
+        let _ = meta;
+        self.make_writer()
+    }
+}
+
 // Default Logger implementation for production use
 pub struct DefaultLogger {
     verbose: bool,
     format: Format,
+    log_file: Option<String>,
 }
 
 impl DefaultLogger {
     pub fn new(verbose: bool, format: Format) -> Self {
-        Self { verbose, format }
+        Self {
+            verbose,
+            format,
+            log_file: None,
+        }
+    }
+
+    pub fn with_log_file(mut self, log_file: Option<String>) -> Self {
+        self.log_file = log_file;
+        self
     }
 }
 
@@ -156,37 +228,81 @@ impl Logger for DefaultLogger {
         } else {
             Level::INFO
         };
-        let immediate_writer = ImmediateWriter;
 
-        match self.format {
-            Format::Json => {
-                let subscriber = FmtSubscriber::builder()
-                    .json()
-                    .with_max_level(level)
-                    .with_writer(immediate_writer)
-                    .finish();
-                tracing::subscriber::set_global_default(subscriber)
-                    .expect("setting default subscriber failed");
+        if let Some(ref log_file_path) = self.log_file {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_file_path)
+                .map_err(|e| {
+                    crate::types::ScannerError::Custom(format!("Failed to open log file: {}", e))
+                })?;
+            let file_writer = FileWriter::new(file);
+
+            match self.format {
+                Format::Json => {
+                    let subscriber = FmtSubscriber::builder()
+                        .json()
+                        .with_max_level(level)
+                        .with_writer(file_writer)
+                        .finish();
+                    tracing::subscriber::set_global_default(subscriber)
+                        .expect("setting default subscriber failed");
+                }
+                Format::Text => {
+                    let subscriber = FmtSubscriber::builder()
+                        .with_max_level(level)
+                        .with_writer(file_writer)
+                        .without_time()
+                        .with_target(false)
+                        .with_level(false)
+                        .finish();
+                    tracing::subscriber::set_global_default(subscriber)
+                        .expect("setting default subscriber failed");
+                }
+                Format::Log => {
+                    let subscriber = FmtSubscriber::builder()
+                        .with_max_level(level)
+                        .with_writer(file_writer)
+                        .with_target(false)
+                        .finish();
+                    tracing::subscriber::set_global_default(subscriber)
+                        .expect("setting default subscriber failed");
+                }
             }
-            Format::Text => {
-                let subscriber = FmtSubscriber::builder()
-                    .with_max_level(level)
-                    .with_writer(immediate_writer)
-                    .without_time()
-                    .with_target(false)
-                    .with_level(false)
-                    .finish();
-                tracing::subscriber::set_global_default(subscriber)
-                    .expect("setting default subscriber failed");
-            }
-            Format::Log => {
-                let subscriber = FmtSubscriber::builder()
-                    .with_max_level(level)
-                    .with_writer(immediate_writer)
-                    .with_target(false)
-                    .finish();
-                tracing::subscriber::set_global_default(subscriber)
-                    .expect("setting default subscriber failed");
+        } else {
+            let immediate_writer = ImmediateWriter;
+
+            match self.format {
+                Format::Json => {
+                    let subscriber = FmtSubscriber::builder()
+                        .json()
+                        .with_max_level(level)
+                        .with_writer(immediate_writer)
+                        .finish();
+                    tracing::subscriber::set_global_default(subscriber)
+                        .expect("setting default subscriber failed");
+                }
+                Format::Text => {
+                    let subscriber = FmtSubscriber::builder()
+                        .with_max_level(level)
+                        .with_writer(immediate_writer)
+                        .without_time()
+                        .with_target(false)
+                        .with_level(false)
+                        .finish();
+                    tracing::subscriber::set_global_default(subscriber)
+                        .expect("setting default subscriber failed");
+                }
+                Format::Log => {
+                    let subscriber = FmtSubscriber::builder()
+                        .with_max_level(level)
+                        .with_writer(immediate_writer)
+                        .with_target(false)
+                        .finish();
+                    tracing::subscriber::set_global_default(subscriber)
+                        .expect("setting default subscriber failed");
+                }
             }
         }
 

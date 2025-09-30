@@ -76,7 +76,7 @@ impl ProgressDisplay {
         match event.event_type {
             ProgressEventType::PeakDetected => {
                 self.current_frequency = Some(event.frequency_hz);
-                self.window_id = Some(event.window_id);
+                self.window_id = Some(event.metadata.window_id);
                 self.peak_count += 1;
             }
             ProgressEventType::CandidateCreated => {
@@ -140,25 +140,37 @@ mod tests {
             ProgressEvent {
                 event_type: ProgressEventType::PeakDetected,
                 frequency_hz: 88_900_000.0,
-                window_id: 1,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: 88_900_000.0,
+                    window_id: 1,
+                },
                 candidate_id: Some("88.9-1".to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             },
             ProgressEvent {
                 event_type: ProgressEventType::CandidateCreated,
                 frequency_hz: 89_100_000.0,
-                window_id: 1,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: 89_100_000.0,
+                    window_id: 1,
+                },
                 candidate_id: Some("89.1-1".to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             },
             ProgressEvent {
                 event_type: ProgressEventType::PeakDetected,
                 frequency_hz: 89_300_000.0,
-                window_id: 2,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: 89_300_000.0,
+                    window_id: 2,
+                },
                 candidate_id: Some("89.3-2".to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             },
         ];
@@ -206,9 +218,13 @@ mod tests {
             .send(ProgressEvent {
                 event_type: ProgressEventType::PeakDetected,
                 frequency_hz: 88_900_000.0,
-                window_id: 3,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: 88_900_000.0,
+                    window_id: 3,
+                },
                 candidate_id: Some("88.9-3".to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             })
             .expect("Should send event");

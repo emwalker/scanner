@@ -35,6 +35,9 @@ pub trait ColorScheme {
     fn spectrum_window(&self) -> Color;
     fn instructions_dim(&self) -> Color;
     fn window_header(&self) -> Color;
+
+    // Selection highlight color
+    fn selection_highlight(&self) -> Color;
 }
 
 /// Symbol set trait defining all Unicode symbols used in the UI
@@ -60,6 +63,9 @@ pub trait SymbolSet {
 
     // Header border
     fn header_border(&self) -> char;
+
+    // Selection indicator
+    fn selection_indicator(&self) -> &'static str;
 }
 
 /// Text style trait defining terminology and formatting

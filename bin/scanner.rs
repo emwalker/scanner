@@ -12,7 +12,11 @@ use std::thread;
 const DEFAULT_DRIVER: &str = "driver=sdrplay";
 
 /// No-op logger that doesn't initialize tracing to suppress all log output
+#[derive(Debug)]
 struct NoOpLogger;
+
+unsafe impl Send for NoOpLogger {}
+unsafe impl Sync for NoOpLogger {}
 
 impl Logger for NoOpLogger {
     fn init(&self) -> Result<()> {
@@ -134,6 +138,10 @@ struct ScanArgs {
     /// Output format: structured logging
     #[arg(long, group = "output_format")]
     log: bool,
+
+    /// Write debug logs to file (useful with TUI to capture diagnostics)
+    #[arg(long)]
+    log_file: Option<String>,
 
     /// Path to pre-trained model file (if not specified, auto-discovers latest)
     #[arg(long)]
@@ -373,6 +381,34 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
 
     let driver = args.device_args.as_deref().unwrap_or(DEFAULT_DRIVER);
 
+    // Reset SoapySDR state to avoid mutex hangs from previous runs
+    // This unloads and reloads all SoapySDR modules, clearing any stale locks
+    soapy::reset_soapysdr_state();
+
+    // Enumerate SDR devices early (before TUI/headless split)
+    // This ensures device enumeration works regardless of display mode
+    let device_strings = soapysdr::enumerate(driver)?
+        .into_iter()
+        .map(|args| soapy::Device(format!("{}", args)))
+        .collect::<Vec<soapy::Device>>();
+
+    // Create shutdown trigger/listener pair for graceful shutdown
+    let (shutdown_trigger, shutdown_listener) = triggered::trigger();
+
+    // Setup signal handler using ctrlc - handles both TUI and headless modes
+    let signal_trigger = shutdown_trigger.clone();
+    ctrlc::set_handler(move || {
+        // Trigger graceful shutdown
+        signal_trigger.trigger();
+        // Give a brief moment for graceful shutdown
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Clean up SoapySDR state before exit to prevent mutex hangs on next run
+        soapy::cleanup_soapysdr_state();
+        // Force exit after cleanup
+        std::process::exit(0);
+    })
+    .expect("Failed to set signal handler");
+
     // Handle TUI display mode (default unless --headless)
     if !args.headless {
         use scanner::terminal::ChannelProgressReporter;
@@ -380,28 +416,12 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         use std::sync::mpsc;
         use std::thread;
 
-        // C++ output is already suppressed globally above
-
-        // Create shutdown trigger/listener pair for graceful shutdown
-        let (shutdown_trigger, shutdown_listener) = triggered::trigger();
-
-        // Setup signal handler using ctrlc (works better with terminal raw mode)
-        let signal_trigger = shutdown_trigger.clone();
-        ctrlc::set_handler(move || {
-            tracing::debug!("Signal received, triggering graceful shutdown");
-            signal_trigger.trigger();
-        })
-        .expect("Failed to set signal handler");
-
         // Create progress channel
         let (progress_sender, progress_receiver) = mpsc::channel();
         let progress_reporter = Arc::new(ChannelProgressReporter::new(progress_sender));
 
-        // Enumerate SDR devices while output is suppressed
-        let device_strings = soapysdr::enumerate(driver)?
-            .into_iter()
-            .map(|args| soapy::Device(format!("{}", args)))
-            .collect::<Vec<soapy::Device>>();
+        // Create command channel for TUI to control scanner
+        let (command_sender, command_receiver) = mpsc::channel();
 
         // Clone listeners for each thread
         let tui_listener = shutdown_listener.clone();
@@ -421,13 +441,22 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
                 tui_listener,
                 theme,
                 theme_name,
-            );
+            )
+            .with_command_sender(command_sender);
             tui_display.run()
         });
 
-        // Disable all logging output during TUI mode to avoid interference
-        // Create a no-op logger that doesn't initialize tracing
-        let logger = Arc::new(NoOpLogger);
+        // Disable TTY logging during TUI mode to avoid interference
+        // But enable file logging if --log-file is specified
+        // Always use verbose mode when logging to file to capture debug info
+        let logger: Arc<dyn scanner::types::Logger + Send + Sync> = if args.log_file.is_some() {
+            Arc::new(DefaultLogger::new(true, format).with_log_file(args.log_file.clone()))
+        } else {
+            Arc::new(NoOpLogger)
+        };
+
+        // Initialize logging (will be no-op unless log_file is specified)
+        scanner::logging::init(logger.as_ref(), args.verbose)?;
 
         let console_writer = Arc::new(DefaultConsoleWriter);
         let main_thread = MainThread::new_with_progress(
@@ -437,46 +466,38 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
             device_strings,
             progress_reporter,
             main_listener,
-        )?;
+        )?
+        .with_command_receiver(command_receiver);
 
         // Spawn main thread
         let main_handle = thread::spawn(move || main_thread.run(args.stations));
 
-        // Wait for TUI to finish (CTRL-C pressed)
+        // Wait for TUI to finish (CTRL-C or 'q' pressed)
         let _ = tui_handle.join();
 
         // TUI finished, trigger shutdown for all threads
         shutdown_trigger.trigger();
 
-        // Wait for main thread to complete gracefully - this allows Drop traits to execute!
-        let _ = main_handle.join();
+        // Give main thread a brief moment to finish current window and shutdown gracefully
+        // Use timeout to avoid hanging if window processing takes too long
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // Clean exit - no more exit(0)!
+        // Try to join with a timeout - if it doesn't finish quickly, that's ok
+        // The shutdown_trigger will eventually cause it to stop
+        let _result = std::thread::spawn(move || {
+            let _ = main_handle.join();
+        });
+
+        // Clean exit - TUI has closed, user experience is good
         Ok(())
     } else {
-        // Regular mode without TUI
+        // Headless mode without TUI
         let console_writer = Arc::new(DefaultConsoleWriter);
-        let logger = Arc::new(DefaultLogger::new(args.verbose, format));
+        let logger =
+            Arc::new(DefaultLogger::new(args.verbose, format).with_log_file(args.log_file.clone()));
 
         // Initialize logging before SDR operations to suppress library messages
         scanner::logging::init(logger.as_ref(), args.verbose)?;
-
-        // Enumerate devices and serialize them to strings for later re-instantiation
-        let device_strings = soapysdr::enumerate(driver)?
-            .into_iter()
-            .map(|args| soapy::Device(format!("{}", args)))
-            .collect::<Vec<soapy::Device>>();
-
-        // Create shutdown trigger/listener pair for signal handling in non-TUI mode
-        let (shutdown_trigger, shutdown_listener) = triggered::trigger();
-
-        // Setup signal handler using ctrlc (works better with terminal raw mode)
-        let signal_trigger = shutdown_trigger.clone();
-        ctrlc::set_handler(move || {
-            tracing::debug!("Signal received, triggering graceful shutdown");
-            signal_trigger.trigger();
-        })
-        .expect("Failed to set signal handler");
 
         // Create and setup MainThread with device strings
         let main_thread = MainThread::new(

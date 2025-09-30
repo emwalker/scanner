@@ -5,16 +5,26 @@ use std::{
     collections::{BTreeMap, HashMap},
     time::Instant,
 };
+use tracing::debug;
+
+/// Selected candidate information: (window_id, center_freq, candidate_freq, signal_strength, audio_quality)
+pub type SelectedCandidateInfo = (
+    usize,
+    f64,
+    f64,
+    Option<f64>,
+    Option<crate::audio_quality::AudioQuality>,
+);
 
 /// Information about a candidate's progress
 #[derive(Debug, Clone)]
 pub struct CandidateProgress {
     pub frequency_hz: f64,
-    #[allow(dead_code)] // Kept for debugging and potential future use
-    pub window_id: usize,
+    pub metadata: crate::window::WindowMetadata,
     pub completion: f64,
     pub status: CandidateStatus,
     pub audio_quality: Option<crate::audio_quality::AudioQuality>,
+    pub signal_strength: Option<f64>,
     pub last_update: Instant,
 }
 
@@ -91,6 +101,11 @@ pub struct Model {
     pub should_quit: bool,
     pub theme_selector_open: bool,
     pub theme_selector_index: usize,
+    pub selection_mode: bool,
+    pub selected_candidate_index: Option<usize>, // Index in flattened displayable candidates list
+    pub last_selection_change: Option<Instant>,
+    pub frequency_tune_sent: bool, // Tracks if TuneToCandidate command was sent for current selection
+    pub playback_active: bool,     // Tracks if actively listening to a station
 }
 
 impl Default for Model {
@@ -107,11 +122,21 @@ impl Model {
             should_quit: false,
             theme_selector_open: false,
             theme_selector_index: 0,
+            selection_mode: false,
+            selected_candidate_index: None,
+            last_selection_change: None,
+            frequency_tune_sent: false,
+            playback_active: false,
         }
     }
 
     /// Update the model based on a progress event
     pub fn update(&mut self, event: ProgressEvent) {
+        // Ignore all events when in selection mode - user is focused on selecting
+        if self.selection_mode {
+            return;
+        }
+
         // Only process events for actual candidates, not peaks
         if let ProgressEventType::PeakDetected = event.event_type {
             // Ignore peak detection events - we only care about candidates
@@ -119,8 +144,8 @@ impl Model {
         }
 
         // Track current window for determining when to freeze older windows
-        if event.window_id > self.current_window {
-            self.current_window = event.window_id;
+        if event.metadata.window_id > self.current_window {
+            self.current_window = event.metadata.window_id;
             // Mark previous windows as complete to prevent further updates
             for (window_id, window) in self.windows.iter_mut() {
                 if *window_id < self.current_window {
@@ -131,7 +156,7 @@ impl Model {
 
         if let Some(candidate_id) = &event.candidate_id {
             // Don't process events for old windows at all
-            if event.window_id < self.current_window {
+            if event.metadata.window_id < self.current_window {
                 // Ignore events for completed windows
                 return;
             }
@@ -139,9 +164,9 @@ impl Model {
             // Get or create window (only for current or future windows)
             let window = self
                 .windows
-                .entry(event.window_id)
+                .entry(event.metadata.window_id)
                 .or_insert_with(|| WindowProgress {
-                    window_id: event.window_id,
+                    window_id: event.metadata.window_id,
                     candidates: Vec::new(),
                     is_complete: false,
                     candidate_lookup: HashMap::new(),
@@ -154,10 +179,11 @@ impl Model {
                 // Create new candidate
                 let new_candidate = CandidateProgress {
                     frequency_hz: event.frequency_hz,
-                    window_id: event.window_id,
+                    metadata: event.metadata,
                     completion: 0.0,
                     status: CandidateStatus::Detected,
                     audio_quality: None,
+                    signal_strength: None,
                     last_update: Instant::now(),
                 };
                 let index = window.candidates.len();
@@ -198,6 +224,12 @@ impl Model {
                 ProgressEventType::SignalGenerated => {
                     candidate.status = CandidateStatus::Signal;
                     candidate.completion = 0.6; // 60% - signal found but not yet playing
+                    if let Some(quality) = event.audio_quality {
+                        candidate.audio_quality = Some(quality);
+                    }
+                    if let Some(strength) = event.signal_strength {
+                        candidate.signal_strength = Some(strength);
+                    }
                 }
                 ProgressEventType::AudioPlaybackStarted => {
                     candidate.status = CandidateStatus::Playing;
@@ -270,6 +302,215 @@ impl Model {
             self.theme_selector_index = (self.theme_selector_index + theme_count - 1) % theme_count;
         }
     }
+
+    /// Enter selection mode - pauses scanning and allows browsing candidates
+    pub fn enter_selection_mode(&mut self) {
+        self.selection_mode = true;
+
+        // Complete all Signal and Playing candidates across all windows when entering browsing mode
+        let window_ids: Vec<usize> = self.windows.keys().copied().collect();
+        for window_id in window_ids {
+            self.complete_playing_candidates_in_window(window_id);
+        }
+
+        // Start with most recent candidate selected
+        let candidate_count = self.get_selectable_candidate_count();
+        if candidate_count > 0 {
+            self.selected_candidate_index = Some(candidate_count - 1);
+            self.last_selection_change = Some(Instant::now());
+            self.frequency_tune_sent = false;
+        }
+    }
+
+    /// Exit selection mode - returns to normal scanning
+    pub fn exit_selection_mode(&mut self) {
+        self.selection_mode = false;
+        self.selected_candidate_index = None;
+        self.last_selection_change = None;
+        self.frequency_tune_sent = false;
+    }
+
+    /// Get ordered list of displayable windows (oldest to newest)
+    pub fn get_displayable_windows(&self) -> Vec<(&usize, &WindowProgress)> {
+        self.windows
+            .iter()
+            .filter(|(_, window)| window.should_display())
+            .collect()
+    }
+
+    /// Get count of displayable windows
+    pub fn get_displayable_window_count(&self) -> usize {
+        self.windows
+            .values()
+            .filter(|window| window.should_display())
+            .count()
+    }
+
+    /// Get flattened list of displayable candidates across all windows
+    /// This includes rejected candidates for display purposes
+    pub fn get_displayable_candidates(&self) -> Vec<(usize, &CandidateProgress)> {
+        let mut candidates = Vec::new();
+        for (window_id, window) in self.get_displayable_windows() {
+            let is_current = *window_id == self.current_window;
+            for candidate in window.displayable_candidates(is_current) {
+                candidates.push((*window_id, candidate));
+            }
+        }
+        candidates
+    }
+
+    /// Get flattened list of selectable candidates across all windows
+    /// Filters out rejected candidates - users should not be able to select rejected stations
+    pub fn get_selectable_candidates(&self) -> Vec<(usize, &CandidateProgress)> {
+        let mut candidates = Vec::new();
+        for (window_id, window) in self.get_displayable_windows() {
+            let is_current = *window_id == self.current_window;
+            for candidate in window.displayable_candidates(is_current) {
+                // Skip rejected candidates - they shouldn't be selectable
+                if candidate.status != CandidateStatus::Rejected {
+                    candidates.push((*window_id, candidate));
+                }
+            }
+        }
+        candidates
+    }
+
+    /// Get count of displayable candidates (includes rejected for display)
+    pub fn get_displayable_candidate_count(&self) -> usize {
+        self.get_displayable_candidates().len()
+    }
+
+    /// Get count of selectable candidates (excludes rejected)
+    pub fn get_selectable_candidate_count(&self) -> usize {
+        self.get_selectable_candidates().len()
+    }
+
+    /// Get the window_id, center frequency, and candidate frequency for the currently selected candidate
+    pub fn get_selected_candidate_info(&self) -> Option<SelectedCandidateInfo> {
+        if !self.selection_mode {
+            return None;
+        }
+
+        let selected_idx = self.selected_candidate_index?;
+        let candidates = self.get_selectable_candidates();
+
+        if selected_idx >= candidates.len() {
+            return None;
+        }
+
+        let (window_id, candidate) = candidates[selected_idx];
+
+        debug!(
+            window_id = window_id,
+            frequency_mhz = candidate.frequency_hz / 1e6,
+            signal_strength = ?candidate.signal_strength,
+            audio_quality = ?candidate.audio_quality,
+            "Selected candidate info"
+        );
+
+        Some((
+            window_id,
+            candidate.metadata.center_frequency_hz,
+            candidate.frequency_hz,
+            candidate.signal_strength,
+            candidate.audio_quality,
+        ))
+    }
+
+    /// Complete any accepted candidates when entering browsing mode or changing windows
+    /// This transitions candidates in Signal or Playing states to Completed
+    fn complete_playing_candidates_in_window(&mut self, window_id: usize) {
+        if let Some(window) = self.windows.get_mut(&window_id) {
+            for candidate in &mut window.candidates {
+                match candidate.status {
+                    CandidateStatus::Signal | CandidateStatus::Playing => {
+                        candidate.status = CandidateStatus::Completed;
+                        candidate.completion = 1.0;
+                    }
+                    CandidateStatus::Detected
+                    | CandidateStatus::Analyzing
+                    | CandidateStatus::Rejected
+                    | CandidateStatus::Completed => {
+                        // Leave other states as-is
+                    }
+                }
+            }
+        }
+    }
+
+    /// Select next candidate (moving forward in time)
+    pub fn select_next_candidate(&mut self) {
+        if !self.selection_mode {
+            return;
+        }
+
+        let candidate_count = self.get_selectable_candidate_count();
+        if candidate_count == 0 {
+            return;
+        }
+
+        let old_window_id = self
+            .get_selected_candidate_info()
+            .map(|(window_id, _, _, _, _)| window_id);
+
+        let current = self.selected_candidate_index.unwrap_or(0);
+        // Can move past last candidate to "Continue scan" position
+        let next = (current + 1).min(candidate_count);
+
+        if next != current {
+            self.selected_candidate_index = Some(next);
+            self.last_selection_change = Some(Instant::now());
+            self.frequency_tune_sent = false;
+
+            // If we moved to a different window, complete any playing candidates in the old window
+            if let Some(new_window_id) = self
+                .get_selected_candidate_info()
+                .map(|(window_id, _, _, _, _)| window_id)
+                && let Some(old_id) = old_window_id
+                && old_id != new_window_id
+            {
+                self.complete_playing_candidates_in_window(old_id);
+            }
+        }
+    }
+
+    /// Select previous candidate (moving backward in time)
+    pub fn select_previous_candidate(&mut self) {
+        if !self.selection_mode {
+            return;
+        }
+
+        let old_window_id = self
+            .get_selected_candidate_info()
+            .map(|(window_id, _, _, _, _)| window_id);
+
+        let current = self.selected_candidate_index.unwrap_or(0);
+        if current > 0 {
+            self.selected_candidate_index = Some(current - 1);
+            self.last_selection_change = Some(Instant::now());
+            self.frequency_tune_sent = false;
+
+            // If we moved to a different window, complete any playing candidates in the old window
+            if let Some(new_window_id) = self
+                .get_selected_candidate_info()
+                .map(|(window_id, _, _, _, _)| window_id)
+                && let Some(old_id) = old_window_id
+                && old_id != new_window_id
+            {
+                self.complete_playing_candidates_in_window(old_id);
+            }
+        }
+    }
+
+    /// Check if "Continue scan" option is currently selected
+    pub fn is_continue_scan_selected(&self) -> bool {
+        if !self.selection_mode {
+            return false;
+        }
+
+        let candidate_count = self.get_selectable_candidate_count();
+        self.selected_candidate_index == Some(candidate_count)
+    }
 }
 
 #[cfg(test)]
@@ -290,9 +531,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateCreated,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -305,9 +550,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::AudioAnalysisStarted,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -320,9 +569,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::SignalGenerated,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -335,9 +588,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::AudioPlaybackStarted,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -350,9 +607,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::AudioPlaybackCompleted,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -374,9 +635,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateCreated,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -384,9 +649,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::AudioAnalysisStarted,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -394,9 +663,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateRejected,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -426,9 +699,13 @@ mod tests {
             model.update(ProgressEvent {
                 event_type: ProgressEventType::CandidateCreated,
                 frequency_hz: *freq,
-                window_id,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
                 candidate_id: Some(id.to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             });
         }
@@ -438,9 +715,13 @@ mod tests {
             model.update(ProgressEvent {
                 event_type: ProgressEventType::AudioAnalysisStarted,
                 frequency_hz: *freq,
-                window_id,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
                 candidate_id: Some(id.to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             });
         }
@@ -449,18 +730,26 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateRejected,
             frequency_hz: candidates[0].1,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: candidates[0].1,
+                window_id,
+            },
             candidate_id: Some(candidates[0].0.to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateRejected,
             frequency_hz: candidates[1].1,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: candidates[1].1,
+                window_id,
+            },
             candidate_id: Some(candidates[1].0.to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -469,27 +758,39 @@ mod tests {
             model.update(ProgressEvent {
                 event_type: ProgressEventType::SignalGenerated,
                 frequency_hz: *freq,
-                window_id,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
                 candidate_id: Some(id.to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             });
 
             model.update(ProgressEvent {
                 event_type: ProgressEventType::AudioPlaybackStarted,
                 frequency_hz: *freq,
-                window_id,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
                 candidate_id: Some(id.to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             });
 
             model.update(ProgressEvent {
                 event_type: ProgressEventType::AudioPlaybackCompleted,
                 frequency_hz: *freq,
-                window_id,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
                 candidate_id: Some(id.to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             });
         }
@@ -530,9 +831,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateCreated,
             frequency_hz: 88_900_000.0,
-            window_id: 1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id: 1,
+            },
             candidate_id: Some("88.9-1".to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -543,9 +848,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateCreated,
             frequency_hz: 89_100_000.0,
-            window_id: 2,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 89_100_000.0,
+                window_id: 2,
+            },
             candidate_id: Some("89.1-2".to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -557,9 +866,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateCreated,
             frequency_hz: 89_300_000.0,
-            window_id: 3,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 89_300_000.0,
+                window_id: 3,
+            },
             candidate_id: Some("89.3-3".to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -578,9 +891,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateCreated,
             frequency_hz: 88_900_000.0,
-            window_id: 1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id: 1,
+            },
             candidate_id: Some("88.9-1".to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -588,9 +905,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateCreated,
             frequency_hz: 89_100_000.0,
-            window_id: 2,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 89_100_000.0,
+                window_id: 2,
+            },
             candidate_id: Some("89.1-2".to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -600,9 +921,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateCreated,
             frequency_hz: 88_700_000.0,
-            window_id: 1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_700_000.0,
+                window_id: 1,
+            },
             candidate_id: Some("88.7-1".to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -616,9 +941,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::AudioAnalysisStarted,
             frequency_hz: 88_900_000.0,
-            window_id: 1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id: 1,
+            },
             candidate_id: Some("88.9-1".to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -645,9 +974,13 @@ mod tests {
             model.update(ProgressEvent {
                 event_type: ProgressEventType::CandidateCreated,
                 frequency_hz: *freq,
-                window_id,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
                 candidate_id: Some(id.to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             });
         }
@@ -656,9 +989,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateRejected,
             frequency_hz: candidates[0].1,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: candidates[0].1,
+                window_id,
+            },
             candidate_id: Some(candidates[0].0.to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -666,27 +1003,39 @@ mod tests {
             model.update(ProgressEvent {
                 event_type: ProgressEventType::SignalGenerated,
                 frequency_hz: *freq,
-                window_id,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
                 candidate_id: Some(id.to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             });
 
             model.update(ProgressEvent {
                 event_type: ProgressEventType::AudioPlaybackStarted,
                 frequency_hz: *freq,
-                window_id,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
                 candidate_id: Some(id.to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             });
 
             model.update(ProgressEvent {
                 event_type: ProgressEventType::AudioPlaybackCompleted,
                 frequency_hz: *freq,
-                window_id,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
                 candidate_id: Some(id.to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             });
         }
@@ -695,9 +1044,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateCreated,
             frequency_hz: 89_100_000.0,
-            window_id: 2,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 89_100_000.0,
+                window_id: 2,
+            },
             candidate_id: Some("89.1-2".to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -731,18 +1084,26 @@ mod tests {
             model.update(ProgressEvent {
                 event_type: ProgressEventType::CandidateCreated,
                 frequency_hz: *freq,
-                window_id,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
                 candidate_id: Some(id.to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             });
 
             model.update(ProgressEvent {
                 event_type: ProgressEventType::CandidateRejected,
                 frequency_hz: *freq,
-                window_id,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
                 candidate_id: Some(id.to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             });
         }
@@ -756,9 +1117,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateCreated,
             frequency_hz: 89_100_000.0,
-            window_id: 2,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 89_100_000.0,
+                window_id: 2,
+            },
             candidate_id: Some("89.1-2".to_string()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -787,9 +1152,13 @@ mod tests {
             model.update(ProgressEvent {
                 event_type: ProgressEventType::CandidateCreated,
                 frequency_hz: *freq,
-                window_id,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
                 candidate_id: Some(id.to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             });
         }
@@ -830,9 +1199,13 @@ mod tests {
             model.update(ProgressEvent {
                 event_type: ProgressEventType::CandidateCreated,
                 frequency_hz: *freq,
-                window_id,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
                 candidate_id: Some(id.to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             });
         }
@@ -847,9 +1220,13 @@ mod tests {
             model.update(ProgressEvent {
                 event_type: ProgressEventType::CandidateRejected,
                 frequency_hz: *freq,
-                window_id,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
                 candidate_id: Some(id.to_string()),
                 audio_quality: None,
+                signal_strength: None,
                 timestamp: Instant::now(),
             });
         }
@@ -884,18 +1261,26 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateCreated,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
         model.update(ProgressEvent {
             event_type: ProgressEventType::AudioAnalysisStarted,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -903,9 +1288,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::SignalGenerated,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -918,9 +1307,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::AudioAnalysisCompleted,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -954,9 +1347,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateCreated,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -967,9 +1364,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::AudioAnalysisStarted,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -980,9 +1381,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::SignalGenerated,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -993,9 +1398,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::AudioPlaybackStarted,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -1006,9 +1415,13 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::AudioPlaybackCompleted,
             frequency_hz: frequency,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
             candidate_id: Some(candidate_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
@@ -1021,23 +1434,253 @@ mod tests {
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateCreated,
             frequency_hz: 89_100_000.0,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 89_100_000.0,
+                window_id,
+            },
             candidate_id: Some(rejected_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateRejected,
             frequency_hz: 89_100_000.0,
-            window_id,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 89_100_000.0,
+                window_id,
+            },
             candidate_id: Some(rejected_id.clone()),
             audio_quality: None,
+            signal_strength: None,
             timestamp: Instant::now(),
         });
 
         let window = model.windows.get(&window_id).unwrap();
         let rejected_candidate = &window.candidates[1];
         assert_eq!(rejected_candidate.completion, 1.0); // NOISE = 100%
+    }
+
+    #[test]
+    fn test_playing_candidates_completed_when_entering_selection_mode() {
+        let mut model = Model::new();
+
+        let window_id = 1;
+        let freq = 88_900_000.0;
+        let candidate_id = "88.9-1".to_string();
+
+        // Create candidate and advance to Playing state
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::CandidateCreated,
+            frequency_hz: freq,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+        });
+
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::SignalGenerated,
+            frequency_hz: freq,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: Some(crate::audio_quality::AudioQuality::Good),
+            signal_strength: Some(50.0),
+            timestamp: Instant::now(),
+        });
+
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::AudioPlaybackStarted,
+            frequency_hz: freq,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+        });
+
+        // Set current window to match the candidate's window
+        model.current_window = window_id;
+
+        // Verify candidate is Playing
+        let window = model.windows.get(&window_id).unwrap();
+        let candidate = &window.candidates[0];
+        assert_eq!(candidate.status, CandidateStatus::Playing);
+
+        // Enter selection mode (simulates pressing Up to browse)
+        model.enter_selection_mode();
+
+        // Verify candidate is now Completed
+        let window = model.windows.get(&window_id).unwrap();
+        let candidate = &window.candidates[0];
+        assert_eq!(candidate.status, CandidateStatus::Completed);
+        assert_eq!(candidate.completion, 1.0);
+    }
+
+    #[test]
+    fn test_playing_candidates_completed_when_changing_windows() {
+        let mut model = Model::new();
+
+        // Create two windows with candidates
+        let window1_id = 1;
+        let window2_id = 2;
+        let freq1 = 88_900_000.0;
+        let freq2 = 89_100_000.0;
+        let candidate1_id = "88.9-1".to_string();
+        let candidate2_id = "89.1-2".to_string();
+
+        // Window 1 candidate - create and advance to Playing state
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::CandidateCreated,
+            frequency_hz: freq1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq1,
+                window_id: window1_id,
+            },
+            candidate_id: Some(candidate1_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+        });
+
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::SignalGenerated,
+            frequency_hz: freq1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq1,
+                window_id: window1_id,
+            },
+            candidate_id: Some(candidate1_id.clone()),
+            audio_quality: Some(crate::audio_quality::AudioQuality::Good),
+            signal_strength: Some(50.0),
+            timestamp: Instant::now(),
+        });
+
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::AudioPlaybackStarted,
+            frequency_hz: freq1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq1,
+                window_id: window1_id,
+            },
+            candidate_id: Some(candidate1_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+        });
+
+        // Verify candidate is Playing
+        let window = model.windows.get(&window1_id).unwrap();
+        let candidate = &window.candidates[0];
+        assert_eq!(candidate.status, CandidateStatus::Playing);
+
+        // Window 2 candidate - create and advance to Signal state
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::CandidateCreated,
+            frequency_hz: freq2,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq2,
+                window_id: window2_id,
+            },
+            candidate_id: Some(candidate2_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+        });
+
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::SignalGenerated,
+            frequency_hz: freq2,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq2,
+                window_id: window2_id,
+            },
+            candidate_id: Some(candidate2_id.clone()),
+            audio_quality: Some(crate::audio_quality::AudioQuality::Moderate),
+            signal_strength: Some(40.0),
+            timestamp: Instant::now(),
+        });
+
+        // Set current window to window 1 (where the Playing candidate is)
+        model.current_window = window1_id;
+
+        // Enter selection mode - this will complete ALL Signal and Playing candidates
+        model.enter_selection_mode();
+
+        // Verify window 1 candidate is now Completed (was Playing)
+        let window = model.windows.get(&window1_id).unwrap();
+        let candidate = &window.candidates[0];
+        assert_eq!(candidate.status, CandidateStatus::Completed);
+        assert_eq!(candidate.completion, 1.0);
+
+        // Verify window 2 candidate is also Completed (was Signal)
+        let window = model.windows.get(&window2_id).unwrap();
+        let candidate = &window.candidates[0];
+        assert_eq!(candidate.status, CandidateStatus::Completed);
+        assert_eq!(candidate.completion, 1.0);
+    }
+
+    #[test]
+    fn test_signal_candidates_completed_when_entering_selection_mode() {
+        let mut model = Model::new();
+
+        let window_id = 1;
+        let freq = 88_900_000.0;
+        let candidate_id = "88.9-1".to_string();
+
+        // Create candidate and advance to Signal state
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::CandidateCreated,
+            frequency_hz: freq,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+        });
+
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::SignalGenerated,
+            frequency_hz: freq,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: Some(crate::audio_quality::AudioQuality::Good),
+            signal_strength: Some(50.0),
+            timestamp: Instant::now(),
+        });
+
+        // Set current window to match the candidate's window
+        model.current_window = window_id;
+
+        // Verify candidate is Signal
+        let window = model.windows.get(&window_id).unwrap();
+        let candidate = &window.candidates[0];
+        assert_eq!(candidate.status, CandidateStatus::Signal);
+
+        // Enter selection mode (simulates pressing Up to browse)
+        model.enter_selection_mode();
+
+        // Verify candidate is now Completed
+        let window = model.windows.get(&window_id).unwrap();
+        let candidate = &window.candidates[0];
+        assert_eq!(candidate.status, CandidateStatus::Completed);
+        assert_eq!(candidate.completion, 1.0);
     }
 }

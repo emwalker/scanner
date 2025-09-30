@@ -93,6 +93,10 @@ impl ColorScheme for BasicDarkTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(255, 165, 0) // Orange
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0) // Bright yellow-orange for selection
+    }
 }
 
 impl SymbolSet for BasicDarkTheme {
@@ -147,6 +151,11 @@ impl SymbolSet for BasicDarkTheme {
     // Header border
     fn header_border(&self) -> char {
         '─'
+    }
+
+    // Selection indicator
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 
@@ -285,6 +294,10 @@ impl ColorScheme for BasicLightTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(194, 65, 12) // Dark orange
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 140, 0) // Bright orange for selection
+    }
 }
 
 impl SymbolSet for BasicLightTheme {
@@ -335,6 +348,10 @@ impl SymbolSet for BasicLightTheme {
 
     fn header_border(&self) -> char {
         '─'
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 

@@ -153,6 +153,10 @@ impl ColorScheme for TransportDarkTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(190, 160, 105) // Polished brass - section markers
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for TransportDarkTheme {
@@ -207,6 +211,10 @@ impl SymbolSet for TransportDarkTheme {
     // Header border - instrument panel divider
     fn header_border(&self) -> char {
         '─' // Clean mechanical separation
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 
@@ -345,6 +353,10 @@ impl ColorScheme for TransportLightTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(125, 100, 65) // Bronze section markers
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for TransportLightTheme {
@@ -395,6 +407,10 @@ impl SymbolSet for TransportLightTheme {
 
     fn header_border(&self) -> char {
         '─'
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 

@@ -93,6 +93,10 @@ impl ColorScheme for DuneDarkTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(180, 150, 120) // Muted sand header
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for DuneDarkTheme {
@@ -147,6 +151,10 @@ impl SymbolSet for DuneDarkTheme {
     // Header border - clean line
     fn header_border(&self) -> char {
         '─' // Simple horizontal line
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 
@@ -285,6 +293,10 @@ impl ColorScheme for DuneLightTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(140, 110, 80) // Dark sand
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for DuneLightTheme {
@@ -335,6 +347,10 @@ impl SymbolSet for DuneLightTheme {
 
     fn header_border(&self) -> char {
         '─'
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 

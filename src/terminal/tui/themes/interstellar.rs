@@ -93,6 +93,10 @@ impl ColorScheme for InterstellarDarkTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(255, 165, 0) // Warm amber
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for InterstellarDarkTheme {
@@ -147,6 +151,10 @@ impl SymbolSet for InterstellarDarkTheme {
     // Header border
     fn header_border(&self) -> char {
         '▄'
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 
@@ -285,6 +293,10 @@ impl ColorScheme for InterstellarLightTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(202, 138, 4) // Medium gold
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for InterstellarLightTheme {
@@ -335,6 +347,10 @@ impl SymbolSet for InterstellarLightTheme {
 
     fn header_border(&self) -> char {
         '▄'
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 

@@ -110,6 +110,10 @@ impl ColorScheme for GuildDarkTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(180, 150, 120) // Muted spice accent
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for GuildDarkTheme {
@@ -164,6 +168,10 @@ impl SymbolSet for GuildDarkTheme {
     // Header border - flowing energy line
     fn header_border(&self) -> char {
         '═' // Double line (energy barrier)
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 
@@ -308,6 +316,10 @@ impl ColorScheme for GuildLightTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(200, 100, 40) // Spice orange header
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for GuildLightTheme {
@@ -358,6 +370,10 @@ impl SymbolSet for GuildLightTheme {
 
     fn header_border(&self) -> char {
         '═'
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 

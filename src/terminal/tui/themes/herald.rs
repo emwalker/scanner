@@ -104,6 +104,10 @@ impl ColorScheme for HeraldDarkTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(195, 165, 120) // Window titles - formal gold
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for HeraldDarkTheme {
@@ -158,6 +162,10 @@ impl SymbolSet for HeraldDarkTheme {
     // Header border - ceremonial separator
     fn header_border(&self) -> char {
         '─' // Horizontal line - clean Imperial divide
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 
@@ -296,6 +304,10 @@ impl ColorScheme for HeraldLightTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(130, 100, 60) // Window headers
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for HeraldLightTheme {
@@ -346,6 +358,10 @@ impl SymbolSet for HeraldLightTheme {
 
     fn header_border(&self) -> char {
         '─'
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 

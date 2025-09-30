@@ -73,4 +73,3 @@ fn test_log_comparison_structure() {
 
     assert!(config.debug_pipeline);
 }
-

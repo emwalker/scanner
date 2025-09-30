@@ -90,6 +90,10 @@ impl ColorScheme for ArchiveDarkTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(155, 135, 110) // Section dividers
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for ArchiveDarkTheme {
@@ -139,6 +143,10 @@ impl SymbolSet for ArchiveDarkTheme {
 
     fn header_border(&self) -> char {
         '─' // Simple line document separator
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 
@@ -273,6 +281,10 @@ impl ColorScheme for ArchiveLightTheme {
     fn window_header(&self) -> Color {
         Color::Rgb(105, 85, 60) // Section headers
     }
+
+    fn selection_highlight(&self) -> Color {
+        Color::Rgb(255, 200, 0)
+    }
 }
 
 impl SymbolSet for ArchiveLightTheme {
@@ -322,6 +334,10 @@ impl SymbolSet for ArchiveLightTheme {
 
     fn header_border(&self) -> char {
         '─'
+    }
+
+    fn selection_indicator(&self) -> &'static str {
+        "→"
     }
 }
 

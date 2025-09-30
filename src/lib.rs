@@ -10,6 +10,7 @@ pub mod main_thread;
 pub mod mpsc;
 pub mod peaks;
 pub mod pipeline;
+pub mod scanner_state;
 pub mod sdr;
 #[cfg(feature = "soapysdr")]
 pub mod soapy;

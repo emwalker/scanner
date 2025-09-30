@@ -29,6 +29,7 @@ use themes::{Theme, ThemeName, UiVariant, create_theme};
 /// TUI-based progress display for multiple candidates using The Elm Architecture
 pub struct TuiProgressDisplay {
     receiver: mpsc::Receiver<ProgressEvent>,
+    command_sender: Option<mpsc::Sender<crate::terminal::ScannerCommand>>,
     model: Model,
     _last_update: Instant,
     shutdown_listener: triggered::Listener,
@@ -46,6 +47,7 @@ impl TuiProgressDisplay {
         let theme = create_theme(&current_theme);
         Self {
             receiver,
+            command_sender: None,
             model: Model::new(),
             _last_update: Instant::now(),
             shutdown_listener,
@@ -54,7 +56,7 @@ impl TuiProgressDisplay {
         }
     }
 
-    /// Create new TUI progress display with specified theme
+    /// Create new TUI progress display with specified theme and command channel
     pub fn new_with_theme(
         receiver: mpsc::Receiver<ProgressEvent>,
         shutdown_listener: triggered::Listener,
@@ -63,12 +65,22 @@ impl TuiProgressDisplay {
     ) -> Self {
         Self {
             receiver,
+            command_sender: None,
             model: Model::new(),
             _last_update: Instant::now(),
             shutdown_listener,
             theme,
             current_theme,
         }
+    }
+
+    /// Set the command sender for interactive control
+    pub fn with_command_sender(
+        mut self,
+        sender: mpsc::Sender<crate::terminal::ScannerCommand>,
+    ) -> Self {
+        self.command_sender = Some(sender);
+        self
     }
 
     /// Run the TUI display loop
@@ -116,6 +128,7 @@ impl TuiProgressDisplay {
         Ok(result?)
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn run_app<B: ratatui::backend::Backend>(
         &mut self,
         terminal: &mut Terminal<B>,
@@ -186,7 +199,80 @@ impl TuiProgressDisplay {
                         self.model.theme_selector_index = current_idx;
                         self.model.toggle_theme_selector();
                     }
+                    KeyCode::Up if !self.model.theme_selector_open => {
+                        if !self.model.selection_mode {
+                            // First Up key: enter selection mode and pause scan
+                            self.model.enter_selection_mode();
+                            if let Some(sender) = &self.command_sender {
+                                let _ = sender.send(crate::terminal::ScannerCommand::Pause);
+                            }
+                        } else {
+                            // If playback is active, stop it before navigating
+                            if self.model.playback_active {
+                                if let Some(sender) = &self.command_sender {
+                                    let _ =
+                                        sender.send(crate::terminal::ScannerCommand::StopListening);
+                                }
+                                self.model.playback_active = false;
+                                self.model.frequency_tune_sent = false;
+                            }
+                            // Navigate to previous candidate
+                            self.model.select_previous_candidate();
+                        }
+                    }
+                    KeyCode::Down
+                        if !self.model.theme_selector_open && self.model.selection_mode =>
+                    {
+                        // If playback is active, stop it before navigating
+                        if self.model.playback_active {
+                            if let Some(sender) = &self.command_sender {
+                                let _ = sender.send(crate::terminal::ScannerCommand::StopListening);
+                            }
+                            self.model.playback_active = false;
+                            self.model.frequency_tune_sent = false;
+                        }
+                        self.model.select_next_candidate();
+                    }
+                    KeyCode::Enter
+                        if !self.model.theme_selector_open
+                            && self.model.selection_mode
+                            && self.model.is_continue_scan_selected() =>
+                    {
+                        self.model.exit_selection_mode();
+                        if let Some(sender) = &self.command_sender {
+                            let _ = sender.send(crate::terminal::ScannerCommand::ResumeScan);
+                        }
+                    }
                     _ => {}
+                }
+            }
+
+            // Check debounce timer for frequency tuning
+            if self.model.selection_mode
+                && !self.model.frequency_tune_sent
+                && let Some(last_change) = self.model.last_selection_change
+                && last_change.elapsed() >= Duration::from_millis(300)
+            {
+                // Debounce period elapsed, send tune command
+                if let Some((
+                    window_id,
+                    center_freq,
+                    candidate_freq,
+                    signal_strength,
+                    audio_quality,
+                )) = self.model.get_selected_candidate_info()
+                    && let Some(sender) = &self.command_sender
+                {
+                    let _ = sender.send(crate::terminal::ScannerCommand::TuneToCandidate {
+                        window_id,
+                        center_frequency: center_freq,
+                        candidate_frequency: candidate_freq,
+                        signal_strength,
+                        audio_quality,
+                    });
+                    self.model.frequency_tune_sent = true;
+                    self.model.playback_active = true;
+                    needs_redraw = true;
                 }
             }
 
@@ -276,6 +362,11 @@ impl TuiProgressDisplay {
         let update_interval = Duration::from_millis(1000); // Update every second
 
         loop {
+            // Check for shutdown signal
+            if self.shutdown_listener.is_triggered() {
+                break;
+            }
+
             // Process progress events
             while let Ok(event) = self.receiver.try_recv() {
                 self.model.update(event);
@@ -320,6 +411,11 @@ impl TuiProgressDisplay {
         let mut last_candidate_count = 0;
 
         loop {
+            // Check for shutdown signal
+            if self.shutdown_listener.is_triggered() {
+                break;
+            }
+
             // Process progress events
             while let Ok(event) = self.receiver.try_recv() {
                 self.model.update(event);
