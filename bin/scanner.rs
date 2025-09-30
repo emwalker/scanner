@@ -176,7 +176,7 @@ struct ScanArgs {
     #[arg(long, default_value_t = 0.75)]
     window_overlap: f64,
 
-    /// TUI theme selection (basic-dark, basic-light, bladerunner-dark, bladerunner-light, interstellar-dark, interstellar-light, dune-dark, dune-light)
+    /// TUI theme selection (basic-dark, basic-light, bladerunner-dark, bladerunner-light, interstellar-dark, interstellar-light, dune-dark, dune-light, transport-dark, transport-light, archive-dark, archive-light, minimal-dark, minimal-light)
     #[arg(long, default_value = "basic-dark")]
     theme: String,
 }
@@ -416,8 +416,12 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
 
         // Spawn TUI in separate thread - TUI will write directly to TTY to bypass suppression
         let tui_handle = thread::spawn(move || {
-            let mut tui_display =
-                TuiProgressDisplay::new_with_theme(progress_receiver, tui_listener, theme);
+            let mut tui_display = TuiProgressDisplay::new_with_theme(
+                progress_receiver,
+                tui_listener,
+                theme,
+                theme_name,
+            );
             tui_display.run()
         });
 

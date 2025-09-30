@@ -20,8 +20,11 @@ pub mod themes;
 
 use layout::TuiLayout;
 use model::Model;
-use renderers::{console::ConsoleRenderer, header, instructions, progress, spectrum};
-use themes::Theme;
+use renderers::{
+    console::ConsoleRenderer, header, instructions, progress, progress_caladan, spectrum,
+    spectrum_caladan,
+};
+use themes::{Theme, ThemeName, UiVariant, create_theme};
 
 /// TUI-based progress display for multiple candidates using The Elm Architecture
 pub struct TuiProgressDisplay {
@@ -30,6 +33,7 @@ pub struct TuiProgressDisplay {
     _last_update: Instant,
     shutdown_listener: triggered::Listener,
     theme: Box<dyn Theme>,
+    current_theme: ThemeName,
 }
 
 impl TuiProgressDisplay {
@@ -38,9 +42,16 @@ impl TuiProgressDisplay {
         receiver: mpsc::Receiver<ProgressEvent>,
         shutdown_listener: triggered::Listener,
     ) -> Self {
-        use themes::{Theme, basic::BasicDarkTheme};
-        let theme = Box::new(BasicDarkTheme) as Box<dyn Theme>;
-        Self::new_with_theme(receiver, shutdown_listener, theme)
+        let current_theme = ThemeName::BasicDark;
+        let theme = create_theme(&current_theme);
+        Self {
+            receiver,
+            model: Model::new(),
+            _last_update: Instant::now(),
+            shutdown_listener,
+            theme,
+            current_theme,
+        }
     }
 
     /// Create new TUI progress display with specified theme
@@ -48,6 +59,7 @@ impl TuiProgressDisplay {
         receiver: mpsc::Receiver<ProgressEvent>,
         shutdown_listener: triggered::Listener,
         theme: Box<dyn Theme>,
+        current_theme: ThemeName,
     ) -> Self {
         Self {
             receiver,
@@ -55,6 +67,7 @@ impl TuiProgressDisplay {
             _last_update: Instant::now(),
             shutdown_listener,
             theme,
+            current_theme,
         }
     }
 
@@ -108,8 +121,12 @@ impl TuiProgressDisplay {
         terminal: &mut Terminal<B>,
     ) -> io::Result<()> {
         let mut iterations = 0;
+        let mut needs_redraw = true;
         loop {
-            terminal.draw(|f| self.ui(f))?;
+            if needs_redraw {
+                terminal.draw(|f| self.ui(f))?;
+                needs_redraw = false;
+            }
             iterations += 1;
 
             if self.model.should_quit || self.shutdown_listener.is_triggered() {
@@ -126,6 +143,7 @@ impl TuiProgressDisplay {
             if event::poll(Duration::from_millis(50))?
                 && let Ok(Event::Key(key)) = event::read()
             {
+                needs_redraw = true;
                 match key.code {
                     KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                         self.model.quit();
@@ -133,8 +151,40 @@ impl TuiProgressDisplay {
                     KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                         self.model.quit();
                     }
-                    KeyCode::Char('q') => {
+                    KeyCode::Char('q') if !self.model.theme_selector_open => {
                         self.model.quit();
+                    }
+                    _ if self.model.theme_selector_open => match key.code {
+                        KeyCode::Up => {
+                            let all_themes = themes::ThemeName::all();
+                            self.model.theme_selector_prev(all_themes.len());
+                            self.current_theme =
+                                all_themes[self.model.theme_selector_index].clone();
+                            self.theme = create_theme(&self.current_theme);
+                        }
+                        KeyCode::Down => {
+                            let all_themes = themes::ThemeName::all();
+                            self.model.theme_selector_next(all_themes.len());
+                            self.current_theme =
+                                all_themes[self.model.theme_selector_index].clone();
+                            self.theme = create_theme(&self.current_theme);
+                        }
+                        KeyCode::Enter => {
+                            self.model.close_theme_selector();
+                        }
+                        KeyCode::Esc | KeyCode::Char('q') => {
+                            self.model.close_theme_selector();
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Char('T') if !self.model.theme_selector_open => {
+                        let all_themes = themes::ThemeName::all();
+                        let current_idx = all_themes
+                            .iter()
+                            .position(|t| t == &self.current_theme)
+                            .unwrap_or(0);
+                        self.model.theme_selector_index = current_idx;
+                        self.model.toggle_theme_selector();
                     }
                     _ => {}
                 }
@@ -147,9 +197,10 @@ impl TuiProgressDisplay {
                 received_events = true;
             }
 
-            // If we received events, reset iteration counter
+            // If we received events, reset iteration counter and request redraw
             if received_events {
                 iterations = 0;
+                needs_redraw = true;
             }
         }
 
@@ -159,18 +210,34 @@ impl TuiProgressDisplay {
     fn ui(&self, f: &mut Frame) {
         let layout = TuiLayout::new(f.area());
         let theme = self.theme.as_ref();
+        let theme_name = self.current_theme.to_string();
+        let ui_variant = theme.ui_variant();
 
-        // Render header
         header::render_header(f, layout.header, &self.model, theme);
 
-        // Render spectrum visualization
-        spectrum::render_spectrum(f, layout.spectrum, &self.model, theme);
+        match ui_variant {
+            UiVariant::Caladan => {
+                spectrum_caladan::render_spectrum(f, layout.spectrum, &self.model, theme);
+                progress_caladan::render_progress(f, layout.progress, &self.model, theme);
+            }
+            UiVariant::Standard => {
+                spectrum::render_spectrum(f, layout.spectrum, &self.model, theme);
+                progress::render_progress(f, layout.progress, &self.model, theme);
+            }
+        }
 
-        // Render instructions
-        instructions::render_instructions(f, layout.instructions, theme);
-
-        // Render progress bars
-        progress::render_progress(f, layout.progress, &self.model, theme);
+        let all_themes: Vec<String> = themes::ThemeName::all()
+            .iter()
+            .map(|t| t.display_name().to_string())
+            .collect();
+        instructions::render_instructions(
+            f,
+            layout.instructions,
+            theme,
+            &theme_name,
+            &self.model,
+            &all_themes,
+        );
     }
 
     /// Check if we're running in an interactive terminal

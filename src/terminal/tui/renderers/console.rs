@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn test_console_fallback_formats_unchanged() {
-        let text_header = vec![
+        let text_header = [
             "┌─ Scanning FM stations ... ───────────────┐",
             "│ Running in text mode                     │",
             "│ Press CTRL-C to exit                     │",
@@ -251,7 +251,7 @@ mod tests {
             "└──────────────────────────────────────────┘"
         );
 
-        let simple_header = vec![
+        let simple_header = [
             "┌─ Scanning FM stations ... ───────────────┐",
             "│ TUI Mode (Simplified)                    │",
             "│ Press CTRL-C to exit                     │",

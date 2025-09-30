@@ -139,43 +139,6 @@ mod tests {
         );
     }
 
-    /// Test that window overlap captures signals at bin edges
-    #[test]
-    #[ignore = "Window overlap integration not yet implemented"]
-    fn test_window_overlap_captures_edge_signals() {
-        // Test baseline without overlap
-        let mut config = create_test_config();
-        config.window_overlap_percent = 0.0; // No overlap
-        let mut no_overlap_generator = create_bin_edge_signal_scenario();
-        let no_overlap_peaks =
-            crate::peaks::collect_peaks_from_source(&config, &mut no_overlap_generator)
-                .expect("Failed to collect non-overlap peaks");
-
-        // Test with 75% overlap
-        config.window_overlap_percent = 75.0;
-        let mut overlap_generator = create_bin_edge_signal_scenario();
-        let overlap_peaks =
-            crate::peaks::collect_peaks_from_source(&config, &mut overlap_generator)
-                .expect("Failed to collect overlap peaks");
-
-        // Count signals detected (bin edge signals are harder to detect without overlap)
-        let target_frequencies = [88_650_000.0, 88_750_000.0, 88_850_000.0]; // Signals at bin edges
-        let tolerance = 10_000.0; // 10 kHz tolerance
-
-        let no_overlap_detections =
-            count_target_detections(&no_overlap_peaks, &target_frequencies, tolerance);
-        let overlap_detections =
-            count_target_detections(&overlap_peaks, &target_frequencies, tolerance);
-
-        println!("No overlap detections: {}/3 signals", no_overlap_detections);
-        println!("75% overlap detections: {}/3 signals", overlap_detections);
-
-        assert!(
-            overlap_detections > no_overlap_detections,
-            "75% window overlap should capture more signals at bin edges"
-        );
-    }
-
     /// Test that spectral preprocessing maintains acceptable performance
     #[test]
     fn test_fft_processing_maintains_speed() {
@@ -281,22 +244,6 @@ mod tests {
         generator
     }
 
-    fn create_bin_edge_signal_scenario() -> PeakTestSignalGenerator {
-        let mut generator = PeakTestSignalGenerator::new(
-            2_000_000.0,  // sample_rate
-            89_000_000.0, // center_frequency
-            1_000_000,    // max_samples (0.5 seconds)
-            0.2,          // Moderate noise
-        );
-
-        // Signals positioned at FFT bin edges
-        generator.add_signal(TestSignal::new(88_650_000.0, 0.2, "EdgeSignal1"));
-        generator.add_signal(TestSignal::new(88_750_000.0, 0.2, "EdgeSignal2"));
-        generator.add_signal(TestSignal::new(88_850_000.0, 0.2, "EdgeSignal3"));
-
-        generator
-    }
-
     fn create_performance_test_scenario() -> PeakTestSignalGenerator {
         let mut generator = PeakTestSignalGenerator::new(
             2_000_000.0,  // sample_rate
@@ -385,18 +332,4 @@ mod tests {
             .count()
     }
 
-    fn count_target_detections(
-        peaks: &[crate::types::Peak],
-        target_frequencies: &[f64],
-        tolerance: f64,
-    ) -> usize {
-        target_frequencies
-            .iter()
-            .filter(|&&freq| {
-                peaks
-                    .iter()
-                    .any(|p| (p.frequency_hz - freq).abs() < tolerance)
-            })
-            .count()
-    }
 }

@@ -206,15 +206,6 @@ mod tests {
         );
     }
 
-    /// Test that multi-frame averaging improves SNR by accumulating signal energy
-    #[test]
-    #[ignore = "Multi-frame averaging needs more sophisticated test scenarios"]
-    fn test_multi_frame_averaging_improves_snr() {
-        // This test would need a more sophisticated signal generator that can
-        // produce consistent signals across multiple frames with different noise realizations
-        // TODO: Implement when we have better test infrastructure
-    }
-
     /// Test that coherent integration improves SNR over multiple scan periods
     #[test]
     fn test_coherent_integration_improves_snr() {

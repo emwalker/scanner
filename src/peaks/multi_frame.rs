@@ -390,7 +390,7 @@ mod tests {
         let _base_magnitude = 3.0;
 
         // Simulate 5 frames with noisy detections of the same weak signal
-        let magnitudes = vec![2.8, 3.2, 2.9, 3.3, 3.1]; // Varying around base_magnitude
+        let magnitudes = [2.8, 3.2, 2.9, 3.3, 3.1]; // Varying around base_magnitude
 
         let mut final_confirmed = vec![];
         for (i, &magnitude) in magnitudes.iter().enumerate() {

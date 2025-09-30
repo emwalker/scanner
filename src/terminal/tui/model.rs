@@ -89,6 +89,8 @@ pub struct Model {
     pub windows: BTreeMap<usize, WindowProgress>, // window_id -> WindowProgress (ordered by window_id)
     pub current_window: usize,
     pub should_quit: bool,
+    pub theme_selector_open: bool,
+    pub theme_selector_index: usize,
 }
 
 impl Default for Model {
@@ -103,6 +105,8 @@ impl Model {
             windows: BTreeMap::new(),
             current_window: 0,
             should_quit: false,
+            theme_selector_open: false,
+            theme_selector_index: 0,
         }
     }
 
@@ -245,6 +249,26 @@ impl Model {
     /// Request to quit the application
     pub fn quit(&mut self) {
         self.should_quit = true;
+    }
+
+    pub fn toggle_theme_selector(&mut self) {
+        self.theme_selector_open = !self.theme_selector_open;
+    }
+
+    pub fn close_theme_selector(&mut self) {
+        self.theme_selector_open = false;
+    }
+
+    pub fn theme_selector_next(&mut self, theme_count: usize) {
+        if self.theme_selector_open {
+            self.theme_selector_index = (self.theme_selector_index + 1) % theme_count;
+        }
+    }
+
+    pub fn theme_selector_prev(&mut self, theme_count: usize) {
+        if self.theme_selector_open {
+            self.theme_selector_index = (self.theme_selector_index + theme_count - 1) % theme_count;
+        }
     }
 }
 

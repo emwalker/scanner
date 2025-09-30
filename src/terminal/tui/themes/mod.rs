@@ -77,14 +77,24 @@ pub trait TextStyle {
     fn status_completed_text(&self) -> &'static str;
 }
 
+/// UI variant enum for themes that use different rendering approaches
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiVariant {
+    Standard,
+    Caladan,
+}
+
 /// Combined theme trait that provides all theming aspects
 pub trait Theme: ColorScheme + SymbolSet + TextStyle + Send + Sync {
     fn name(&self) -> &str;
     fn is_dark(&self) -> bool;
+    fn ui_variant(&self) -> UiVariant {
+        UiVariant::Standard
+    }
 }
 
 /// Theme name enumeration for CLI argument parsing
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThemeName {
     BasicDark,
     BasicLight,
@@ -94,6 +104,16 @@ pub enum ThemeName {
     InterstellarLight,
     DuneDark,
     DuneLight,
+    TransportDark,
+    TransportLight,
+    ArchiveDark,
+    ArchiveLight,
+    MinimalDark,
+    MinimalLight,
+    ImperialDark,
+    ImperialLight,
+    CaladanDark,
+    CaladanLight,
 }
 
 impl std::str::FromStr for ThemeName {
@@ -109,6 +129,16 @@ impl std::str::FromStr for ThemeName {
             "interstellar-light" => Ok(ThemeName::InterstellarLight),
             "dune-dark" => Ok(ThemeName::DuneDark),
             "dune-light" => Ok(ThemeName::DuneLight),
+            "transport-dark" => Ok(ThemeName::TransportDark),
+            "transport-light" => Ok(ThemeName::TransportLight),
+            "archive-dark" => Ok(ThemeName::ArchiveDark),
+            "archive-light" => Ok(ThemeName::ArchiveLight),
+            "minimal-dark" => Ok(ThemeName::MinimalDark),
+            "minimal-light" => Ok(ThemeName::MinimalLight),
+            "imperial-dark" => Ok(ThemeName::ImperialDark),
+            "imperial-light" => Ok(ThemeName::ImperialLight),
+            "caladan-dark" => Ok(ThemeName::CaladanDark),
+            "caladan-light" => Ok(ThemeName::CaladanLight),
             _ => Err(format!("Unknown theme: {}", s)),
         }
     }
@@ -125,6 +155,16 @@ impl std::fmt::Display for ThemeName {
             ThemeName::InterstellarLight => write!(f, "interstellar-light"),
             ThemeName::DuneDark => write!(f, "dune-dark"),
             ThemeName::DuneLight => write!(f, "dune-light"),
+            ThemeName::TransportDark => write!(f, "transport-dark"),
+            ThemeName::TransportLight => write!(f, "transport-light"),
+            ThemeName::ArchiveDark => write!(f, "archive-dark"),
+            ThemeName::ArchiveLight => write!(f, "archive-light"),
+            ThemeName::MinimalDark => write!(f, "minimal-dark"),
+            ThemeName::MinimalLight => write!(f, "minimal-light"),
+            ThemeName::ImperialDark => write!(f, "imperial-dark"),
+            ThemeName::ImperialLight => write!(f, "imperial-light"),
+            ThemeName::CaladanDark => write!(f, "caladan-dark"),
+            ThemeName::CaladanLight => write!(f, "caladan-light"),
         }
     }
 }
@@ -148,10 +188,103 @@ pub fn create_theme(theme_name: &ThemeName) -> Box<dyn Theme> {
         }
         ThemeName::DuneDark => Box::new(crate::terminal::tui::themes::dune::DuneDarkTheme),
         ThemeName::DuneLight => Box::new(crate::terminal::tui::themes::dune::DuneLightTheme),
+        ThemeName::TransportDark => {
+            Box::new(crate::terminal::tui::themes::transport::TransportDarkTheme)
+        }
+        ThemeName::TransportLight => {
+            Box::new(crate::terminal::tui::themes::transport::TransportLightTheme)
+        }
+        ThemeName::ArchiveDark => Box::new(crate::terminal::tui::themes::archive::ArchiveDarkTheme),
+        ThemeName::ArchiveLight => {
+            Box::new(crate::terminal::tui::themes::archive::ArchiveLightTheme)
+        }
+        ThemeName::MinimalDark => Box::new(crate::terminal::tui::themes::minimal::DarkTheme),
+        ThemeName::MinimalLight => Box::new(crate::terminal::tui::themes::minimal::LightTheme),
+        ThemeName::ImperialDark => Box::new(crate::terminal::tui::themes::imperial::DarkTheme),
+        ThemeName::ImperialLight => Box::new(crate::terminal::tui::themes::imperial::LightTheme),
+        ThemeName::CaladanDark => Box::new(crate::terminal::tui::themes::caladan::DarkTheme),
+        ThemeName::CaladanLight => Box::new(crate::terminal::tui::themes::caladan::LightTheme),
     }
 }
 
+pub mod archive;
 pub mod basic;
 pub mod bladerunner;
+pub mod caladan;
 pub mod dune;
+pub mod imperial;
 pub mod interstellar;
+pub mod minimal;
+pub mod transport;
+
+impl ThemeName {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            ThemeName::BasicDark => "Basic (Dark)",
+            ThemeName::BasicLight => "Basic (Light)",
+            ThemeName::BladerunnerDark => "Blade Runner (Dark)",
+            ThemeName::BladerunnerLight => "Blade Runner (Light)",
+            ThemeName::InterstellarDark => "Interstellar (Dark)",
+            ThemeName::InterstellarLight => "Interstellar (Light)",
+            ThemeName::DuneDark => "Dune (Dark)",
+            ThemeName::DuneLight => "Dune (Light)",
+            ThemeName::TransportDark => "Transport (Dark)",
+            ThemeName::TransportLight => "Transport (Light)",
+            ThemeName::ArchiveDark => "Archive (Dark)",
+            ThemeName::ArchiveLight => "Archive (Light)",
+            ThemeName::MinimalDark => "Minimal (Dark)",
+            ThemeName::MinimalLight => "Minimal (Light)",
+            ThemeName::ImperialDark => "Imperial (Dark)",
+            ThemeName::ImperialLight => "Imperial (Light)",
+            ThemeName::CaladanDark => "Caladan (Dark)",
+            ThemeName::CaladanLight => "Caladan (Light)",
+        }
+    }
+
+    pub fn all() -> Vec<Self> {
+        vec![
+            ThemeName::BasicDark,
+            ThemeName::BasicLight,
+            ThemeName::BladerunnerDark,
+            ThemeName::BladerunnerLight,
+            ThemeName::InterstellarDark,
+            ThemeName::InterstellarLight,
+            ThemeName::DuneDark,
+            ThemeName::DuneLight,
+            ThemeName::TransportDark,
+            ThemeName::TransportLight,
+            ThemeName::ArchiveDark,
+            ThemeName::ArchiveLight,
+            ThemeName::MinimalDark,
+            ThemeName::MinimalLight,
+            ThemeName::ImperialDark,
+            ThemeName::ImperialLight,
+            ThemeName::CaladanDark,
+            ThemeName::CaladanLight,
+        ]
+    }
+
+    /// Get the next theme in the cycle
+    pub fn next(&self) -> Self {
+        match self {
+            ThemeName::BasicDark => ThemeName::BasicLight,
+            ThemeName::BasicLight => ThemeName::BladerunnerDark,
+            ThemeName::BladerunnerDark => ThemeName::BladerunnerLight,
+            ThemeName::BladerunnerLight => ThemeName::InterstellarDark,
+            ThemeName::InterstellarDark => ThemeName::InterstellarLight,
+            ThemeName::InterstellarLight => ThemeName::DuneDark,
+            ThemeName::DuneDark => ThemeName::DuneLight,
+            ThemeName::DuneLight => ThemeName::TransportDark,
+            ThemeName::TransportDark => ThemeName::TransportLight,
+            ThemeName::TransportLight => ThemeName::ArchiveDark,
+            ThemeName::ArchiveDark => ThemeName::ArchiveLight,
+            ThemeName::ArchiveLight => ThemeName::MinimalDark,
+            ThemeName::MinimalDark => ThemeName::MinimalLight,
+            ThemeName::MinimalLight => ThemeName::ImperialDark,
+            ThemeName::ImperialDark => ThemeName::ImperialLight,
+            ThemeName::ImperialLight => ThemeName::CaladanDark,
+            ThemeName::CaladanDark => ThemeName::CaladanLight,
+            ThemeName::CaladanLight => ThemeName::BasicDark,
+        }
+    }
+}

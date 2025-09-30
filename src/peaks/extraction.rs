@@ -154,8 +154,6 @@ mod tests {
             assert!(peak.frequency_hz < 91_000_000.0);
             assert!(peak.magnitude > 0.0);
         }
-
-        println!("Basic extraction detected {} peaks", peaks.len());
     }
 
     fn create_test_signal_scenario() -> PeakTestSignalGenerator {
