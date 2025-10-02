@@ -202,7 +202,8 @@ impl crate::sdr::Segment for SoapySdrManager {
         debug!(
             receiver_len = receiver.len(),
             sender_receiver_count = self.audio_sender.receiver_count(),
-            "Created new audio subscriber"
+            broadcast_capacity = self.audio_sender.len(),
+            "SUBSCRIPTION CREATED: New audio subscriber from SDR segment"
         );
         receiver
     }
@@ -210,9 +211,20 @@ impl crate::sdr::Segment for SoapySdrManager {
 
 impl Drop for SoapySdrManager {
     fn drop(&mut self) {
+        debug!(
+            receiver_count = self.audio_sender.receiver_count(),
+            "SDR SEGMENT DROPPING: Stopping SDR graph and closing broadcast channel"
+        );
         if let Err(e) = self.stop() {
             debug!("Error stopping SDR Manager: {}", e);
         }
+        debug!("SDR segment dropped, broadcast channel closed");
+
+        // Give receivers time to detect the closed channel and clean up
+        // This prevents receiver accumulation when rapidly switching segments
+        // Longer delay needed when detection threads are still running
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        debug!("SDR segment cleanup complete");
     }
 }
 

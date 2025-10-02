@@ -81,6 +81,18 @@ impl BlockEOF for BroadcastSource {
     }
 }
 
+impl Drop for BroadcastSource {
+    fn drop(&mut self) {
+        static DROP_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let drop_count = DROP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        debug!(
+            drop_count = drop_count,
+            receiver_lagged = self.receiver.len(),
+            "BroadcastSource dropped - receiver being cleaned up"
+        );
+    }
+}
+
 impl Block for BroadcastSource {
     fn work(&mut self) -> Result<BlockRet<'_>> {
         static WORK_CALL_COUNT: std::sync::atomic::AtomicUsize =
@@ -98,15 +110,17 @@ impl Block for BroadcastSource {
 
         let mut n = 0;
 
-        // Fill buffer with try_recv only (non-blocking)
-        // This avoids hanging if no samples are available
-        // Process more samples per call for efficiency with parallel consumers
-        let batch_size = out.len().min(4096); // Process up to 4K samples per call for better throughput
+        // Aggressively drain the broadcast channel to prevent lag
+        // Process entire output buffer to maximize throughput
+        let batch_size = out.len();
         let mut samples_received = 0;
-        for _ in 0..batch_size {
+
+        // Hot loop - optimize for speed
+        let out_slice = out.slice();
+        while n < batch_size {
             match self.receiver.try_recv() {
                 Ok(sample) => {
-                    out.slice()[n] = sample;
+                    out_slice[n] = sample;
                     n += 1;
                     samples_received += 1;
                 }
@@ -114,7 +128,16 @@ impl Block for BroadcastSource {
                     break;
                 }
                 Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
-                    debug!("BroadcastSource: lagged, skipped {} samples", skipped);
+                    static LAG_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                    static TOTAL_SKIPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                    let lag_count = LAG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    let total_skipped = TOTAL_SKIPPED.fetch_add(skipped as u64, std::sync::atomic::Ordering::Relaxed) + skipped as u64;
+                    debug!(
+                        lagged_samples = skipped,
+                        lag_event_number = lag_count,
+                        total_samples_skipped = total_skipped,
+                        "BROADCAST LAG: Consumer falling behind sender"
+                    );
                     continue;
                 }
                 Err(broadcast::error::TryRecvError::Closed) => {
@@ -131,9 +154,8 @@ impl Block for BroadcastSource {
             }
             Ok(BlockRet::Again)
         } else {
-            // No samples available right now - sleep briefly to avoid busy wait
-            // Use shorter sleep for better audio responsiveness
-            std::thread::sleep(std::time::Duration::from_micros(10)); // Reduced to 10 microseconds for better audio latency
+            // No samples available - yield thread to avoid busy wait
+            std::thread::yield_now();
             Ok(BlockRet::Again)
         }
     }

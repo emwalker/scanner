@@ -232,7 +232,8 @@ impl Logger for DefaultLogger {
         if let Some(ref log_file_path) = self.log_file {
             let file = std::fs::OpenOptions::new()
                 .create(true)
-                .append(true)
+                .write(true)
+                .truncate(true)
                 .open(log_file_path)
                 .map_err(|e| {
                     crate::types::ScannerError::Custom(format!("Failed to open log file: {}", e))

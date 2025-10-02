@@ -314,11 +314,16 @@ impl Window {
     ) -> Result<cpal::Stream> {
         let err_fn = |err| debug!("Audio error: {}", err);
 
+        let underrun_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sample_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let underrun_counter_clone = underrun_counter.clone();
+        let sample_counter_clone = sample_counter.clone();
+
         let stream = device.build_output_stream(
             stream_config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                // More efficient batch processing - try to fill buffer in chunks
                 let mut filled = 0;
+                let mut underrun_occurred = false;
                 while filled < data.len() {
                     match audio_rx.try_recv() {
                         Ok(audio_sample) => {
@@ -326,7 +331,7 @@ impl Window {
                             filled += 1;
                         }
                         Err(_) => {
-                            // Fill remaining with silence to avoid underruns
+                            underrun_occurred = true;
                             for sample in &mut data[filled..] {
                                 *sample = 0.0;
                             }
@@ -334,10 +339,35 @@ impl Window {
                         }
                     }
                 }
+
+                let total_samples = sample_counter_clone.fetch_add(filled, std::sync::atomic::Ordering::Relaxed) + filled;
+
+                if underrun_occurred {
+                    let underrun_count = underrun_counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    debug!(
+                        underrun_count = underrun_count,
+                        total_samples = total_samples,
+                        filled_samples = filled,
+                        requested_samples = data.len(),
+                        missing_samples = data.len() - filled,
+                        "AUDIO UNDERRUN: Not enough samples from audio graph"
+                    );
+                }
             },
             err_fn,
             None,
         )?;
+
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let underruns = underrun_counter.load(std::sync::atomic::Ordering::Relaxed);
+            let samples = sample_counter.load(std::sync::atomic::Ordering::Relaxed);
+            debug!(
+                total_underruns = underruns,
+                total_samples_output = samples,
+                "Audio stream statistics after 5 seconds"
+            );
+        });
 
         Ok(stream)
     }
@@ -776,6 +806,9 @@ impl Window {
             } else {
                 debug!("Audio graph completed successfully");
             }
+            // Explicitly drop graph to ensure blocks (including BroadcastSource) are cleaned up
+            drop(audio_graph);
+            debug!("Audio graph dropped, resources released");
         });
 
         let check_interval = std::time::Duration::from_millis(50);
@@ -897,15 +930,16 @@ impl Window {
         let check_interval = Duration::from_millis(100);
 
         while !remaining_threads.is_empty() && start_time.elapsed() < timeout {
-            // Check pause signal - if paused, stop waiting immediately
+            // Check pause signal - if paused, continue waiting for threads to finish naturally
+            // We can't force-join them because they might be in the middle of rustradio graph execution
             if let Some(ref signal) = self.pause_signal
                 && signal.is_paused()
             {
                 debug!(
-                    "Pause signal detected, stopping wait for {} remaining threads",
+                    "Pause signal detected, continuing to wait for {} remaining threads to finish",
                     remaining_threads.len()
                 );
-                return completed;
+                // Continue the loop to keep checking/joining threads as they complete
             }
 
             let mut still_running = Vec::new();
@@ -939,12 +973,17 @@ impl Window {
             }
         }
 
+        // Join any remaining threads that timed out to ensure cleanup
         if !remaining_threads.is_empty() {
             debug!(
-                "{} threads timed out after {:?}",
+                "{} threads timed out after {:?}, joining them now",
                 remaining_threads.len(),
                 timeout
             );
+            for handle in remaining_threads.into_iter() {
+                let _ = handle.join();
+                completed += 1;
+            }
         }
 
         completed

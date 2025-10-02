@@ -40,26 +40,43 @@ impl rustradio::block::Block for MpscSink {
         let (input_buf, _) = self.src.read_buf()?;
         let samples = input_buf.slice();
 
-        // Send samples to MPSC channel with try_send for better performance
+        static BACKPRESSURE_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static TOTAL_SAMPLES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
         let mut consumed = 0;
+        let mut backpressure_occurred = false;
         for &sample in samples {
             match self.sender.try_send(sample) {
                 Ok(_) => consumed += 1,
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                    // Channel is full - stop sending to provide backpressure
+                    backpressure_occurred = true;
                     if consumed == 0 {
+                        let bp_count = BACKPRESSURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         debug!(
-                            "MPSC channel full for {}, backpressuring graph",
-                            self.channel_name
+                            backpressure_event = bp_count,
+                            channel_name = %self.channel_name,
+                            "MPSC BACKPRESSURE: Audio output not consuming fast enough"
                         );
                     }
                     break;
                 }
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    // Channel disconnected - stop processing
+                    debug!(
+                        channel_name = %self.channel_name,
+                        "MPSC channel disconnected"
+                    );
                     break;
                 }
             }
+        }
+
+        let total = TOTAL_SAMPLES.fetch_add(consumed as u64, std::sync::atomic::Ordering::Relaxed) + consumed as u64;
+        if backpressure_occurred && total % 100000 == 0 {
+            debug!(
+                total_samples_sent = total,
+                channel_name = %self.channel_name,
+                "MpscSink sample count"
+            );
         }
 
         input_buf.consume(consumed);
