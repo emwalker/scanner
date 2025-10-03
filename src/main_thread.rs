@@ -103,11 +103,12 @@ impl MainThread {
     fn handle_tune_command(
         &self,
         device: &soapy::Device,
+        audio_session: &mut crate::audio_session::AudioSession,
         center_frequency: f64,
         candidate_frequency: f64,
         signal_strength: Option<f64>,
         audio_quality: Option<crate::audio_quality::AudioQuality>,
-    ) -> Result<Option<crate::terminal::ScannerCommand>> {
+    ) -> Result<()> {
         debug!(
             candidate_mhz = candidate_frequency / 1e6,
             center_mhz = center_frequency / 1e6,
@@ -115,26 +116,30 @@ impl MainThread {
             audio_quality = ?audio_quality,
             "Tuning to candidate"
         );
+
         let segment = device.tune(&self.config, center_frequency)?;
 
-        let window = Window::new(crate::window::WindowConfig {
-            center_freq: center_frequency,
-            window_num: 0,
-            total_windows: 1,
-            device: device.clone(),
-            config: self.config.clone(),
-            progress_reporter: self.progress_reporter.clone(),
-            shutdown_listener: self.shutdown_listener.clone(),
-            pause_signal: Some(self.pause_signal.clone()),
-        });
-        window.play_frequency(
-            &*segment,
-            candidate_frequency,
-            signal_strength,
-            audio_quality,
-            None,
-            self.command_receiver.as_ref(),
-        )
+        let signal = crate::types::Signal {
+            frequency_hz: candidate_frequency,
+            signal_strength: signal_strength.unwrap_or(0.1) as f32,
+            bandwidth_hz: 200_000.0,
+            modulation: crate::types::ModulationType::WFM,
+            audio_sample_rate: self.config.audio_sample_rate,
+            detected_at: std::time::SystemTime::now(),
+            analysis_duration_ms: 0,
+            detection_center_freq: center_frequency,
+            audio_quality: audio_quality.unwrap_or(crate::audio_quality::AudioQuality::Unknown),
+        };
+
+        tracing::info!(
+            "playing {:.1} MHz [{}]",
+            signal.frequency_hz / 1e6,
+            signal.audio_quality.to_human_string()
+        );
+
+        audio_session.tune_to_station(&signal, segment, &self.config)?;
+
+        Ok(())
     }
 
     fn handle_command(
@@ -144,14 +149,17 @@ impl MainThread {
         window_num: usize,
         _total_windows: usize,
         _current_paused: bool,
+        audio_session: &mut Option<crate::audio_session::AudioSession>,
     ) -> Result<(bool, Option<crate::terminal::ScannerCommand>)> {
         match command {
             crate::terminal::ScannerCommand::Pause => {
-                debug!(window = window_num, "Scanner paused");
-                // Set pause signal for immediate thread cancellation
+                debug!(window = window_num, "Scanner paused, creating AudioSession");
                 self.pause_signal.pause();
-                // Update state machine
                 self.scanner_state.handle_pause(window_num);
+
+                *audio_session = Some(crate::audio_session::AudioSession::new(&self.config)?);
+                debug!("AudioSession created for browse mode");
+
                 Ok((true, None))
             }
             crate::terminal::ScannerCommand::ResumeScan => {
@@ -159,10 +167,12 @@ impl MainThread {
                     window = window_num,
                     "Scanner resuming - exiting selection mode and continuing scan"
                 );
-                // Clear pause signal
                 self.pause_signal.unpause();
-                // Update state machine to get next window
                 let _next_window = self.scanner_state.handle_resume();
+
+                *audio_session = None;
+                debug!("AudioSession dropped, returning to scan mode");
+
                 Ok((false, None))
             }
             crate::terminal::ScannerCommand::TuneToCandidate {
@@ -172,21 +182,31 @@ impl MainThread {
                 signal_strength,
                 audio_quality,
             } => {
-                // Update state machine to Listening mode
                 self.scanner_state.handle_tune(window_num);
-                let next_command = self.handle_tune_command(
-                    device,
-                    center_frequency,
-                    candidate_frequency,
-                    signal_strength,
-                    audio_quality,
-                )?;
-                Ok((true, next_command))
+
+                if let Some(session) = audio_session {
+                    self.handle_tune_command(
+                        device,
+                        session,
+                        center_frequency,
+                        candidate_frequency,
+                        signal_strength,
+                        audio_quality,
+                    )?;
+                    Ok((true, None))
+                } else {
+                    debug!("TuneToCandidate received but no AudioSession exists");
+                    Ok((true, None))
+                }
             }
             crate::terminal::ScannerCommand::StopListening => {
                 debug!("Stopped listening, returning to browsing mode");
-                // Return to Paused state
                 self.scanner_state.handle_stop_listening();
+
+                if let Some(session) = audio_session {
+                    session.stop_current_station();
+                }
+
                 Ok((true, None))
             }
         }
@@ -255,6 +275,7 @@ impl MainThread {
 
         let mut paused = false;
         let mut i = 0;
+        let mut audio_session: Option<crate::audio_session::AudioSession> = None;
 
         while i < windows_to_process {
             debug!(
@@ -274,12 +295,24 @@ impl MainThread {
 
             // Process commands
             for command in commands {
-                let (new_paused, next_cmd) =
-                    self.handle_command(command, device, i + 1, window_centers.len(), paused)?;
+                let (new_paused, next_cmd) = self.handle_command(
+                    command,
+                    device,
+                    i + 1,
+                    window_centers.len(),
+                    paused,
+                    &mut audio_session,
+                )?;
                 paused = new_paused;
                 if let Some(cmd) = next_cmd {
-                    let (final_paused, _) =
-                        self.handle_command(cmd, device, i + 1, window_centers.len(), paused)?;
+                    let (final_paused, _) = self.handle_command(
+                        cmd,
+                        device,
+                        i + 1,
+                        window_centers.len(),
+                        paused,
+                        &mut audio_session,
+                    )?;
                     paused = final_paused;
                 }
             }
@@ -305,12 +338,24 @@ impl MainThread {
             if let Some(receiver) = &self.command_receiver
                 && let Ok(command) = receiver.try_recv()
             {
-                let (new_paused, next_cmd) =
-                    self.handle_command(command, device, i + 1, window_centers.len(), paused)?;
+                let (new_paused, next_cmd) = self.handle_command(
+                    command,
+                    device,
+                    i + 1,
+                    window_centers.len(),
+                    paused,
+                    &mut audio_session,
+                )?;
                 paused = new_paused;
                 if let Some(cmd) = next_cmd {
-                    let (final_paused, _) =
-                        self.handle_command(cmd, device, i + 1, window_centers.len(), paused)?;
+                    let (final_paused, _) = self.handle_command(
+                        cmd,
+                        device,
+                        i + 1,
+                        window_centers.len(),
+                        paused,
+                        &mut audio_session,
+                    )?;
                     paused = final_paused;
                 }
                 if paused {
@@ -334,12 +379,24 @@ impl MainThread {
             if let Some(receiver) = &self.command_receiver
                 && let Ok(command) = receiver.try_recv()
             {
-                let (new_paused, next_cmd) =
-                    self.handle_command(command, device, i + 1, window_centers.len(), paused)?;
+                let (new_paused, next_cmd) = self.handle_command(
+                    command,
+                    device,
+                    i + 1,
+                    window_centers.len(),
+                    paused,
+                    &mut audio_session,
+                )?;
                 paused = new_paused;
                 if let Some(cmd) = next_cmd {
-                    let (final_paused, _) =
-                        self.handle_command(cmd, device, i + 1, window_centers.len(), paused)?;
+                    let (final_paused, _) = self.handle_command(
+                        cmd,
+                        device,
+                        i + 1,
+                        window_centers.len(),
+                        paused,
+                        &mut audio_session,
+                    )?;
                     paused = final_paused;
                 }
                 if paused {
@@ -359,12 +416,24 @@ impl MainThread {
 
             // Process commands
             for command in commands {
-                let (new_paused, next_cmd) =
-                    self.handle_command(command, device, i + 1, window_centers.len(), paused)?;
+                let (new_paused, next_cmd) = self.handle_command(
+                    command,
+                    device,
+                    i + 1,
+                    window_centers.len(),
+                    paused,
+                    &mut audio_session,
+                )?;
                 paused = new_paused;
                 if let Some(cmd) = next_cmd {
-                    let (final_paused, _) =
-                        self.handle_command(cmd, device, i + 1, window_centers.len(), paused)?;
+                    let (final_paused, _) = self.handle_command(
+                        cmd,
+                        device,
+                        i + 1,
+                        window_centers.len(),
+                        paused,
+                        &mut audio_session,
+                    )?;
                     paused = final_paused;
                 }
             }

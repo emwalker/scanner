@@ -324,9 +324,18 @@ impl Window {
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 let mut filled = 0;
                 let mut underrun_occurred = false;
+                let mut max_sample = f32::NEG_INFINITY;
+                let mut min_sample = f32::INFINITY;
+                let mut clipped_count = 0;
+
                 while filled < data.len() {
                     match audio_rx.try_recv() {
                         Ok(audio_sample) => {
+                            if !(-1.0..=1.0).contains(&audio_sample) {
+                                clipped_count += 1;
+                            }
+                            max_sample = max_sample.max(audio_sample);
+                            min_sample = min_sample.min(audio_sample);
                             data[filled] = audio_sample.clamp(-1.0, 1.0);
                             filled += 1;
                         }
@@ -340,10 +349,25 @@ impl Window {
                     }
                 }
 
-                let total_samples = sample_counter_clone.fetch_add(filled, std::sync::atomic::Ordering::Relaxed) + filled;
+                let total_samples = sample_counter_clone
+                    .fetch_add(filled, std::sync::atomic::Ordering::Relaxed)
+                    + filled;
+
+                if clipped_count > 0 {
+                    debug!(
+                        clipped_samples = clipped_count,
+                        total_samples = filled,
+                        max_sample = max_sample,
+                        min_sample = min_sample,
+                        clip_percentage = (clipped_count as f32 / filled as f32) * 100.0,
+                        "AUDIO CLIPPING DETECTED: Samples exceeded ±1.0 range"
+                    );
+                }
 
                 if underrun_occurred {
-                    let underrun_count = underrun_counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    let underrun_count = underrun_counter_clone
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1;
                     debug!(
                         underrun_count = underrun_count,
                         total_samples = total_samples,
@@ -449,8 +473,20 @@ impl Window {
         sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
         graph: &mut rustradio::graph::Graph,
     ) -> rustradio::stream::ReadStream<rustradio::Complex> {
-        debug!("setup_audio_graph_source: receiver_len={}", sdr_rx.len());
-        let (source_block, stream) = crate::broadcast::BroadcastSource::new(sdr_rx);
+        let receiver_len = sdr_rx.len();
+        debug!(receiver_len, "setup_audio_graph_source called");
+
+        let clean_rx = if receiver_len > 1000 {
+            debug!(
+                discarded_samples = receiver_len,
+                "Resubscribing to discard buffered IQ samples"
+            );
+            sdr_rx.resubscribe()
+        } else {
+            sdr_rx
+        };
+
+        let (source_block, stream) = crate::broadcast::BroadcastSource::new(clean_rx);
         graph.add(Box::new(source_block));
         stream
     }
@@ -477,12 +513,12 @@ impl Window {
         graph: &mut rustradio::graph::Graph,
         quad_rate: f32,
         signal: &crate::types::Signal,
-    ) -> rustradio::stream::ReadStream<rustradio::Float> {
+    ) -> (rustradio::stream::ReadStream<rustradio::Float>, f32) {
         use rustradio::{blockchain, blocks::QuadratureDemod};
 
         // Calculate adaptive FM gain based on signal characteristics
         let base_gain = (quad_rate / (2.0 * 75_000.0)) * 0.8;
-        let fm_gain = Self::calculate_adaptive_fm_gain(base_gain, signal);
+        let (fm_gain, quality_adjustment) = Self::calculate_adaptive_fm_gain(base_gain, signal);
 
         debug!(
             "FM demodulator gain: base={:.3}, adaptive={:.3}, signal_strength={:.6}",
@@ -494,10 +530,10 @@ impl Window {
         let (deemphasis_block, deemphasis_stream) =
             crate::fm::deemph::Deemphasis::new(prev, quad_rate, 75.0);
         graph.add(Box::new(deemphasis_block));
-        deemphasis_stream
+        (deemphasis_stream, quality_adjustment)
     }
 
-    fn calculate_adaptive_fm_gain(base_gain: f32, signal: &crate::types::Signal) -> f32 {
+    fn calculate_adaptive_fm_gain(base_gain: f32, signal: &crate::types::Signal) -> (f32, f32) {
         // Adaptive gain calculation based on signal strength (RMS value)
         let gain_adjustment = if signal.signal_strength < 0.001 {
             // Very weak signal - significant boost
@@ -537,7 +573,7 @@ impl Window {
             "Calculated adaptive FM gain"
         );
 
-        clamped_gain
+        (clamped_gain, quality_adjustment)
     }
 
     fn create_audio_decimation_chain(
@@ -553,7 +589,7 @@ impl Window {
         .map_err(Into::into)
     }
 
-    fn create_audio_fm_graph(
+    pub fn create_audio_fm_graph(
         signal: &crate::types::Signal,
         sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
         audio_tx: std::sync::mpsc::SyncSender<f32>,
@@ -578,8 +614,13 @@ impl Window {
         let decimated_samp_rate = config.samp_rate / decimation as f64;
         let quad_rate = decimated_samp_rate as f32;
 
-        let prev = Self::create_fm_demodulation_chain(prev, &mut graph, quad_rate, signal);
+        let (prev, quality_adjustment) =
+            Self::create_fm_demodulation_chain(prev, &mut graph, quad_rate, signal);
         let prev = Self::create_audio_decimation_chain(prev, &mut graph, quad_rate, config)?;
+
+        let (diagnostic_block, prev) =
+            crate::broadcast::AudioDiagnostic::new(prev, quality_adjustment);
+        graph.add(Box::new(diagnostic_block));
 
         graph.add(Box::new(crate::mpsc::MpscSink::new(
             prev,
@@ -682,176 +723,6 @@ impl Window {
         }
 
         Ok(())
-    }
-
-    /// Play audio for a specific frequency without peak detection
-    /// If duration is None, plays indefinitely until shutdown or interrupted by command
-    pub fn play_frequency(
-        &self,
-        segment: &dyn Segment,
-        target_frequency: f64,
-        signal_strength: Option<f64>,
-        audio_quality: Option<crate::audio_quality::AudioQuality>,
-        duration: Option<std::time::Duration>,
-        command_receiver: Option<&std::sync::mpsc::Receiver<crate::terminal::ScannerCommand>>,
-    ) -> Result<Option<crate::terminal::ScannerCommand>> {
-        debug!("play_frequency: subscribing to segment");
-        let sdr_rx = segment.audio_subscriber();
-        debug!(
-            "play_frequency: subscription created, receiver_len={}",
-            sdr_rx.len()
-        );
-        self.play_frequency_with_receiver(
-            sdr_rx,
-            target_frequency,
-            signal_strength,
-            audio_quality,
-            duration,
-            command_receiver,
-        )
-    }
-
-    pub fn play_frequency_with_receiver(
-        &self,
-        sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
-        target_frequency: f64,
-        signal_strength: Option<f64>,
-        audio_quality: Option<crate::audio_quality::AudioQuality>,
-        duration: Option<std::time::Duration>,
-        command_receiver: Option<&std::sync::mpsc::Receiver<crate::terminal::ScannerCommand>>,
-    ) -> Result<Option<crate::terminal::ScannerCommand>> {
-        let duration_desc = match duration {
-            Some(d) => format!("for {:?}", d),
-            None => "indefinitely".to_string(),
-        };
-        debug!(
-            freq_mhz = target_frequency / 1e6,
-            center_mhz = self.center_freq / 1e6,
-            signal_strength = ?signal_strength,
-            audio_quality = ?audio_quality,
-            duration = duration_desc,
-            "Playing selected frequency"
-        );
-
-        let signal = crate::types::Signal {
-            frequency_hz: target_frequency,
-            signal_strength: signal_strength.unwrap_or(0.1) as f32,
-            bandwidth_hz: 200_000.0,
-            modulation: crate::types::ModulationType::WFM,
-            audio_sample_rate: self.config.audio_sample_rate,
-            detected_at: std::time::SystemTime::now(),
-            analysis_duration_ms: 0,
-            detection_center_freq: self.center_freq,
-            audio_quality: audio_quality.unwrap_or(crate::audio_quality::AudioQuality::Unknown),
-        };
-
-        self.play_single_signal_with_receiver(&signal, sdr_rx, duration, command_receiver)
-    }
-
-    fn play_single_signal_with_receiver(
-        &self,
-        signal: &crate::types::Signal,
-        sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
-        duration: Option<std::time::Duration>,
-        command_receiver: Option<&std::sync::mpsc::Receiver<crate::terminal::ScannerCommand>>,
-    ) -> Result<Option<crate::terminal::ScannerCommand>> {
-        // Set up audio infrastructure FIRST, matching the detection flow in play_signals
-        // This ensures the audio system is ready to consume samples before we subscribe
-        let audio_buffer_samples = (self.config.audio_sample_rate as f32 * 0.25) as usize;
-        let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<f32>(audio_buffer_samples);
-
-        let (audio_device, supported_config) =
-            Window::setup_audio_device(self.config.audio_sample_rate)?;
-        let sample_format = supported_config.sample_format();
-        let mut stream_config: StreamConfig = supported_config.into();
-        stream_config.buffer_size = BufferSize::Fixed(self.config.audio_buffer_size);
-
-        let stream = match sample_format {
-            SampleFormat::F32 => {
-                Window::create_audio_stream(&audio_device, &stream_config, audio_rx)?
-            }
-            _ => {
-                return Err(crate::types::ScannerError::Custom(
-                    "Unsupported audio format".to_string(),
-                ));
-            }
-        };
-
-        stream.play()?;
-
-        let msg = match duration {
-            Some(d) => format!("playing {:.1} MHz for {:?}", signal.frequency_hz / 1e6, d),
-            None => format!(
-                "playing {:.1} MHz (press CTRL-C to stop)",
-                signal.frequency_hz / 1e6
-            ),
-        };
-        tracing::info!("{}", msg);
-
-        // Create audio graph with the receiver that was subscribed earlier
-        // This minimizes the time between subscription and consumption
-        let mut audio_graph = Window::create_audio_fm_graph(
-            signal,
-            sdr_rx,
-            audio_tx.clone(),
-            &self.config,
-            signal.detection_center_freq,
-        )?;
-
-        let cancel_token = audio_graph.cancel_token();
-        let graph_handle = std::thread::spawn(move || {
-            debug!("Audio graph thread started, running graph...");
-            if let Err(e) = audio_graph.run() {
-                debug!(error = ?e, "Audio graph error");
-            } else {
-                debug!("Audio graph completed successfully");
-            }
-            // Explicitly drop graph to ensure blocks (including BroadcastSource) are cleaned up
-            drop(audio_graph);
-            debug!("Audio graph dropped, resources released");
-        });
-
-        let check_interval = std::time::Duration::from_millis(50);
-        let mut interrupted_command = None;
-
-        match duration {
-            Some(max_duration) => {
-                let mut elapsed = std::time::Duration::ZERO;
-                while elapsed < max_duration {
-                    std::thread::sleep(check_interval);
-                    elapsed += check_interval;
-
-                    if self.shutdown_listener.is_triggered() {
-                        break;
-                    }
-
-                    if let Some(receiver) = command_receiver
-                        && let Ok(cmd) = receiver.try_recv()
-                    {
-                        interrupted_command = Some(cmd);
-                        break;
-                    }
-                }
-            }
-            None => loop {
-                std::thread::sleep(check_interval);
-
-                if self.shutdown_listener.is_triggered() {
-                    break;
-                }
-
-                if let Some(receiver) = command_receiver
-                    && let Ok(cmd) = receiver.try_recv()
-                {
-                    interrupted_command = Some(cmd);
-                    break;
-                }
-            },
-        }
-
-        cancel_token.cancel();
-        let _ = graph_handle.join();
-        Ok(interrupted_command)
     }
 
     pub fn process(&self, segment: &dyn Segment) -> Result<()> {

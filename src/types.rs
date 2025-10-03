@@ -23,6 +23,8 @@ pub enum ScannerError {
     #[error(transparent)]
     AudioPlay(#[from] cpal::PlayStreamError),
     #[error(transparent)]
+    AudioPause(#[from] cpal::PauseStreamError),
+    #[error(transparent)]
     Bincode(#[from] bincode::Error),
     #[error("Error: {0}")]
     Custom(String),

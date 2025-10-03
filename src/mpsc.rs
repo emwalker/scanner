@@ -40,7 +40,8 @@ impl rustradio::block::Block for MpscSink {
         let (input_buf, _) = self.src.read_buf()?;
         let samples = input_buf.slice();
 
-        static BACKPRESSURE_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static BACKPRESSURE_COUNTER: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
         static TOTAL_SAMPLES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
         let mut consumed = 0;
@@ -51,7 +52,9 @@ impl rustradio::block::Block for MpscSink {
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
                     backpressure_occurred = true;
                     if consumed == 0 {
-                        let bp_count = BACKPRESSURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        let bp_count = BACKPRESSURE_COUNTER
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            + 1;
                         debug!(
                             backpressure_event = bp_count,
                             channel_name = %self.channel_name,
@@ -70,8 +73,9 @@ impl rustradio::block::Block for MpscSink {
             }
         }
 
-        let total = TOTAL_SAMPLES.fetch_add(consumed as u64, std::sync::atomic::Ordering::Relaxed) + consumed as u64;
-        if backpressure_occurred && total % 100000 == 0 {
+        let total = TOTAL_SAMPLES.fetch_add(consumed as u64, std::sync::atomic::Ordering::Relaxed)
+            + consumed as u64;
+        if backpressure_occurred && total.is_multiple_of(100000) {
             debug!(
                 total_samples_sent = total,
                 channel_name = %self.channel_name,
