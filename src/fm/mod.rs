@@ -3,9 +3,9 @@ use crate::{
     fm::squelch::SquelchBlock,
     types::{self, Peak, Result, ScanningConfig},
 };
+use rustradio::blockchain;
 use rustradio::blocks::QuadratureDemod;
 use rustradio::graph::{Graph, GraphRunner};
-use rustradio::{Complex, blockchain};
 use std::{
     collections::HashSet,
     sync::{LazyLock, Mutex},
@@ -46,7 +46,7 @@ pub struct Candidate {
 impl Candidate {
     pub fn analyze(
         &self,
-        sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+        sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
         signal_tx: std::sync::mpsc::SyncSender<crate::types::Signal>,
         context: &crate::pipeline::AnalysisContext,
     ) -> Result<()> {
@@ -60,7 +60,7 @@ impl Candidate {
 #[allow(clippy::type_complexity)]
 pub fn collect_peaks(
     config: &ScanningConfig,
-    sdr_rx: tokio::sync::broadcast::Receiver<Complex>,
+    sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
     center_freq: f64,
 ) -> Result<Vec<Peak>> {
     debug!(
@@ -321,7 +321,7 @@ pub fn find_candidates(
 // Create rustradio detection graph for signal analysis with frequency translating filter
 #[allow(clippy::too_many_arguments)]
 pub fn create_detection_graph(
-    source_receiver: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+    source_receiver: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
     samp_rate: f64,
     _channel_name: String,
     config: &ScanningConfig,

@@ -683,7 +683,7 @@ pub fn assert_classifies_audio(
 /// Adapter to make SDR broadcast receiver compatible with SampleSource trait
 /// This allows the unified peak detection code to work with both testing sources and real SDR streams
 pub struct SdrStreamSource {
-    sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+    sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
     sample_rate: f64,
     center_frequency: f64,
     peak_scan_duration: f64,
@@ -692,7 +692,7 @@ pub struct SdrStreamSource {
 
 impl SdrStreamSource {
     pub fn new(
-        sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+        sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
         sample_rate: f64,
         center_frequency: f64,
         peak_scan_duration: f64,
@@ -713,27 +713,26 @@ impl SampleSource for SdrStreamSource {
         use std::time::Duration;
 
         let mut samples_read = 0;
-        for slot in buffer.iter_mut() {
+        while samples_read < buffer.len() {
             match self.sdr_rx.try_recv() {
-                Ok(sample) => {
-                    *slot = sample;
-                    samples_read += 1;
+                Ok(packet) => {
+                    let samples = packet.as_slice();
+                    let to_copy = samples.len().min(buffer.len() - samples_read);
+                    buffer[samples_read..samples_read + to_copy]
+                        .copy_from_slice(&samples[..to_copy]);
+                    samples_read += to_copy;
                 }
                 Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
-                    // If we've read some samples, return what we have
                     if samples_read > 0 {
                         break;
                     }
-                    // Otherwise wait a bit and try again
                     thread::sleep(Duration::from_micros(self.timeout_us));
                     continue;
                 }
                 Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
-                    // Continue trying - lagged messages are not fatal
                     continue;
                 }
                 Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
-                    // Channel closed - return what we have
                     break;
                 }
             }

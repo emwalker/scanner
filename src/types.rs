@@ -139,7 +139,7 @@ impl Candidate {
 
     pub fn analyze(
         &self,
-        sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+        sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
         signal_tx: std::sync::mpsc::SyncSender<Signal>,
         context: &crate::pipeline::AnalysisContext,
     ) -> Result<()> {
@@ -238,6 +238,10 @@ pub struct ScanningConfig {
     // AGC and window configuration
     pub agc_settling_time: f64,
     pub window_overlap: f64,
+
+    // Sample batching configuration
+    pub packet_size: usize,
+
     // Squelch configuration
     pub disable_squelch: bool,
     pub squelch_threshold: AudioQuality,
@@ -315,6 +319,10 @@ impl Default for ScanningConfig {
             // AGC and window defaults
             agc_settling_time: 0.45,
             window_overlap: 0.75,
+
+            // Sample batching defaults
+            packet_size: 8192,
+
             // Squelch defaults
             disable_squelch: false,
             squelch_threshold: AudioQuality::Moderate,

@@ -1,17 +1,66 @@
 use rustradio::block::{Block, BlockEOF, BlockName, BlockRet};
 use rustradio::stream::{ReadStream, WriteStream};
 use rustradio::{Complex, Float, Result};
+use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::debug;
 
+/// A batch of samples transmitted as a single unit through broadcast channels.
+/// Wraps samples in Arc to enable cheap cloning across multiple receivers.
+#[derive(Clone, Debug)]
+pub struct SamplePacket {
+    samples: Arc<Vec<Complex>>,
+}
+
+impl SamplePacket {
+    pub fn new(samples: Vec<Complex>) -> Self {
+        Self {
+            samples: Arc::new(samples),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    pub fn as_slice(&self) -> &[Complex] {
+        &self.samples
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Complex> {
+        self.samples.iter()
+    }
+}
+
+impl AsRef<[Complex]> for SamplePacket {
+    fn as_ref(&self) -> &[Complex] {
+        &self.samples
+    }
+}
+
 pub struct BroadcastSink {
     input: ReadStream<Complex>,
-    sender: broadcast::Sender<Complex>,
+    sender: broadcast::Sender<SamplePacket>,
+    packet_size: usize,
+    buffer: Vec<Complex>,
 }
 
 impl BroadcastSink {
-    pub fn new(input: ReadStream<Complex>, sender: broadcast::Sender<Complex>) -> Self {
-        Self { input, sender }
+    pub fn new(
+        input: ReadStream<Complex>,
+        sender: broadcast::Sender<SamplePacket>,
+        packet_size: usize,
+    ) -> Self {
+        Self {
+            input,
+            sender,
+            packet_size,
+            buffer: Vec::with_capacity(packet_size),
+        }
     }
 }
 
@@ -32,40 +81,66 @@ impl Block for BroadcastSink {
         let (input_buf, _metadata) = self.input.read_buf()?;
         let samples = input_buf.slice();
         if samples.is_empty() {
-            return Ok(BlockRet::Again);
+            return Ok(BlockRet::WaitForStream(&self.input, 1));
         }
-        let mut sent = 0;
-        for sample in samples {
-            match self.sender.send(*sample) {
-                Ok(_) => sent += 1,
-                Err(_) => {
-                    // No receivers or channel full - consume all samples to avoid blocking
-                    sent = samples.len();
-                    debug!("broadcast channel issue (no receivers or full), consuming all samples");
-                    // Sleep to avoid spinning when no receivers are available
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    break;
+
+        let mut consumed = 0;
+        let mut packets_sent = 0;
+
+        for &sample in samples {
+            self.buffer.push(sample);
+            consumed += 1;
+
+            if self.buffer.len() >= self.packet_size {
+                let packet = SamplePacket::new(std::mem::replace(
+                    &mut self.buffer,
+                    Vec::with_capacity(self.packet_size),
+                ));
+
+                match self.sender.send(packet) {
+                    Ok(_) => packets_sent += 1,
+                    Err(_) => {
+                        debug!(
+                            "broadcast channel issue (no receivers or full), consuming remaining samples"
+                        );
+                        consumed = samples.len();
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        break;
+                    }
                 }
             }
         }
 
-        if sent > 0 && sent % 1000 == 0 {
-            debug!("BroadcastSink: sent {} samples", sent);
+        if packets_sent > 0 && packets_sent % 100 == 0 {
+            debug!(
+                packets_sent = packets_sent,
+                samples_sent = packets_sent * self.packet_size,
+                "BroadcastSink: sent packets"
+            );
         }
-        input_buf.consume(sent);
+
+        input_buf.consume(consumed);
         Ok(BlockRet::Again)
     }
 }
 
 pub struct BroadcastSource {
     output: WriteStream<Complex>,
-    receiver: broadcast::Receiver<Complex>,
+    receiver: broadcast::Receiver<SamplePacket>,
+    leftover: Option<(SamplePacket, usize)>,
 }
 
 impl BroadcastSource {
-    pub fn new(receiver: broadcast::Receiver<Complex>) -> (Self, ReadStream<Complex>) {
+    pub fn new(receiver: broadcast::Receiver<SamplePacket>) -> (Self, ReadStream<Complex>) {
         let (output, read_stream) = WriteStream::new();
-        (Self { output, receiver }, read_stream)
+        (
+            Self {
+                output,
+                receiver,
+                leftover: None,
+            },
+            read_stream,
+        )
     }
 }
 
@@ -107,8 +182,8 @@ impl Block for BroadcastSource {
             let initial_buffer_len = self.receiver.len();
             if initial_buffer_len > 0 {
                 debug!(
-                    initial_buffered_samples = initial_buffer_len,
-                    "BUFFER DIAGNOSTICS: BroadcastSource starting with buffered samples"
+                    initial_buffered_packets = initial_buffer_len,
+                    "BUFFER DIAGNOSTICS: BroadcastSource starting with buffered packets"
                 );
             }
             INITIAL_BUFFER_LOGGED.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -124,25 +199,40 @@ impl Block for BroadcastSource {
             return Ok(BlockRet::WaitForStream(&self.output, 1));
         }
 
-        let mut n = 0;
-
-        // Aggressively drain the broadcast channel to prevent lag
-        // Process entire output buffer to maximize throughput
-        let batch_size = out.len();
-        let mut samples_received = 0;
-
-        // Hot loop - optimize for speed
         let out_slice = out.slice();
-        while n < batch_size {
+        let mut written = 0;
+
+        // Write leftover from previous packet first
+        if let Some((packet, offset)) = &self.leftover {
+            let remaining = &packet.as_slice()[*offset..];
+            let to_write = remaining.len().min(out_slice.len());
+            out_slice[..to_write].copy_from_slice(&remaining[..to_write]);
+            written += to_write;
+
+            if to_write >= remaining.len() {
+                self.leftover = None;
+            } else {
+                self.leftover = Some((packet.clone(), offset + to_write));
+            }
+        }
+
+        // Receive and write packets
+        let mut packets_received = 0;
+        while written < out_slice.len() {
             match self.receiver.try_recv() {
-                Ok(sample) => {
-                    out_slice[n] = sample;
-                    n += 1;
-                    samples_received += 1;
+                Ok(packet) => {
+                    packets_received += 1;
+                    let samples = packet.as_slice();
+                    let to_write = samples.len().min(out_slice.len() - written);
+                    out_slice[written..written + to_write].copy_from_slice(&samples[..to_write]);
+                    written += to_write;
+
+                    if to_write < samples.len() {
+                        self.leftover = Some((packet, to_write));
+                        break;
+                    }
                 }
-                Err(broadcast::error::TryRecvError::Empty) => {
-                    break;
-                }
+                Err(broadcast::error::TryRecvError::Empty) => break,
                 Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
                     static LAG_COUNTER: std::sync::atomic::AtomicUsize =
                         std::sync::atomic::AtomicUsize::new(0);
@@ -154,9 +244,9 @@ impl Block for BroadcastSource {
                         .fetch_add(skipped, std::sync::atomic::Ordering::Relaxed)
                         + skipped;
                     debug!(
-                        lagged_samples = skipped,
+                        lagged_packets = skipped,
                         lag_event_number = lag_count,
-                        total_samples_skipped = total_skipped,
+                        total_packets_skipped = total_skipped,
                         "BROADCAST LAG: Consumer falling behind sender"
                     );
                     continue;
@@ -168,18 +258,22 @@ impl Block for BroadcastSource {
             }
         }
 
-        if n > 0 {
-            out.produce(n, &[]);
-            if samples_received > 0 && samples_received % 1000 == 0 {
-                debug!("BroadcastSource: received {} samples", samples_received);
+        if written > 0 {
+            out.produce(written, &[]);
+            if packets_received > 0 && packets_received % 100 == 0 {
+                debug!(
+                    packets_received = packets_received,
+                    samples_received = written,
+                    "BroadcastSource: received packets"
+                );
             }
 
             if count > 0 && count.is_multiple_of(5000) {
                 let remaining_buffer = self.receiver.len();
-                if remaining_buffer > 1000 {
+                if remaining_buffer > 100 {
                     debug!(
                         work_count = count,
-                        remaining_buffered = remaining_buffer,
+                        remaining_buffered_packets = remaining_buffer,
                         "BUFFER DIAGNOSTICS: Still draining buffer"
                     );
                 }
@@ -187,8 +281,7 @@ impl Block for BroadcastSource {
 
             Ok(BlockRet::Again)
         } else {
-            // No samples available - yield thread to avoid busy wait
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_micros(100));
             Ok(BlockRet::Again)
         }
     }

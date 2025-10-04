@@ -1,3 +1,4 @@
+use crate::broadcast::SamplePacket;
 use crate::soapy;
 use crate::types::{Result, ScanningConfig};
 use rustradio::Complex;
@@ -71,9 +72,10 @@ pub struct SoapySdrManager {
     samp_rate: f64,
     sdr_gain: f64,
     agc_settling_time: f64,
-    audio_sender: broadcast::Sender<Complex>,
+    audio_sender: broadcast::Sender<SamplePacket>,
     graph_handle: Option<thread::JoinHandle<()>>,
     cancel_token: Option<CancellationToken>,
+    packet_size: usize,
 
     // I/Q capture configuration
     capture_iq: Option<String>,
@@ -87,7 +89,8 @@ pub struct SoapySdrManager {
 impl SoapySdrManager {
     pub fn new(config: &ScanningConfig, center_freq: f64, device: Device) -> Result<Self> {
         let sdr_source = Arc::new(Mutex::new(SoapySdrSource::new(device.clone())?));
-        let (audio_sender, _) = broadcast::channel(524288); // 512K samples (~256ms at 2MHz)
+        let buffer_size_packets = 524288 / config.packet_size;
+        let (audio_sender, _) = broadcast::channel(buffer_size_packets);
 
         let mut manager = Self {
             sdr_source,
@@ -97,6 +100,7 @@ impl SoapySdrManager {
             audio_sender,
             graph_handle: None,
             cancel_token: None,
+            packet_size: config.packet_size,
 
             // I/Q capture configuration
             capture_iq: config.capture_iq.clone(),
@@ -159,8 +163,11 @@ impl SoapySdrManager {
             sdr_output_stream
         };
 
-        let broadcast_sink =
-            crate::broadcast::BroadcastSink::new(final_stream, self.audio_sender.clone());
+        let broadcast_sink = crate::broadcast::BroadcastSink::new(
+            final_stream,
+            self.audio_sender.clone(),
+            self.packet_size,
+        );
         graph.add(Box::new(broadcast_sink));
 
         self.cancel_token = Some(graph.cancel_token());
@@ -197,7 +204,7 @@ impl SoapySdrManager {
 }
 
 impl crate::sdr::Segment for SoapySdrManager {
-    fn audio_subscriber(&self) -> broadcast::Receiver<Complex> {
+    fn audio_subscriber(&self) -> broadcast::Receiver<SamplePacket> {
         let receiver = self.audio_sender.subscribe();
         debug!(
             receiver_len = receiver.len(),

@@ -28,7 +28,7 @@ pub struct SquelchMonitoringParams {
 /// Process a single peak through the complete pipeline to generate a signal
 pub fn process_peak_to_signal(
     frequency_hz: f64,
-    sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+    sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
     signal_tx: std::sync::mpsc::SyncSender<Signal>,
     context: &AnalysisContext,
 ) -> Result<()> {
@@ -91,7 +91,7 @@ pub fn process_peak_to_signal(
 fn refine_frequency(
     frequency_hz: f64,
     config: &ScanningConfig,
-    sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+    sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
 ) -> Result<f64> {
     let refined_frequency = if config.disable_frequency_tracking {
         tracing::debug!(
@@ -150,7 +150,7 @@ fn is_frequency_already_processed(refined_frequency: f64) -> Result<bool> {
 fn run_detection_analysis(
     original_frequency_hz: f64,
     refined_frequency: f64,
-    sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+    sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
     signal_tx: std::sync::mpsc::SyncSender<Signal>,
     candidate_id: &str,
     context: &AnalysisContext,
@@ -394,7 +394,7 @@ fn wait_for_threads_completion(
 fn run_frequency_tracking(
     frequency_hz: f64,
     config: &ScanningConfig,
-    mut sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+    mut sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
 ) -> Option<f64> {
     use crate::frequency_tracking::{
         TrackingConfig, TrackingMethod, TrackingState, create_tracker,
@@ -438,26 +438,28 @@ fn run_frequency_tracking(
     // Process samples until convergence, failure, or timeout
     loop {
         match sdr_rx.try_recv() {
-            Ok(sample) => {
-                match tracker.process_sample(sample) {
-                    TrackingState::Converged(freq) => {
-                        tracing::debug!(
-                            refined_freq_mhz = freq / 1e6,
-                            confidence = tracker.get_confidence(),
-                            "Frequency tracking converged"
-                        );
-                        return Some(freq);
-                    }
-                    TrackingState::Failed => {
-                        tracing::debug!("Frequency tracking failed to converge");
-                        return None;
-                    }
-                    TrackingState::Timeout => {
-                        tracing::debug!("Frequency tracking timed out");
-                        return None;
-                    }
-                    TrackingState::Converging => {
-                        // Continue processing
+            Ok(packet) => {
+                for &sample in packet.as_slice() {
+                    match tracker.process_sample(sample) {
+                        TrackingState::Converged(freq) => {
+                            tracing::debug!(
+                                refined_freq_mhz = freq / 1e6,
+                                confidence = tracker.get_confidence(),
+                                "Frequency tracking converged"
+                            );
+                            return Some(freq);
+                        }
+                        TrackingState::Failed => {
+                            tracing::debug!("Frequency tracking failed to converge");
+                            return None;
+                        }
+                        TrackingState::Timeout => {
+                            tracing::debug!("Frequency tracking timed out");
+                            return None;
+                        }
+                        TrackingState::Converging => {
+                            // Continue processing
+                        }
                     }
                 }
             }
@@ -497,26 +499,32 @@ mod tests {
     }
 
     /// Create a mock SDR broadcast channel with test data
-    fn create_mock_sdr_stream() -> broadcast::Receiver<rustradio::Complex> {
-        let (tx, rx) = broadcast::channel(1000);
+    fn create_mock_sdr_stream() -> broadcast::Receiver<crate::broadcast::SamplePacket> {
+        let (tx, rx) = broadcast::channel(100);
 
-        // Pre-fill the channel with test samples synchronously
-        for _ in 0..1000 {
-            let sample = rustradio::Complex::new(0.1, 0.1); // Weak signal
-            let _ = tx.send(sample); // Ignore errors if channel is full
+        // Pre-fill the channel with test packets
+        for _ in 0..100 {
+            let samples: Vec<_> = (0..1024)
+                .map(|_| rustradio::Complex::new(0.1, 0.1))
+                .collect();
+            let packet = crate::broadcast::SamplePacket::new(samples);
+            let _ = tx.send(packet);
         }
 
         rx
     }
 
     /// Create a mock SDR broadcast channel with strong signal
-    fn create_mock_strong_sdr_stream() -> broadcast::Receiver<rustradio::Complex> {
-        let (tx, rx) = broadcast::channel(1000);
+    fn create_mock_strong_sdr_stream() -> broadcast::Receiver<crate::broadcast::SamplePacket> {
+        let (tx, rx) = broadcast::channel(100);
 
-        // Pre-fill the channel with strong signal samples synchronously
-        for _ in 0..1000 {
-            let sample = rustradio::Complex::new(0.8, 0.8); // Strong signal
-            let _ = tx.send(sample); // Ignore errors if channel is full
+        // Pre-fill the channel with strong signal packets
+        for _ in 0..100 {
+            let samples: Vec<_> = (0..1024)
+                .map(|_| rustradio::Complex::new(0.8, 0.8))
+                .collect();
+            let packet = crate::broadcast::SamplePacket::new(samples);
+            let _ = tx.send(packet);
         }
 
         rx

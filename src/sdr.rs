@@ -2,15 +2,15 @@
 
 pub mod sample_source;
 
+use crate::broadcast::SamplePacket;
 use crate::types::{Result, ScanningConfig};
-use rustradio::Complex;
 use tokio::sync::broadcast;
 
 // Re-export commonly used items
 pub use sample_source::{FileSampleSource, MockSampleSource, SampleSource, SdrStreamSource};
 
 pub trait Segment {
-    fn audio_subscriber(&self) -> broadcast::Receiver<Complex>;
+    fn audio_subscriber(&self) -> broadcast::Receiver<SamplePacket>;
 }
 
 pub trait Device {

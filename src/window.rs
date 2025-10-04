@@ -398,7 +398,7 @@ impl Window {
 
     pub fn process_signal_for_audio(
         signal: &crate::types::Signal,
-        sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+        sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
         audio_tx: std::sync::mpsc::SyncSender<f32>,
         config: &ScanningConfig,
         shutdown_listener: &triggered::Listener,
@@ -470,7 +470,7 @@ impl Window {
     }
 
     fn setup_audio_graph_source(
-        sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+        sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
         graph: &mut rustradio::graph::Graph,
     ) -> rustradio::stream::ReadStream<rustradio::Complex> {
         let receiver_len = sdr_rx.len();
@@ -591,7 +591,7 @@ impl Window {
 
     pub fn create_audio_fm_graph(
         signal: &crate::types::Signal,
-        sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
+        sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
         audio_tx: std::sync::mpsc::SyncSender<f32>,
         config: &ScanningConfig,
         center_freq: f64,
