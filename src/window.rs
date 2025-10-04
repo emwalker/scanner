@@ -792,6 +792,12 @@ impl Window {
             // Candidate analysis now properly waits for detection graphs to complete
             let signals = self.process_candidates(candidates, segment)?;
 
+            // Check for shutdown after candidate processing
+            if self.shutdown_listener.is_triggered() {
+                debug!("Shutdown requested after candidate processing, skipping audio playback");
+                return Ok(());
+            }
+
             // No sleep needed - candidate analysis threads wait for detection completion
             self.play_signals(signals, segment)
         } else {
@@ -817,6 +823,15 @@ impl Window {
         let check_interval = Duration::from_millis(100);
 
         while !remaining_threads.is_empty() && start_time.elapsed() < timeout {
+            // Check shutdown signal - if shutdown requested, break early
+            if self.shutdown_listener.is_triggered() {
+                debug!(
+                    "Shutdown signal detected, stopping wait for {} remaining threads",
+                    remaining_threads.len()
+                );
+                break;
+            }
+
             // Check pause signal - if paused, continue waiting for threads to finish naturally
             // We can't force-join them because they might be in the middle of rustradio graph execution
             if let Some(ref signal) = self.pause_signal

@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
 [profile.dev]
 debug = true
 
@@ -22,6 +25,14 @@ path = "tests/band_scanning_test.rs"
 [[test]]
 name = "frequency_detection_test"
 path = "tests/frequency_detection_test.rs"
+
+[[test]]
+name = "shutdown_test"
+path = "tests/shutdown_test.rs"
+
+[[test]]
+name = "loom_shutdown_test"
+path = "tests/loom_shutdown_test.rs"
 
 [[bench]]
 name = "peak_detection_bench"
@@ -64,3 +75,5 @@ thread-priority = "1.2"
 rand = "0.8.5"
 tempfile = "3.8"
 criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.4"
+loom = "0.7"

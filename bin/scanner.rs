@@ -7,6 +7,7 @@ use scanner::soapy;
 use scanner::terminal::tui::themes::{ThemeName, create_theme};
 use scanner::types::{Band, Format, Logger, Result, ScanningConfig};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 const DEFAULT_DRIVER: &str = "driver=sdrplay";
@@ -396,16 +397,21 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
     let (shutdown_trigger, shutdown_listener) = triggered::trigger();
 
     // Setup signal handler using ctrlc - handles both TUI and headless modes
+    // Uses double Ctrl+C pattern: first triggers graceful shutdown, second forces exit
+    static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
     let signal_trigger = shutdown_trigger.clone();
+    #[allow(clippy::print_stderr)]
     ctrlc::set_handler(move || {
-        // Trigger graceful shutdown
-        signal_trigger.trigger();
-        // Give a brief moment for graceful shutdown
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        // Clean up SoapySDR state before exit to prevent mutex hangs on next run
-        soapy::cleanup_soapysdr_state();
-        // Force exit after cleanup
-        std::process::exit(0);
+        if SHUTDOWN_REQUESTED.swap(true, Ordering::SeqCst) {
+            eprintln!("\nForce quit - device may be left in inconsistent state");
+            eprintln!("Run 'sudo systemctl restart sdrplay' if next startup fails");
+            soapy::cleanup_soapysdr_state();
+            std::process::exit(1);
+        } else {
+            eprintln!("\nShutting down gracefully...");
+            eprintln!("Press Ctrl+C again to force quit");
+            signal_trigger.trigger();
+        }
     })
     .expect("Failed to set signal handler");
 
@@ -475,21 +481,19 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         // Wait for TUI to finish (CTRL-C or 'q' pressed)
         let _ = tui_handle.join();
 
-        // TUI finished, trigger shutdown for all threads
+        // TUI finished, trigger shutdown for main thread
         shutdown_trigger.trigger();
 
-        // Give main thread a brief moment to finish current window and shutdown gracefully
-        // Use timeout to avoid hanging if window processing takes too long
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        // Try to join with a timeout - if it doesn't finish quickly, that's ok
-        // The shutdown_trigger will eventually cause it to stop
-        let _result = std::thread::spawn(move || {
-            let _ = main_handle.join();
-        });
-
-        // Clean exit - TUI has closed, user experience is good
-        Ok(())
+        // Wait for main thread to complete cleanup
+        // This ensures SoapySdrManager::drop() completes before process exits
+        // CRITICAL: Without this wait, we return → main() returns → process exits
+        // → Drop gets cut off → device left in bad state
+        match main_handle.join() {
+            Ok(r) => r?,
+            Err(e) => {
+                return Err(scanner::types::ScannerError::ThreadJoin(e));
+            }
+        }
     } else {
         // Headless mode without TUI
         let console_writer = Arc::new(DefaultConsoleWriter);
@@ -512,15 +516,19 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         let main_handle = thread::spawn(move || main_thread.run(args.stations));
 
         // Wait for main thread to complete
-        let result = main_handle
-            .join()
-            .map_err(scanner::types::ScannerError::ThreadJoin)?;
+        let result = main_handle.join();
+        match result {
+            Ok(r) => {
+                shutdown_trigger.trigger();
+                r?
+            }
+            Err(e) => {
+                return Err(scanner::types::ScannerError::ThreadJoin(e));
+            }
+        }
+    };
 
-        // Trigger shutdown for signal handler
-        shutdown_trigger.trigger();
-
-        result
-    }
+    Ok(())
 }
 
 fn generate_versioned_filename(model_version: &str) -> String {

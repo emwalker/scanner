@@ -9,13 +9,11 @@ pub struct AudioSession {
     audio_tx: std::sync::mpsc::SyncSender<crate::mpsc::AudioPacket>,
     audio_packet_size: usize,
     _stream: cpal::Stream,
-    current_graph: Option<GraphHandle>,
+    current_graph: Option<(
+        rustradio::graph::CancellationToken,
+        std::thread::JoinHandle<()>,
+    )>,
     current_segment: Option<Box<dyn crate::sdr::Segment>>,
-}
-
-struct GraphHandle {
-    cancel_token: rustradio::graph::CancellationToken,
-    thread_handle: std::thread::JoinHandle<()>,
 }
 
 impl AudioSession {
@@ -93,27 +91,34 @@ impl AudioSession {
             debug!("AudioSession: Audio graph dropped");
         });
 
-        self.current_graph = Some(GraphHandle {
-            cancel_token,
-            thread_handle,
-        });
+        self.current_graph = Some((cancel_token, thread_handle));
         self.current_segment = Some(segment);
 
         Ok(())
     }
 
     pub fn stop_current_station(&mut self) {
-        if let Some(graph) = self.current_graph.take() {
-            debug!("AudioSession: Stopping current station");
-            graph.cancel_token.cancel();
-            let _ = graph.thread_handle.join();
-            debug!("AudioSession: Current station stopped");
+        // CRITICAL: Must join audio graph thread BEFORE dropping SDR segment
+        // to avoid use-after-free (audio graph accessing freed SoapySDR device)
+
+        // First, cancel and join the audio graph thread
+        if let Some((cancel_token, handle)) = self.current_graph.take() {
+            debug!("AudioSession: Stopping current station, cancelling audio graph");
+            cancel_token.cancel();
+            debug!("AudioSession: Joining audio graph thread");
+            let _ = handle.join();
+            debug!("AudioSession: Audio graph thread joined");
         }
+
+        // Now it's safe to drop the SDR segment
+        // The audio graph thread is guaranteed to be finished
         if let Some(segment) = self.current_segment.take() {
             debug!("AudioSession: Dropping SDR segment");
             drop(segment);
             debug!("AudioSession: SDR segment dropped");
         }
+
+        debug!("AudioSession: Current station stopped");
     }
 }
 
