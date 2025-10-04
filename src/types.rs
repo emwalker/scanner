@@ -321,7 +321,7 @@ impl Default for ScanningConfig {
             window_overlap: 0.75,
 
             // Sample batching defaults
-            packet_size: 8192,
+            packet_size: 16384,
 
             // Squelch defaults
             disable_squelch: false,

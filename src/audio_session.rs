@@ -6,7 +6,8 @@ use rustradio::graph::GraphRunner;
 use tracing::debug;
 
 pub struct AudioSession {
-    audio_tx: std::sync::mpsc::SyncSender<f32>,
+    audio_tx: std::sync::mpsc::SyncSender<crate::mpsc::AudioPacket>,
+    audio_packet_size: usize,
     _stream: cpal::Stream,
     current_graph: Option<GraphHandle>,
     current_segment: Option<Box<dyn crate::sdr::Segment>>,
@@ -19,8 +20,10 @@ struct GraphHandle {
 
 impl AudioSession {
     pub fn new(config: &ScanningConfig) -> Result<Self> {
-        let audio_buffer_samples = (config.audio_sample_rate as f32 * 0.25) as usize;
-        let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<f32>(audio_buffer_samples);
+        let audio_packet_size = 4096;
+        let audio_buffer_packets = 16;
+        let (audio_tx, audio_rx) =
+            std::sync::mpsc::sync_channel::<crate::mpsc::AudioPacket>(audio_buffer_packets);
 
         let (audio_device, supported_config) =
             Window::setup_audio_device(config.audio_sample_rate)?;
@@ -44,6 +47,7 @@ impl AudioSession {
 
         Ok(Self {
             audio_tx,
+            audio_packet_size,
             _stream: stream,
             current_graph: None,
             current_segment: None,
@@ -71,11 +75,15 @@ impl AudioSession {
             self.audio_tx.clone(),
             config,
             signal.detection_center_freq,
+            self.audio_packet_size,
         )?;
 
         let cancel_token = audio_graph.cancel_token();
         let thread_handle = std::thread::spawn(move || {
-            debug!("AudioSession: Audio graph thread started");
+            // Lower thread priority to reduce CPU impact
+            let _ =
+                thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
+            debug!("AudioSession: Audio graph thread started with low priority");
             if let Err(e) = audio_graph.run() {
                 debug!(error = ?e, "AudioSession: Audio graph error");
             } else {

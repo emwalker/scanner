@@ -73,9 +73,9 @@ impl FmFilterConfig {
             _ => 50,                       // 10+ MHz → 200+ kHz
         };
 
-        // Standard FM broadcast specifications - narrow bandwidth for audio quality
+        // Standard FM broadcast specifications
         let channel_bandwidth = 200_000.0; // 200 kHz - standard FM channel bandwidth
-        let transition_width = 120_000.0; // 120 kHz transition - optimized for audio quality
+        let transition_width = 120_000.0; // 120 kHz transition
 
         let estimated_taps = Self::estimate_taps(sample_rate as f32, transition_width);
         let estimated_mflops = estimated_taps as f32 * sample_rate as f32 / 1_000_000.0;

@@ -30,6 +30,23 @@ pub fn render_progress(
     // Get displayable windows for selection tracking
     let displayable_windows = model.get_displayable_windows();
 
+    // Count total displayable candidates for scroll indicators
+    let total_candidates: usize = displayable_windows
+        .iter()
+        .map(|(window_id, window)| {
+            let is_current = **window_id == model.current_window;
+            let candidates = window.displayable_candidates(is_current, model.selection_mode);
+            if model.selection_mode {
+                candidates
+                    .iter()
+                    .filter(|c| c.status != CandidateStatus::Rejected)
+                    .count()
+            } else {
+                candidates.len()
+            }
+        })
+        .sum();
+
     // Calculate available space for progress bars
     let available_height = area.height as usize;
     let max_bars = available_height.saturating_sub(5); // RESERVED_TERMINAL_LINES
@@ -79,7 +96,7 @@ pub fn render_progress(
         return;
     }
 
-    // Create constraints: 1 line per candidate + 1 line per window header + 1 for continue scan
+    // Create constraints: 1 line per candidate + 1 line per window header + 1 for continue scan + scroll indicators
     let mut total_lines = window_sizes
         .iter()
         .map(|(_, count)| count + 1)
@@ -87,6 +104,15 @@ pub fn render_progress(
     if model.selection_mode && !model.all_complete() {
         total_lines += 1;
     }
+
+    // Add space for scroll indicators
+    let has_content_above = model.scroll_offset > 0;
+
+    if has_content_above {
+        total_lines += 1;
+    }
+    // Note: has_content_below will be calculated after rendering
+
     let constraints: Vec<Constraint> = (0..total_lines).map(|_| Constraint::Length(1)).collect();
 
     let chunks = Layout::default()
@@ -97,6 +123,19 @@ pub fn render_progress(
     // Render all progress bars sequentially
     let mut chunk_idx = 0;
     let mut candidate_index = 0;
+    let mut skipped_count = 0;
+    let mut rendered_candidates = 0;
+
+    // Add scroll-up indicator if needed
+    if has_content_above && chunk_idx < chunks.len() {
+        let indicator = Paragraph::new("        ↑ more above ↑").style(
+            Style::default()
+                .fg(theme.instructions_dim())
+                .add_modifier(Modifier::DIM),
+        );
+        f.render_widget(indicator, chunks[chunk_idx]);
+        chunk_idx += 1;
+    }
 
     for (window_id, _candidate_count) in window_sizes {
         if chunk_idx >= chunks.len() {
@@ -138,14 +177,25 @@ pub fn render_progress(
 
         // Render candidates in this window (preserves insertion order, filtered)
         for candidate in displayable_candidates {
+            // Track candidate_index for ALL candidates BEFORE skipping
+            let current_candidate_index = candidate_index;
+            candidate_index += 1;
+
+            // Skip candidates before scroll offset
+            if skipped_count < model.scroll_offset {
+                skipped_count += 1;
+                continue;
+            }
+
             if chunk_idx >= chunks.len() {
                 break;
             }
-            let is_selected =
-                model.selection_mode && model.selected_candidate_index == Some(candidate_index);
+
+            let is_selected = model.selection_mode
+                && model.selected_candidate_index == Some(current_candidate_index);
             render_candidate_progress(f, chunks[chunk_idx], candidate, is_selected, theme);
             chunk_idx += 1;
-            candidate_index += 1;
+            rendered_candidates += 1;
         }
     }
 
@@ -153,6 +203,19 @@ pub fn render_progress(
     if model.selection_mode && !model.all_complete() && chunk_idx < chunks.len() {
         let is_continue_selected = model.is_continue_scan_selected();
         render_continue_scan(f, chunks[chunk_idx], is_continue_selected, theme);
+        chunk_idx += 1;
+    }
+
+    // Add scroll-down indicator if there's content below
+    let total_rendered_or_skipped = model.scroll_offset + rendered_candidates;
+    let has_content_below = total_rendered_or_skipped < total_candidates;
+    if has_content_below && chunk_idx < chunks.len() {
+        let indicator = Paragraph::new("        ↓ more below ↓").style(
+            Style::default()
+                .fg(theme.instructions_dim())
+                .add_modifier(Modifier::DIM),
+        );
+        f.render_widget(indicator, chunks[chunk_idx]);
     }
 }
 

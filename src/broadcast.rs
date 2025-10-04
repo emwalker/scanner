@@ -87,9 +87,13 @@ impl Block for BroadcastSink {
         let mut consumed = 0;
         let mut packets_sent = 0;
 
-        for &sample in samples {
-            self.buffer.push(sample);
-            consumed += 1;
+        while consumed < samples.len() {
+            let space_in_buffer = self.packet_size - self.buffer.len();
+            let to_copy = space_in_buffer.min(samples.len() - consumed);
+
+            self.buffer
+                .extend_from_slice(&samples[consumed..consumed + to_copy]);
+            consumed += to_copy;
 
             if self.buffer.len() >= self.packet_size {
                 let packet = SamplePacket::new(std::mem::replace(
@@ -217,8 +221,10 @@ impl Block for BroadcastSource {
         }
 
         // Receive and write packets
+        // Limit iterations to avoid spinning when buffer is large but few packets available
         let mut packets_received = 0;
-        while written < out_slice.len() {
+        let max_packets_per_work = 64;
+        while written < out_slice.len() && packets_received < max_packets_per_work {
             match self.receiver.try_recv() {
                 Ok(packet) => {
                     packets_received += 1;
@@ -281,7 +287,7 @@ impl Block for BroadcastSource {
 
             Ok(BlockRet::Again)
         } else {
-            std::thread::sleep(std::time::Duration::from_micros(100));
+            std::thread::sleep(std::time::Duration::from_millis(1));
             Ok(BlockRet::Again)
         }
     }

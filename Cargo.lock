@@ -1721,6 +1721,7 @@ dependencies = [
  "stderrlog",
  "tempfile",
  "thiserror 1.0.69",
+ "thread-priority",
  "tokio",
  "tracing",
  "tracing-log",
@@ -2020,6 +2021,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "thread-priority"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfe075d7053dae61ac5413a34ea7d4913b6e6207844fd726bdd858b37ff72bf5"
+dependencies = [
+ "bitflags 2.9.3",
+ "cfg-if",
+ "libc",
+ "log",
+ "rustversion",
+ "winapi",
 ]
 
 [[package]]

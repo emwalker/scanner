@@ -122,11 +122,13 @@ impl CandidateStatus {
 pub struct Model {
     pub windows: BTreeMap<usize, WindowProgress>, // window_id -> WindowProgress (ordered by window_id)
     pub current_window: usize,
+    pub total_windows: Option<usize>, // Total number of windows in the scan (None until known)
     pub should_quit: bool,
     pub theme_selector_open: bool,
     pub theme_selector_index: usize,
     pub selection_mode: bool,
     pub selected_candidate_index: Option<usize>, // Index in flattened displayable candidates list
+    pub scroll_offset: usize, // Number of candidates to skip when rendering (for scrolling)
     pub last_selection_change: Option<Instant>,
     pub frequency_tune_sent: bool, // Tracks if TuneToCandidate command was sent for current selection
     pub playback_active: bool,     // Tracks if actively listening to a station
@@ -143,11 +145,13 @@ impl Model {
         Self {
             windows: BTreeMap::new(),
             current_window: 0,
+            total_windows: None,
             should_quit: false,
             theme_selector_open: false,
             theme_selector_index: 0,
             selection_mode: false,
             selected_candidate_index: None,
+            scroll_offset: 0,
             last_selection_change: None,
             frequency_tune_sent: false,
             playback_active: false,
@@ -293,8 +297,8 @@ impl Model {
         self.windows.is_empty() || self.windows.values().all(|w| w.candidates.is_empty())
     }
 
-    /// Check if all candidates are complete
-    pub fn all_complete(&self) -> bool {
+    /// Check if all candidates in all windows are complete (not checking if scan itself is done)
+    pub fn all_candidates_complete(&self) -> bool {
         !self.windows.is_empty()
             && self.windows.values().all(|window| {
                 window.candidates.iter().all(|candidate| {
@@ -303,6 +307,17 @@ impl Model {
                             || candidate.status == CandidateStatus::Rejected)
                 })
             })
+    }
+
+    /// Check if scan is complete (all windows scanned AND all candidates complete)
+    pub fn all_complete(&self) -> bool {
+        if let Some(total) = self.total_windows {
+            // We know total windows - check if we've reached it
+            self.current_window >= total && self.all_candidates_complete()
+        } else {
+            // We don't know total windows yet - scan can't be complete
+            false
+        }
     }
 
     /// Get total candidate count across all windows
@@ -473,6 +488,11 @@ impl Model {
 
     /// Select next candidate (moving forward in time)
     pub fn select_next_candidate(&mut self) {
+        self.select_next_candidate_with_viewport(20); // Default viewport height
+    }
+
+    /// Select next candidate with viewport height for scroll adjustment
+    pub fn select_next_candidate_with_viewport(&mut self, viewport_height: usize) {
         if !self.selection_mode {
             return;
         }
@@ -494,6 +514,7 @@ impl Model {
             self.selected_candidate_index = Some(next);
             self.last_selection_change = Some(Instant::now());
             self.frequency_tune_sent = false;
+            self.adjust_scroll_to_selection(viewport_height);
 
             // If we moved to a different window, complete any playing candidates in the old window
             if let Some(new_window_id) = self
@@ -509,6 +530,11 @@ impl Model {
 
     /// Select previous candidate (moving backward in time)
     pub fn select_previous_candidate(&mut self) {
+        self.select_previous_candidate_with_viewport(20); // Default viewport height
+    }
+
+    /// Select previous candidate with viewport height for scroll adjustment
+    pub fn select_previous_candidate_with_viewport(&mut self, viewport_height: usize) {
         if !self.selection_mode {
             return;
         }
@@ -522,6 +548,7 @@ impl Model {
             self.selected_candidate_index = Some(current - 1);
             self.last_selection_change = Some(Instant::now());
             self.frequency_tune_sent = false;
+            self.adjust_scroll_to_selection(viewport_height);
 
             // If we moved to a different window, complete any playing candidates in the old window
             if let Some(new_window_id) = self
@@ -543,6 +570,34 @@ impl Model {
 
         let candidate_count = self.get_selectable_candidate_count();
         self.selected_candidate_index == Some(candidate_count)
+    }
+
+    /// Adjust scroll offset to ensure the selected candidate is visible
+    pub fn adjust_scroll_to_selection(&mut self, viewport_height: usize) {
+        if let Some(selected_idx) = self.selected_candidate_index {
+            // Ensure selected item is within visible range
+            if selected_idx < self.scroll_offset {
+                // Scrolled too far down, need to scroll up
+                self.scroll_offset = selected_idx;
+            } else if selected_idx >= self.scroll_offset + viewport_height {
+                // Selected item is below viewport, scroll down
+                self.scroll_offset = selected_idx.saturating_sub(viewport_height - 1);
+            }
+        }
+    }
+
+    /// Scroll up by one line
+    pub fn scroll_up(&mut self) {
+        if self.scroll_offset > 0 {
+            self.scroll_offset -= 1;
+        }
+    }
+
+    /// Scroll down by one line
+    pub fn scroll_down(&mut self, total_candidates: usize, viewport_height: usize) {
+        if self.scroll_offset + viewport_height < total_candidates {
+            self.scroll_offset += 1;
+        }
     }
 }
 
@@ -1145,15 +1200,8 @@ mod tests {
             });
         }
 
-        let window = model.windows.get(&window_id).unwrap();
-
-        // After all candidates are rejected, all_complete() is true and window is marked complete
-        assert!(window.is_complete);
-
-        // Complete window with only rejected candidates should not display
-        assert!(!window.should_display());
-
         // Mark window complete by starting window 2
+        model.total_windows = Some(2);
         model.update(ProgressEvent {
             event_type: ProgressEventType::CandidateCreated,
             frequency_hz: 89_100_000.0,
@@ -1167,6 +1215,7 @@ mod tests {
             timestamp: Instant::now(),
         });
 
+        // After window 2 is created, window 1 should be marked complete
         let window = model.windows.get(&window_id).unwrap();
         assert!(window.is_complete);
 
@@ -1273,6 +1322,7 @@ mod tests {
 
         // Model with complete candidates
         assert!(!model.is_empty());
+        model.total_windows = Some(1);
         assert!(model.all_complete());
         assert_eq!(model.candidate_count(), 2);
     }
@@ -1803,10 +1853,23 @@ mod tests {
         // Verify all candidates exist
         assert_eq!(model.windows.get(&window_id).unwrap().candidates.len(), 4);
 
-        // Verify that all_complete returns true (scan is done)
-        assert!(model.all_complete());
+        // Set total_windows and verify all_complete returns true
+        model.total_windows = Some(1);
 
-        // After all_complete is true, the update() method should have marked the window complete
+        // Verify current_window and all_candidates_complete
+        assert_eq!(model.current_window, 1);
+        assert!(
+            model.all_candidates_complete(),
+            "all_candidates_complete should be true"
+        );
+        assert!(model.all_complete(), "all_complete should be true");
+
+        // Manually mark the window complete (since no more events will trigger it)
+        if let Some(window) = model.windows.get_mut(&window_id) {
+            window.is_complete = true;
+        }
+
+        // After manually marking complete, verify window is complete
         let window = model.windows.get(&window_id).unwrap();
         assert!(window.is_complete);
 

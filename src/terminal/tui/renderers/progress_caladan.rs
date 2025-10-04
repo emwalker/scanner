@@ -17,28 +17,69 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
         return;
     }
 
+    // Count total displayable candidates for scroll indicators
+    let displayable_windows = model.get_displayable_windows();
+    let total_candidates: usize = displayable_windows
+        .iter()
+        .map(|(window_id, window)| {
+            let is_current = **window_id == model.current_window;
+            window
+                .displayable_candidates(is_current, model.selection_mode)
+                .len()
+        })
+        .sum();
+
     let mut lines = Vec::new();
     let max_lines = (area.height - 2) as usize;
     let mut line_count = 0;
 
-    // Get displayable windows for selection tracking
-    let displayable_windows = model.get_displayable_windows();
+    // Add scroll-up indicator if there's content above
+    let has_content_above = model.scroll_offset > 0;
+    if has_content_above {
+        lines.push(Line::from(Span::styled(
+            "        ↑ more above ↑",
+            Style::default()
+                .fg(theme.instructions_dim())
+                .add_modifier(Modifier::DIM),
+        )));
+        line_count += 1;
+    }
+
+    // Start candidate_index at scroll_offset since we're skipping that many selectable candidates
     let mut candidate_index = 0;
+    let mut skipped_count = 0;
+    let mut rendered_candidates = 0;
 
     for (window_id, window) in displayable_windows.iter() {
         let is_current = **window_id == model.current_window;
         let displayable = window.displayable_candidates(is_current, model.selection_mode);
 
         for candidate in displayable {
+            // Track candidate_index for ALL candidates (to match selection logic)
+            let current_candidate_index = if candidate.status != CandidateStatus::Rejected {
+                let idx = candidate_index;
+                candidate_index += 1;
+                idx
+            } else {
+                usize::MAX // Rejected candidates don't have an index
+            };
+
+            // Skip candidates before scroll offset
+            if skipped_count < model.scroll_offset {
+                skipped_count += 1;
+                continue;
+            }
+
             if line_count >= max_lines {
                 break;
             }
 
-            // Only count non-rejected candidates for selection index
-            // (matches get_selectable_candidates logic)
+            // Check if this candidate is selected
             let is_selected = model.selection_mode
                 && candidate.status != CandidateStatus::Rejected
-                && model.selected_candidate_index == Some(candidate_index);
+                && model.selected_candidate_index == Some(current_candidate_index);
+
+            rendered_candidates += 1;
 
             let status_symbol = match candidate.status {
                 CandidateStatus::Detected => "○",
@@ -123,11 +164,6 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
 
             lines.push(Line::from(spans));
             line_count += 1;
-
-            // Only increment candidate_index for selectable (non-rejected) candidates
-            if candidate.status != CandidateStatus::Rejected {
-                candidate_index += 1;
-            }
         }
 
         if line_count >= max_lines {
@@ -155,6 +191,19 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
                     Modifier::empty()
                 }),
         )]));
+    }
+
+    // Add scroll-down indicator if there's content below
+    // We've rendered: scroll_offset (skipped) + rendered_candidates (shown) out of total_candidates
+    let total_rendered_or_skipped = model.scroll_offset + rendered_candidates;
+    let has_content_below = total_rendered_or_skipped < total_candidates;
+    if has_content_below && line_count < max_lines {
+        lines.push(Line::from(Span::styled(
+            "        ↓ more below ↓",
+            Style::default()
+                .fg(theme.instructions_dim())
+                .add_modifier(Modifier::DIM),
+        )));
     }
 
     if lines.is_empty() {

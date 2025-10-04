@@ -431,12 +431,14 @@ impl MainThread {
             }
 
             if i < windows_to_process {
-                debug!(
-                    iteration = i,
-                    total = windows_to_process,
-                    paused = paused,
-                    "Start of scan loop iteration"
-                );
+                if !paused || i.is_multiple_of(50) {
+                    debug!(
+                        iteration = i,
+                        total = windows_to_process,
+                        paused = paused,
+                        "Start of scan loop iteration"
+                    );
+                }
 
                 self.process_commands(
                     device,

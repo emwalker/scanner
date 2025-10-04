@@ -310,7 +310,7 @@ impl Window {
     pub(crate) fn create_audio_stream(
         device: &cpal::Device,
         stream_config: &StreamConfig,
-        audio_rx: std::sync::mpsc::Receiver<f32>,
+        audio_rx: std::sync::mpsc::Receiver<crate::mpsc::AudioPacket>,
     ) -> Result<cpal::Stream> {
         let err_fn = |err| debug!("Audio error: {}", err);
 
@@ -319,25 +319,45 @@ impl Window {
         let underrun_counter_clone = underrun_counter.clone();
         let sample_counter_clone = sample_counter.clone();
 
+        let mut leftover: Option<(crate::mpsc::AudioPacket, usize)> = None;
+
         let stream = device.build_output_stream(
             stream_config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 let mut filled = 0;
                 let mut underrun_occurred = false;
-                let mut max_sample = f32::NEG_INFINITY;
-                let mut min_sample = f32::INFINITY;
-                let mut clipped_count = 0;
 
+                // First, drain any leftover from previous packet
+                if let Some((packet, offset)) = &leftover {
+                    let remaining = &packet.as_slice()[*offset..];
+                    let to_copy = remaining.len().min(data.len());
+                    for i in 0..to_copy {
+                        data[filled + i] = remaining[i].clamp(-1.0, 1.0);
+                    }
+                    filled += to_copy;
+
+                    if to_copy >= remaining.len() {
+                        leftover = None;
+                    } else {
+                        leftover = Some((packet.clone(), offset + to_copy));
+                    }
+                }
+
+                // Then receive packets and fill buffer
                 while filled < data.len() {
                     match audio_rx.try_recv() {
-                        Ok(audio_sample) => {
-                            if !(-1.0..=1.0).contains(&audio_sample) {
-                                clipped_count += 1;
+                        Ok(packet) => {
+                            let samples = packet.as_slice();
+                            let to_copy = samples.len().min(data.len() - filled);
+                            for i in 0..to_copy {
+                                data[filled + i] = samples[i].clamp(-1.0, 1.0);
                             }
-                            max_sample = max_sample.max(audio_sample);
-                            min_sample = min_sample.min(audio_sample);
-                            data[filled] = audio_sample.clamp(-1.0, 1.0);
-                            filled += 1;
+                            filled += to_copy;
+
+                            if to_copy < samples.len() {
+                                leftover = Some((packet, to_copy));
+                                break;
+                            }
                         }
                         Err(_) => {
                             underrun_occurred = true;
@@ -349,20 +369,7 @@ impl Window {
                     }
                 }
 
-                let total_samples = sample_counter_clone
-                    .fetch_add(filled, std::sync::atomic::Ordering::Relaxed)
-                    + filled;
-
-                if clipped_count > 0 {
-                    debug!(
-                        clipped_samples = clipped_count,
-                        total_samples = filled,
-                        max_sample = max_sample,
-                        min_sample = min_sample,
-                        clip_percentage = (clipped_count as f32 / filled as f32) * 100.0,
-                        "AUDIO CLIPPING DETECTED: Samples exceeded ±1.0 range"
-                    );
-                }
+                sample_counter_clone.fetch_add(filled, std::sync::atomic::Ordering::Relaxed);
 
                 if underrun_occurred {
                     let underrun_count = underrun_counter_clone
@@ -370,11 +377,10 @@ impl Window {
                         + 1;
                     debug!(
                         underrun_count = underrun_count,
-                        total_samples = total_samples,
                         filled_samples = filled,
                         requested_samples = data.len(),
                         missing_samples = data.len() - filled,
-                        "AUDIO UNDERRUN: Not enough samples from audio graph"
+                        "AUDIO UNDERRUN: Not enough packets from audio graph"
                     );
                 }
             },
@@ -399,10 +405,11 @@ impl Window {
     pub fn process_signal_for_audio(
         signal: &crate::types::Signal,
         sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
-        audio_tx: std::sync::mpsc::SyncSender<f32>,
+        audio_tx: std::sync::mpsc::SyncSender<crate::mpsc::AudioPacket>,
         config: &ScanningConfig,
         shutdown_listener: &triggered::Listener,
         pause_signal: Option<&crate::scanner_state::PauseSignal>,
+        audio_packet_size: usize,
     ) -> Result<()> {
         debug!(
             "Creating audio processing pipeline for {:.1} MHz",
@@ -415,6 +422,7 @@ impl Window {
             audio_tx,
             config,
             signal.detection_center_freq,
+            audio_packet_size,
         )?;
 
         let duration = std::time::Duration::from_secs(config.duration);
@@ -423,7 +431,10 @@ impl Window {
 
         let cancel_token = audio_graph.cancel_token();
         let graph_handle = std::thread::spawn(move || {
-            debug!("Audio graph thread started, running graph...");
+            // Lower thread priority to reduce CPU impact
+            let _ =
+                thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
+            debug!("Audio graph thread started with low priority, running graph...");
             if let Err(e) = audio_graph.run() {
                 debug!("Audio graph error: {}", e);
             } else {
@@ -592,9 +603,10 @@ impl Window {
     pub fn create_audio_fm_graph(
         signal: &crate::types::Signal,
         sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
-        audio_tx: std::sync::mpsc::SyncSender<f32>,
+        audio_tx: std::sync::mpsc::SyncSender<crate::mpsc::AudioPacket>,
         config: &ScanningConfig,
         center_freq: f64,
+        audio_packet_size: usize,
     ) -> Result<rustradio::graph::Graph> {
         let mut graph = rustradio::graph::Graph::new();
         let station_name = format!("{:.1}FM_Audio", signal.frequency_hz / 1e6);
@@ -626,6 +638,7 @@ impl Window {
             prev,
             audio_tx,
             station_name,
+            audio_packet_size,
         )));
         Ok(graph)
     }
@@ -650,8 +663,10 @@ impl Window {
         );
 
         // Create audio infrastructure for this window
-        let audio_buffer_samples = (self.config.audio_sample_rate as f32 * 0.25) as usize;
-        let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<f32>(audio_buffer_samples);
+        let audio_packet_size = 4096;
+        let audio_buffer_packets = 16;
+        let (audio_tx, audio_rx) =
+            std::sync::mpsc::sync_channel::<crate::mpsc::AudioPacket>(audio_buffer_packets);
 
         // Setup audio device and stream
         let (audio_device, supported_config) =
@@ -705,6 +720,7 @@ impl Window {
                 &self.config,
                 &self.shutdown_listener,
                 self.pause_signal.as_ref(),
+                audio_packet_size,
             ) {
                 debug!("Error processing signal for audio: {}", e);
             }
