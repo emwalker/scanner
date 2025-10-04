@@ -22,9 +22,7 @@ impl TuiLayout {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3), // Title (top border only)
-                Constraint::Length(1), // Spacing after header
-                Constraint::Length(4), // Spectrum visualization (increased height for 3 lines)
-                Constraint::Length(1), // Separator line
+                Constraint::Length(8), // Spectrum: 2 outer borders + 3 top rows + 3 window detail box (2 borders + 1 content)
                 Constraint::Min(0),    // Progress area
                 Constraint::Length(1), // Instructions
             ])
@@ -33,10 +31,10 @@ impl TuiLayout {
         Self {
             header: main_chunks[0],
             header_spacing: main_chunks[1],
-            spectrum: main_chunks[2],
-            separator: main_chunks[3],
-            progress: main_chunks[4],
-            instructions: main_chunks[5],
+            spectrum: main_chunks[1],
+            separator: main_chunks[2],
+            progress: main_chunks[2],
+            instructions: main_chunks[3],
         }
     }
 

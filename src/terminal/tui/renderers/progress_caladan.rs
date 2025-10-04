@@ -6,43 +6,14 @@ use crate::terminal::tui::{
 };
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Paragraph},
+    widgets::{Block, BorderType, Borders, Paragraph},
 };
 
-fn wrap_with_bracket(
-    line: Line<'static>,
-    left: char,
-    right: char,
-    _theme: &dyn Theme,
-    in_selection_mode: bool,
-) -> Line<'static> {
-    let bracket_color = Color::Rgb(160, 200, 220); // Light cornflower blue
-    let bracket_style = if in_selection_mode {
-        Style::default()
-            .fg(bracket_color)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(bracket_color)
-            .add_modifier(Modifier::DIM)
-    };
-    let mut spans = vec![
-        Span::styled(" ".to_string(), bracket_style),
-        Span::styled(left.to_string(), bracket_style),
-        Span::styled(" ".to_string(), bracket_style),
-    ];
-    spans.extend(line.spans);
-    spans.push(Span::styled(" ".to_string(), bracket_style));
-    spans.push(Span::styled(right.to_string(), bracket_style));
-    spans.push(Span::styled(" ".to_string(), bracket_style));
-    Line::from(spans)
-}
-
 pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) {
-    if area.height < 2 {
+    if area.height < 4 {
         return;
     }
 
@@ -58,15 +29,75 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
         })
         .sum();
 
+    // Calculate minimum width needed for content without wrapping
+    // Format: " ◉ 107.1 MHz  detecting    ▁▁▁▁▁▁▁▁  ·moderate"
+    // Breakdown: 1 (selection) + 1 (space) + 1 (symbol) + 1 (space) +
+    //            5 (freq) + 4 (space+MHz) + 2 (space) + 11 (status) + 2 (space) +
+    //            8 (graph) + 2 (space) + 1 (dot) + 8 (quality) = ~47 chars
+    // Add 2 for padding (1 on each side) + 2 for borders = 51 total width needed
+    let min_content_width = 47;
+    let total_min_width = min_content_width + 4; // +2 padding +2 borders
+
+    // Responsive width: use half of terminal width in wide terminals, full width in narrow ones
+    let terminal_width = area.width as usize;
+    let wide_threshold = 100; // Terminals wider than this are considered "wide"
+
+    let progress_width = if terminal_width >= wide_threshold {
+        // Wide terminal: use half width with margin on the right
+        let half_width = terminal_width / 2;
+        half_width.max(total_min_width)
+    } else {
+        // Narrow terminal: use full width
+        terminal_width.max(total_min_width)
+    };
+
+    // Constrain to calculated width
+    let constrained_area = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(progress_width as u16),
+            Constraint::Min(0),
+        ])
+        .split(area)[0];
+
+    let bracket_color = Color::Rgb(160, 200, 220);
+    let border_style = if model.selection_mode {
+        Style::default()
+            .fg(bracket_color)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(bracket_color)
+            .add_modifier(Modifier::DIM)
+    };
+
+    let block = Block::default()
+        .borders(Borders::LEFT | Borders::RIGHT | Borders::TOP | Borders::BOTTOM)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style)
+        .border_set(ratatui::symbols::border::Set {
+            top_left: "╭",
+            top_right: "╮",
+            bottom_left: "╰",
+            bottom_right: "╯",
+            vertical_left: "│",
+            vertical_right: "│",
+            horizontal_top: " ",
+            horizontal_bottom: " ",
+        })
+        .padding(ratatui::widgets::Padding::horizontal(1));
+
+    let inner = block.inner(constrained_area);
+
     let mut lines = Vec::new();
-    let max_lines = (area.height - 2) as usize;
+    let max_lines = inner.height as usize;
     let mut line_count = 0;
 
     // Add scroll-up indicator if there's content above
     let has_content_above = model.scroll_offset > 0;
     if has_content_above {
         lines.push(Line::from(Span::styled(
-            "       ↑ more above ↑",
+            "↑ more above ↑",
             Style::default().fg(theme.instructions_dim()),
         )));
         line_count += 1;
@@ -131,12 +162,12 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
             };
 
             let status_text = match candidate.status {
-                CandidateStatus::Detected => "detecting",
-                CandidateStatus::Analyzing => "forming",
-                CandidateStatus::Rejected => "static",
-                CandidateStatus::Signal => "present",
-                CandidateStatus::Playing => "listening",
-                CandidateStatus::Completed => "detected",
+                CandidateStatus::Detected => theme.status_detected_text(),
+                CandidateStatus::Analyzing => theme.status_analyzing_text(),
+                CandidateStatus::Rejected => theme.status_rejected_text(),
+                CandidateStatus::Signal => theme.status_signal_text(),
+                CandidateStatus::Playing => theme.status_playing_text(),
+                CandidateStatus::Completed => theme.status_completed_text(),
             };
 
             let freq_mhz = candidate.frequency_hz / 1e6;
@@ -175,12 +206,18 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
             if let Some(quality) = &candidate.audio_quality {
                 use crate::audio_quality::AudioQuality;
                 let (quality_text, quality_color) = match quality {
-                    AudioQuality::Good => ("good", theme.quality_good()),
-                    AudioQuality::Moderate => ("moderate", theme.quality_moderate()),
-                    AudioQuality::Poor => ("poor", theme.quality_poor()),
-                    AudioQuality::NoAudio => ("no-audio", theme.quality_no_audio()),
-                    AudioQuality::Static => ("static", theme.quality_static()),
-                    AudioQuality::Unknown => ("unknown", theme.quality_unknown()),
+                    AudioQuality::Good => (theme.quality_good_text(), theme.quality_good()),
+                    AudioQuality::Moderate => {
+                        (theme.quality_moderate_text(), theme.quality_moderate())
+                    }
+                    AudioQuality::Poor => (theme.quality_poor_text(), theme.quality_poor()),
+                    AudioQuality::NoAudio => {
+                        (theme.quality_no_audio_text(), theme.quality_no_audio())
+                    }
+                    AudioQuality::Static => (theme.quality_static_text(), theme.quality_static()),
+                    AudioQuality::Unknown => {
+                        (theme.quality_unknown_text(), theme.quality_unknown())
+                    }
                 };
                 spans.push(Span::raw("  "));
                 spans.push(Span::styled(
@@ -211,11 +248,8 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
             theme.instructions_dim()
         };
 
-        // Pad to match the width of candidate lines (47 chars total)
-        // Candidate width: 4 (prefix+symbol) + 10 (freq) + 11 (status) + 2 (space) + 8 (graph) + 11 (quality) = 46
-        // Need 47 to align properly with the bracket wrapper
         lines.push(Line::from(vec![Span::styled(
-            format!("{:<47}", "Continue scan →"),
+            "Continue scan →",
             Style::default()
                 .fg(color)
                 .add_modifier(if is_continue_selected {
@@ -232,40 +266,22 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
     let has_content_below = total_rendered_or_skipped < total_candidates;
     if has_content_below && line_count < max_lines {
         lines.push(Line::from(Span::styled(
-            "       ↓ more below ↓",
+            "↓ more below ↓",
             Style::default().fg(theme.instructions_dim()),
         )));
     }
 
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
-            " awaiting signals...",
+            "awaiting signals...",
             Style::default().fg(theme.instructions_dim()),
         )));
     }
 
-    // Wrap all lines with brackets
-    let line_count = lines.len();
-    let wrapped_lines: Vec<Line> = lines
-        .into_iter()
-        .enumerate()
-        .map(|(idx, line)| {
-            let (left, right) = if idx == 0 {
-                ('╭', '╮') // Top corners
-            } else if idx == line_count - 1 {
-                ('╰', '╯') // Bottom corners
-            } else {
-                ('│', '│') // Sides
-            };
-            wrap_with_bracket(line, left, right, theme, model.selection_mode)
-        })
-        .collect();
+    let paragraph = Paragraph::new(lines);
 
-    let final_lines = wrapped_lines;
-
-    let block = Block::default();
-    let paragraph = Paragraph::new(final_lines).block(block);
-    f.render_widget(paragraph, area);
+    f.render_widget(block, constrained_area);
+    f.render_widget(paragraph, inner);
 }
 
 fn create_mini_graph(progress: u8) -> String {

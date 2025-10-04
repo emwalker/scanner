@@ -302,26 +302,31 @@ fn render_candidate_progress(
             // Get audio quality text and style
             let (quality_text, quality_style) = match audio_quality {
                 crate::audio_quality::AudioQuality::Good => (
-                    "Good",
+                    theme.quality_good_text(),
                     Style::default()
                         .fg(theme.quality_good())
                         .add_modifier(Modifier::BOLD),
                 ),
-                crate::audio_quality::AudioQuality::Moderate => {
-                    ("Moderate", Style::default().fg(theme.quality_moderate()))
-                }
-                crate::audio_quality::AudioQuality::Poor => {
-                    ("Poor", Style::default().fg(theme.quality_poor()))
-                }
-                crate::audio_quality::AudioQuality::NoAudio => {
-                    ("No Audio", Style::default().fg(theme.quality_no_audio()))
-                }
-                crate::audio_quality::AudioQuality::Static => {
-                    ("Static", Style::default().fg(theme.quality_static()))
-                }
-                crate::audio_quality::AudioQuality::Unknown => {
-                    ("Unknown", Style::default().fg(theme.quality_unknown()))
-                }
+                crate::audio_quality::AudioQuality::Moderate => (
+                    theme.quality_moderate_text(),
+                    Style::default().fg(theme.quality_moderate()),
+                ),
+                crate::audio_quality::AudioQuality::Poor => (
+                    theme.quality_poor_text(),
+                    Style::default().fg(theme.quality_poor()),
+                ),
+                crate::audio_quality::AudioQuality::NoAudio => (
+                    theme.quality_no_audio_text(),
+                    Style::default().fg(theme.quality_no_audio()),
+                ),
+                crate::audio_quality::AudioQuality::Static => (
+                    theme.quality_static_text(),
+                    Style::default().fg(theme.quality_static()),
+                ),
+                crate::audio_quality::AudioQuality::Unknown => (
+                    theme.quality_unknown_text(),
+                    Style::default().fg(theme.quality_unknown()),
+                ),
             };
 
             // Create spans with different colors

@@ -1,17 +1,18 @@
 //! Header rendering for the TUI interface
 
-use crate::terminal::tui::{model::Model, themes::Theme};
+use crate::terminal::tui::{
+    model::Model,
+    themes::{SharedText, Theme},
+};
 use ratatui::{
     Frame,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Borders, Paragraph},
 };
 
 /// Render the application header
 pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, theme: &dyn Theme) {
-    // Create full-width header with sophisticated styling
-    let header_width = area.width as usize;
     let title_text = theme.title();
     let subtitle_text = theme.subtitle();
 
@@ -36,42 +37,54 @@ pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, 
         })
         .count();
 
+    // Create a block with top border only (dotted style)
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(
+            Style::default()
+                .fg(theme.primary())
+                .add_modifier(Modifier::BOLD),
+        )
+        .border_set(ratatui::symbols::border::Set {
+            top_left: "·",
+            top_right: "·",
+            bottom_left: " ",
+            bottom_right: " ",
+            vertical_left: " ",
+            vertical_right: " ",
+            horizontal_top: "·",
+            horizontal_bottom: " ",
+        })
+        .padding(ratatui::widgets::Padding::horizontal(1));
+
+    let inner = block.inner(area);
+    let inner_width = inner.width as usize;
+
     // Create stats text with colored stations count
     let stats_text = format!(
-        "Candidates: {} | Stations: {}",
-        total_candidates, stations_found
+        "{}: {} | {}: {}",
+        SharedText::candidates_label(),
+        total_candidates,
+        SharedText::stations_label(),
+        stations_found
     );
     let stats_text_len = stats_text.len();
 
-    // Geometric terminal border with precision lines
-    let border_char = theme.header_border();
-    let top_border = format!(
-        "{}{}{}",
-        border_char,
-        border_char
-            .to_string()
-            .repeat(header_width.saturating_sub(2)),
-        border_char
-    );
-
     // Calculate padding for right-aligned stats
-    let title_padding = header_width
-        .saturating_sub(2)
+    let title_padding = inner_width
         .saturating_sub(title_text.len())
         .saturating_sub(stats_text_len);
-    let subtitle_padding = header_width
-        .saturating_sub(2)
-        .saturating_sub(subtitle_text.len());
+    let subtitle_padding = inner_width.saturating_sub(subtitle_text.len());
 
     // Create title line with colored spans
     let title_spans = vec![
         Span::styled(
-            format!(" {}{}", title_text, " ".repeat(title_padding)),
+            format!("{}{}", title_text, " ".repeat(title_padding)),
             Style::default().add_modifier(Modifier::BOLD),
         ),
-        Span::raw("Candidates: "),
+        Span::raw(format!("{}: ", SharedText::candidates_label())),
         Span::raw(total_candidates.to_string()),
-        Span::raw(" | Stations: "),
+        Span::raw(format!(" | {}: ", SharedText::stations_label())),
         Span::styled(
             stations_found.to_string(),
             Style::default()
@@ -82,22 +95,16 @@ pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, 
     let title_line = Line::from(title_spans);
 
     let subtitle_line = Line::from(vec![Span::styled(
-        format!(" {}{}", subtitle_text, " ".repeat(subtitle_padding)),
+        format!("{}{}", subtitle_text, " ".repeat(subtitle_padding)),
         Style::default().add_modifier(Modifier::BOLD),
     )]);
 
-    // Create header with mixed content (border, colored line, plain line)
-    let header_content = vec![
-        Line::from(vec![Span::styled(
-            top_border,
-            Style::default().add_modifier(Modifier::BOLD),
-        )]),
-        title_line,
-        subtitle_line,
-    ];
+    let header_content = vec![title_line, subtitle_line];
 
-    let title = Paragraph::new(header_content).style(Style::default().fg(theme.primary()));
-    f.render_widget(title, area);
+    let paragraph = Paragraph::new(header_content).style(Style::default().fg(theme.primary()));
+
+    f.render_widget(block, area);
+    f.render_widget(paragraph, inner);
 }
 
 #[cfg(test)]

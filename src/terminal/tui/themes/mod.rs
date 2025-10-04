@@ -5,6 +5,75 @@
 
 use ratatui::style::Color;
 
+/// Shared text configuration for all themes
+pub struct SharedText;
+
+impl SharedText {
+    pub fn title() -> &'static str {
+        "SPECTRUM MONITOR"
+    }
+
+    pub fn subtitle() -> &'static str {
+        "FM Receiver • 88–108 MHz"
+    }
+
+    pub fn candidates_label() -> &'static str {
+        "Candidates"
+    }
+
+    pub fn stations_label() -> &'static str {
+        "Stations"
+    }
+
+    pub fn status_detected() -> &'static str {
+        "Found"
+    }
+
+    pub fn status_analyzing() -> &'static str {
+        "Testing"
+    }
+
+    pub fn status_rejected() -> &'static str {
+        "Filtered"
+    }
+
+    pub fn status_signal() -> &'static str {
+        "Active"
+    }
+
+    pub fn status_playing() -> &'static str {
+        "Playing"
+    }
+
+    pub fn status_completed() -> &'static str {
+        "Done"
+    }
+
+    pub fn quality_good() -> &'static str {
+        "good"
+    }
+
+    pub fn quality_moderate() -> &'static str {
+        "moderate"
+    }
+
+    pub fn quality_poor() -> &'static str {
+        "poor"
+    }
+
+    pub fn quality_no_audio() -> &'static str {
+        "no-audio"
+    }
+
+    pub fn quality_static() -> &'static str {
+        "static"
+    }
+
+    pub fn quality_unknown() -> &'static str {
+        "unknown"
+    }
+}
+
 /// Color scheme trait defining all colors used in the UI
 pub trait ColorScheme {
     // Core colors
@@ -71,16 +140,52 @@ pub trait SymbolSet {
 /// Text style trait defining terminology and formatting
 pub trait TextStyle {
     // Header text
-    fn title(&self) -> &'static str;
-    fn subtitle(&self) -> &'static str;
+    fn title(&self) -> &'static str {
+        SharedText::title()
+    }
+    fn subtitle(&self) -> &'static str {
+        SharedText::subtitle()
+    }
 
     // Status text (preserving exact terminology)
-    fn status_detected_text(&self) -> &'static str;
-    fn status_analyzing_text(&self) -> &'static str;
-    fn status_rejected_text(&self) -> &'static str;
-    fn status_signal_text(&self) -> &'static str;
-    fn status_playing_text(&self) -> &'static str;
-    fn status_completed_text(&self) -> &'static str;
+    fn status_detected_text(&self) -> &'static str {
+        SharedText::status_detected()
+    }
+    fn status_analyzing_text(&self) -> &'static str {
+        SharedText::status_analyzing()
+    }
+    fn status_rejected_text(&self) -> &'static str {
+        SharedText::status_rejected()
+    }
+    fn status_signal_text(&self) -> &'static str {
+        SharedText::status_signal()
+    }
+    fn status_playing_text(&self) -> &'static str {
+        SharedText::status_playing()
+    }
+    fn status_completed_text(&self) -> &'static str {
+        SharedText::status_completed()
+    }
+
+    // Audio quality text
+    fn quality_good_text(&self) -> &'static str {
+        SharedText::quality_good()
+    }
+    fn quality_moderate_text(&self) -> &'static str {
+        SharedText::quality_moderate()
+    }
+    fn quality_poor_text(&self) -> &'static str {
+        SharedText::quality_poor()
+    }
+    fn quality_no_audio_text(&self) -> &'static str {
+        SharedText::quality_no_audio()
+    }
+    fn quality_static_text(&self) -> &'static str {
+        SharedText::quality_static()
+    }
+    fn quality_unknown_text(&self) -> &'static str {
+        SharedText::quality_unknown()
+    }
 }
 
 /// UI variant enum for themes that use different rendering approaches

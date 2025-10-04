@@ -149,39 +149,7 @@ impl SymbolSet for DarkTheme {
     }
 }
 
-impl TextStyle for DarkTheme {
-    fn title(&self) -> &'static str {
-        "Frequency Scan"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "88.0–108.0 MHz"
-    }
-
-    fn status_detected_text(&self) -> &'static str {
-        "detecting"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "forming"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "static"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "present"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "listening"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "detected"
-    }
-}
+impl TextStyle for DarkTheme {}
 
 impl Theme for DarkTheme {
     fn name(&self) -> &str {
@@ -343,39 +311,7 @@ impl SymbolSet for LightTheme {
     }
 }
 
-impl TextStyle for LightTheme {
-    fn title(&self) -> &'static str {
-        "Frequency Scan"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "88.0–108.0 MHz"
-    }
-
-    fn status_detected_text(&self) -> &'static str {
-        "detecting"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "forming"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "static"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "present"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "listening"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "detected"
-    }
-}
+impl TextStyle for LightTheme {}
 
 impl Theme for LightTheme {
     fn name(&self) -> &str {

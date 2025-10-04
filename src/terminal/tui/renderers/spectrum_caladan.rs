@@ -6,7 +6,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, BorderType, Borders, Paragraph},
 };
 
 pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) {
@@ -26,9 +26,6 @@ pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
     let fm_range = fm_end - fm_start;
     let window_width = 2.4e6;
 
-    let mut lines = Vec::new();
-    let content_width = area.width.saturating_sub(6) as usize;
-
     // Use selected candidate's center frequency if in selection mode, otherwise current window
     let window_start = if model.selection_mode {
         model
@@ -46,15 +43,51 @@ pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
         })
     };
 
-    lines.push(wrap_with_bracket(
-        render_frequency_labels(content_width, fm_start, fm_range, theme),
-        '╭',
-        '╮',
-        theme,
-        model.selection_mode,
-    ));
+    let bracket_color = Color::Rgb(160, 200, 220);
+    let border_style = if model.selection_mode {
+        Style::default()
+            .fg(bracket_color)
+            .add_modifier(Modifier::DIM)
+    } else {
+        Style::default()
+            .fg(bracket_color)
+            .add_modifier(Modifier::BOLD)
+    };
 
-    lines.push(wrap_with_bracket(
+    let block = Block::default()
+        .borders(Borders::LEFT | Borders::RIGHT | Borders::TOP | Borders::BOTTOM)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style)
+        .border_set(ratatui::symbols::border::Set {
+            top_left: "╭",
+            top_right: "╮",
+            bottom_left: "╰",
+            bottom_right: "╯",
+            vertical_left: "│",
+            vertical_right: "│",
+            horizontal_top: " ",
+            horizontal_bottom: " ",
+        })
+        .padding(ratatui::widgets::Padding::horizontal(1));
+
+    let inner = block.inner(area);
+    let content_width = inner.width as usize;
+
+    // Split the inner area to separate the bottom row for the window detail box
+    let layout = ratatui::layout::Layout::default()
+        .direction(ratatui::layout::Direction::Vertical)
+        .constraints([
+            ratatui::layout::Constraint::Length(3), // Top 3 rows (freq labels, spectrum, window freq labels)
+            ratatui::layout::Constraint::Length(3), // Bottom box (1 content + 2 borders)
+        ])
+        .split(inner);
+
+    let top_area = layout[0];
+    let window_detail_area = layout[1];
+
+    // Render top 3 rows
+    let top_lines = vec![
+        render_frequency_labels(content_width, fm_start, fm_range, theme),
         render_full_spectrum_row(
             content_width,
             fm_start,
@@ -64,59 +97,49 @@ pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
             theme,
             animation_time,
         ),
-        '│',
-        '│',
-        theme,
-        model.selection_mode,
-    ));
-
-    lines.push(wrap_with_bracket(
         render_window_frequency_labels(content_width, window_start, window_width, theme),
-        '│',
-        '│',
-        theme,
-        model.selection_mode,
-    ));
-
-    lines.push(wrap_with_bracket(
-        render_window_detail_row(content_width, window_start, window_width, model, theme),
-        '╰',
-        '╯',
-        theme,
-        model.selection_mode,
-    ));
-
-    let paragraph = Paragraph::new(lines);
-    f.render_widget(paragraph, area);
-}
-
-fn wrap_with_bracket(
-    line: Line<'static>,
-    left: char,
-    right: char,
-    _theme: &dyn Theme,
-    in_selection_mode: bool,
-) -> Line<'static> {
-    let bracket_color = Color::Rgb(160, 200, 220); // Light cornflower blue
-    let bracket_style = if in_selection_mode {
-        Style::default()
-            .fg(bracket_color)
-            .add_modifier(Modifier::DIM)
-    } else {
-        Style::default()
-            .fg(bracket_color)
-            .add_modifier(Modifier::BOLD)
-    };
-    let mut spans = vec![
-        Span::styled(" ".to_string(), bracket_style),
-        Span::styled(left.to_string(), bracket_style),
-        Span::styled(" ".to_string(), bracket_style),
     ];
-    spans.extend(line.spans);
-    spans.push(Span::styled(" ".to_string(), bracket_style));
-    spans.push(Span::styled(right.to_string(), bracket_style));
-    spans.push(Span::styled(" ".to_string(), bracket_style));
-    Line::from(spans)
+
+    let top_paragraph = Paragraph::new(top_lines);
+    f.render_widget(block, area);
+    f.render_widget(top_paragraph, top_area);
+
+    // Create a subtle box for the window detail row with dim bracket color
+    let window_detail_block = Block::default()
+        .borders(Borders::LEFT | Borders::RIGHT | Borders::TOP | Borders::BOTTOM)
+        .border_type(BorderType::Rounded)
+        .border_style(
+            Style::default()
+                .fg(bracket_color)
+                .add_modifier(Modifier::DIM),
+        )
+        .border_set(ratatui::symbols::border::Set {
+            top_left: "╭",
+            top_right: "╮",
+            bottom_left: "╰",
+            bottom_right: "╯",
+            vertical_left: "│",
+            vertical_right: "│",
+            horizontal_top: "─",
+            horizontal_bottom: "─",
+        })
+        .padding(ratatui::widgets::Padding::horizontal(1));
+
+    let window_detail_inner = window_detail_block.inner(window_detail_area);
+    let window_detail_width = window_detail_inner.width as usize;
+
+    let window_detail_line = render_window_detail_row(
+        window_detail_width,
+        window_start,
+        window_width,
+        model,
+        theme,
+    );
+
+    let window_detail_paragraph = Paragraph::new(vec![window_detail_line]);
+
+    f.render_widget(window_detail_block, window_detail_area);
+    f.render_widget(window_detail_paragraph, window_detail_inner);
 }
 
 fn render_frequency_labels(
@@ -809,43 +832,6 @@ mod tests {
         assert!(
             content.contains("90.5"),
             "Should contain rejected station 90.5"
-        );
-    }
-
-    #[test]
-    fn test_wrap_with_bracket_adds_brackets() {
-        let theme = MockTheme;
-        let inner_line = Line::from(vec![Span::raw("test")]);
-
-        let wrapped = wrap_with_bracket(inner_line, '[', ']', &theme, false);
-
-        let content: String = wrapped.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(content.starts_with(" [ "), "Should start with ' [ '");
-        assert!(content.ends_with(" ] "), "Should end with ' ] '");
-        assert!(content.contains("test"), "Should contain original content");
-    }
-
-    #[test]
-    fn test_wrap_with_bracket_preserves_character_count() {
-        let theme = MockTheme;
-        let width = 50;
-        let mut inner_spans = Vec::new();
-        for _ in 0..width {
-            inner_spans.push(Span::raw("x"));
-        }
-        let inner_line = Line::from(inner_spans);
-
-        let wrapped = wrap_with_bracket(inner_line, '[', ']', &theme, false);
-
-        let char_count: usize = wrapped
-            .spans
-            .iter()
-            .map(|s| s.content.chars().count())
-            .sum();
-        assert_eq!(
-            char_count,
-            width + 6,
-            "Wrapped line should be exactly width + 6 (3 chars each side)"
         );
     }
 }
