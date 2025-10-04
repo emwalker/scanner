@@ -1,6 +1,9 @@
 //! Caladan wave-based spectrum visualization
 
-use crate::terminal::tui::{model::Model, themes::Theme};
+use crate::terminal::tui::{
+    model::{FocusState, Model},
+    themes::Theme,
+};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -44,18 +47,20 @@ pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
     };
 
     let bracket_color = Color::Rgb(160, 200, 220);
-    let border_style = if model.selection_mode {
-        Style::default()
-            .fg(bracket_color)
-            .add_modifier(Modifier::DIM)
-    } else {
+    let has_focus = matches!(model.focus_state, FocusState::Spectrum);
+
+    let border_style = if has_focus {
         Style::default()
             .fg(bracket_color)
             .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(bracket_color)
+            .add_modifier(Modifier::DIM)
     };
 
     let block = Block::default()
-        .borders(Borders::LEFT | Borders::RIGHT | Borders::TOP | Borders::BOTTOM)
+        .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(border_style)
         .border_set(ratatui::symbols::border::Set {
@@ -63,10 +68,10 @@ pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
             top_right: "╮",
             bottom_left: "╰",
             bottom_right: "╯",
-            vertical_left: "│",
-            vertical_right: "│",
-            horizontal_top: " ",
-            horizontal_bottom: " ",
+            vertical_left: " ",
+            vertical_right: " ",
+            horizontal_top: "─",
+            horizontal_bottom: "─",
         })
         .padding(ratatui::widgets::Padding::horizontal(1));
 
@@ -106,7 +111,7 @@ pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
 
     // Create a subtle box for the window detail row with dim bracket color
     let window_detail_block = Block::default()
-        .borders(Borders::LEFT | Borders::RIGHT | Borders::TOP | Borders::BOTTOM)
+        .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(
             Style::default()
@@ -118,8 +123,8 @@ pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
             top_right: "╮",
             bottom_left: "╰",
             bottom_right: "╯",
-            vertical_left: "│",
-            vertical_right: "│",
+            vertical_left: " ",
+            vertical_right: " ",
             horizontal_top: "─",
             horizontal_bottom: "─",
         })

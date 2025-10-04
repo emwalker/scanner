@@ -1,7 +1,7 @@
 //! Caladan organic progress display with inline mini-graphs
 
 use crate::terminal::tui::{
-    model::{CandidateStatus, Model},
+    model::{CandidateStatus, FocusState, Model},
     themes::Theme,
 };
 use ratatui::{
@@ -61,7 +61,9 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
         .split(area)[0];
 
     let bracket_color = Color::Rgb(160, 200, 220);
-    let border_style = if model.selection_mode {
+    let has_focus = matches!(model.focus_state, FocusState::Progress);
+
+    let border_style = if has_focus {
         Style::default()
             .fg(bracket_color)
             .add_modifier(Modifier::BOLD)
@@ -72,7 +74,7 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
     };
 
     let block = Block::default()
-        .borders(Borders::LEFT | Borders::RIGHT | Borders::TOP | Borders::BOTTOM)
+        .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(border_style)
         .border_set(ratatui::symbols::border::Set {
@@ -80,10 +82,10 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
             top_right: "╮",
             bottom_left: "╰",
             bottom_right: "╯",
-            vertical_left: "│",
-            vertical_right: "│",
-            horizontal_top: " ",
-            horizontal_bottom: " ",
+            vertical_left: " ",
+            vertical_right: " ",
+            horizontal_top: "─",
+            horizontal_bottom: "─",
         })
         .padding(ratatui::widgets::Padding::horizontal(1));
 
@@ -196,7 +198,7 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("{:<11}", status_text),
+                    format!("{:<8}", status_text),
                     Style::default().fg(theme.foreground()),
                 ),
                 Span::raw("  "),
@@ -286,7 +288,7 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
 
 fn create_mini_graph(progress: u8) -> String {
     let chars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    let width = 8;
+    let width = 5;
     let filled = (progress as usize * width) / 100;
 
     (0..width)

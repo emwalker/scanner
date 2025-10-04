@@ -18,11 +18,11 @@ pub mod model;
 pub mod renderers;
 pub mod themes;
 
-use layout::TuiLayout;
+use layout::{CaladanLayout, TuiLayout};
 use model::Model;
 use renderers::{
     console::ConsoleRenderer, header, instructions, progress, progress_caladan, spectrum,
-    spectrum_caladan,
+    spectrum_caladan, tuners_caladan,
 };
 use themes::{Theme, ThemeName, UiVariant, create_theme};
 
@@ -198,29 +198,16 @@ impl TuiProgressDisplay {
                         self.model.toggle_theme_selector();
                     }
                     KeyCode::Up if !self.model.theme_selector_open => {
-                        if !self.model.selection_mode {
-                            // First Up key: enter selection mode and pause scan
-                            self.model.enter_selection_mode();
-                            if let Some(sender) = &self.command_sender {
-                                let _ = sender.send(crate::terminal::ScannerCommand::Pause);
-                            }
-                        } else {
-                            // If playback is active, stop it before navigating
-                            if self.model.playback_active {
-                                if let Some(sender) = &self.command_sender {
-                                    let _ =
-                                        sender.send(crate::terminal::ScannerCommand::StopListening);
-                                }
-                                self.model.playback_active = false;
-                                self.model.frequency_tune_sent = false;
-                            }
-                            // Navigate to previous candidate
-                            self.model.select_previous_candidate();
+                        use crate::terminal::tui::model::FocusState;
+
+                        // Handle pause when entering selection mode from Progress focus
+                        if matches!(self.model.focus_state, FocusState::Progress)
+                            && !self.model.selection_mode
+                            && let Some(sender) = &self.command_sender
+                        {
+                            let _ = sender.send(crate::terminal::ScannerCommand::Pause);
                         }
-                    }
-                    KeyCode::Down
-                        if !self.model.theme_selector_open && self.model.selection_mode =>
-                    {
+
                         // If playback is active, stop it before navigating
                         if self.model.playback_active {
                             if let Some(sender) = &self.command_sender {
@@ -229,7 +216,55 @@ impl TuiProgressDisplay {
                             self.model.playback_active = false;
                             self.model.frequency_tune_sent = false;
                         }
-                        self.model.select_next_candidate();
+
+                        // Handle navigation - may exit selection mode if returning to Spectrum
+                        let was_in_selection = self.model.selection_mode;
+                        self.model.navigate_up();
+
+                        // If we exited selection mode by returning to Spectrum, resume scan
+                        if was_in_selection
+                            && !self.model.selection_mode
+                            && let Some(sender) = &self.command_sender
+                        {
+                            let _ = sender.send(crate::terminal::ScannerCommand::ResumeScan);
+                        }
+                    }
+                    KeyCode::Down if !self.model.theme_selector_open => {
+                        // If playback is active, stop it before navigating
+                        if self.model.playback_active {
+                            if let Some(sender) = &self.command_sender {
+                                let _ = sender.send(crate::terminal::ScannerCommand::StopListening);
+                            }
+                            self.model.playback_active = false;
+                            self.model.frequency_tune_sent = false;
+                        }
+
+                        self.model.navigate_down();
+                    }
+                    KeyCode::Left if !self.model.theme_selector_open => {
+                        // If playback is active, stop it before navigating
+                        if self.model.playback_active {
+                            if let Some(sender) = &self.command_sender {
+                                let _ = sender.send(crate::terminal::ScannerCommand::StopListening);
+                            }
+                            self.model.playback_active = false;
+                            self.model.frequency_tune_sent = false;
+                        }
+
+                        self.model.navigate_left();
+                    }
+                    KeyCode::Right if !self.model.theme_selector_open => {
+                        // If playback is active, stop it before navigating
+                        if self.model.playback_active {
+                            if let Some(sender) = &self.command_sender {
+                                let _ = sender.send(crate::terminal::ScannerCommand::StopListening);
+                            }
+                            self.model.playback_active = false;
+                            self.model.frequency_tune_sent = false;
+                        }
+
+                        // Hardcode tuner count to 2 for now (will be dynamic later)
+                        self.model.navigate_right(2);
                     }
                     KeyCode::Enter
                         if !self.model.theme_selector_open
@@ -284,36 +319,53 @@ impl TuiProgressDisplay {
     }
 
     fn ui(&self, f: &mut Frame) {
-        let layout = TuiLayout::new(f.area());
         let theme = self.theme.as_ref();
         let theme_name = self.current_theme.to_string();
         let ui_variant = theme.ui_variant();
 
-        header::render_header(f, layout.header, &self.model, theme);
-
         match ui_variant {
             UiVariant::Caladan => {
+                let layout = CaladanLayout::new(f.area());
+
+                header::render_header(f, layout.header, &self.model, theme);
                 spectrum_caladan::render_spectrum(f, layout.spectrum, &self.model, theme);
                 progress_caladan::render_progress(f, layout.progress, &self.model, theme);
+                tuners_caladan::render_tuners(f, layout.tuners, &self.model, theme);
+
+                let all_themes: Vec<String> = themes::ThemeName::all()
+                    .iter()
+                    .map(|t| t.display_name().to_string())
+                    .collect();
+                instructions::render_instructions(
+                    f,
+                    layout.instructions,
+                    theme,
+                    &theme_name,
+                    &self.model,
+                    &all_themes,
+                );
             }
             UiVariant::Standard => {
+                let layout = TuiLayout::new(f.area());
+
+                header::render_header(f, layout.header, &self.model, theme);
                 spectrum::render_spectrum(f, layout.spectrum, &self.model, theme);
                 progress::render_progress(f, layout.progress, &self.model, theme);
+
+                let all_themes: Vec<String> = themes::ThemeName::all()
+                    .iter()
+                    .map(|t| t.display_name().to_string())
+                    .collect();
+                instructions::render_instructions(
+                    f,
+                    layout.instructions,
+                    theme,
+                    &theme_name,
+                    &self.model,
+                    &all_themes,
+                );
             }
         }
-
-        let all_themes: Vec<String> = themes::ThemeName::all()
-            .iter()
-            .map(|t| t.display_name().to_string())
-            .collect();
-        instructions::render_instructions(
-            f,
-            layout.instructions,
-            theme,
-            &theme_name,
-            &self.model,
-            &all_themes,
-        );
     }
 
     /// Check if we're running in an interactive terminal

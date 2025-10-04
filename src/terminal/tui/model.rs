@@ -117,6 +117,14 @@ impl CandidateStatus {
     }
 }
 
+/// Focus state for component navigation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusState {
+    Spectrum,
+    Progress,
+    Tuner(usize), // Index of focused tuner
+}
+
 /// Main application model following The Elm Architecture
 #[derive(Debug)]
 pub struct Model {
@@ -132,6 +140,7 @@ pub struct Model {
     pub last_selection_change: Option<Instant>,
     pub frequency_tune_sent: bool, // Tracks if TuneToCandidate command was sent for current selection
     pub playback_active: bool,     // Tracks if actively listening to a station
+    pub focus_state: FocusState,   // Which component has focus
 }
 
 impl Default for Model {
@@ -155,6 +164,7 @@ impl Model {
             last_selection_change: None,
             frequency_tune_sent: false,
             playback_active: false,
+            focus_state: FocusState::Spectrum,
         }
     }
 
@@ -597,6 +607,78 @@ impl Model {
     pub fn scroll_down(&mut self, total_candidates: usize, viewport_height: usize) {
         if self.scroll_offset + viewport_height < total_candidates {
             self.scroll_offset += 1;
+        }
+    }
+
+    /// Handle arrow down navigation based on current focus state
+    pub fn navigate_down(&mut self) {
+        match self.focus_state {
+            FocusState::Spectrum => {
+                self.focus_state = FocusState::Progress;
+            }
+            FocusState::Progress => {
+                if self.selection_mode {
+                    self.select_next_candidate();
+                }
+            }
+            FocusState::Tuner(_) => {}
+        }
+    }
+
+    /// Handle arrow up navigation based on current focus state
+    pub fn navigate_up(&mut self) {
+        match self.focus_state {
+            FocusState::Spectrum => {}
+            FocusState::Progress => {
+                if !self.selection_mode {
+                    self.enter_selection_mode();
+                    self.focus_state = FocusState::Progress;
+                } else {
+                    // Try to select previous candidate
+                    let prev_idx = self.selected_candidate_index;
+                    self.select_previous_candidate();
+
+                    // If selection went to None, we've gone past the first candidate
+                    // Move focus to Spectrum and exit selection mode
+                    if self.selected_candidate_index.is_none() && prev_idx.is_some() {
+                        self.focus_state = FocusState::Spectrum;
+                        self.exit_selection_mode();
+                    }
+                }
+            }
+            FocusState::Tuner(_) => {}
+        }
+    }
+
+    /// Handle arrow right navigation based on current focus state
+    pub fn navigate_right(&mut self, tuner_count: usize) {
+        match self.focus_state {
+            FocusState::Spectrum => {}
+            FocusState::Progress => {
+                if self.selection_mode && tuner_count > 0 {
+                    self.focus_state = FocusState::Tuner(0);
+                }
+            }
+            FocusState::Tuner(idx) => {
+                if idx + 1 < tuner_count {
+                    self.focus_state = FocusState::Tuner(idx + 1);
+                }
+            }
+        }
+    }
+
+    /// Handle arrow left navigation based on current focus state
+    pub fn navigate_left(&mut self) {
+        match self.focus_state {
+            FocusState::Spectrum => {}
+            FocusState::Progress => {}
+            FocusState::Tuner(idx) => {
+                if idx == 0 {
+                    self.focus_state = FocusState::Progress;
+                } else {
+                    self.focus_state = FocusState::Tuner(idx - 1);
+                }
+            }
         }
     }
 }
