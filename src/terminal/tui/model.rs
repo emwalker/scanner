@@ -55,13 +55,37 @@ impl WindowProgress {
 
     /// Get candidates that should be displayed for this window
     /// For complete windows with signals, hide rejected candidates
-    /// For current window, show all candidates
-    pub fn displayable_candidates(&self, is_current_window: bool) -> Vec<&CandidateProgress> {
+    /// For current window during scanning, show all candidates
+    /// In selection mode, always hide rejected candidates
+    pub fn displayable_candidates(
+        &self,
+        is_current_window: bool,
+        in_selection_mode: bool,
+    ) -> Vec<&CandidateProgress> {
+        // In selection mode, always hide rejected candidates regardless of window status
+        if in_selection_mode {
+            return self
+                .candidates
+                .iter()
+                .filter(|candidate| candidate.status != CandidateStatus::Rejected)
+                .collect();
+        }
+
+        // For complete windows, always hide rejected candidates (even if current window)
+        if self.is_complete {
+            return self
+                .candidates
+                .iter()
+                .filter(|candidate| candidate.status != CandidateStatus::Rejected)
+                .collect();
+        }
+
+        // For incomplete windows, show all candidates
+        // (including rejected ones, since they might still be processing)
         if !self.is_complete || is_current_window {
-            // Show all candidates for incomplete windows or current window
             self.candidates.iter().collect()
         } else {
-            // For completed non-current windows, only show non-rejected candidates
+            // This case should not be reachable, but handle it anyway
             self.candidates
                 .iter()
                 .filter(|candidate| candidate.status != CandidateStatus::Rejected)
@@ -254,6 +278,14 @@ impl Model {
 
             candidate.last_update = Instant::now();
         }
+
+        // Check if all candidates across all windows are complete
+        // If so, mark the current window as complete to hide rejected candidates
+        if self.all_complete()
+            && let Some(window) = self.windows.get_mut(&self.current_window)
+        {
+            window.is_complete = true;
+        }
     }
 
     /// Check if all windows are empty
@@ -347,12 +379,13 @@ impl Model {
     }
 
     /// Get flattened list of displayable candidates across all windows
-    /// This includes rejected candidates for display purposes
+    /// This includes rejected candidates for display purposes (during scanning)
+    /// In selection mode, rejected candidates are filtered out
     pub fn get_displayable_candidates(&self) -> Vec<(usize, &CandidateProgress)> {
         let mut candidates = Vec::new();
         for (window_id, window) in self.get_displayable_windows() {
             let is_current = *window_id == self.current_window;
-            for candidate in window.displayable_candidates(is_current) {
+            for candidate in window.displayable_candidates(is_current, self.selection_mode) {
                 candidates.push((*window_id, candidate));
             }
         }
@@ -365,7 +398,7 @@ impl Model {
         let mut candidates = Vec::new();
         for (window_id, window) in self.get_displayable_windows() {
             let is_current = *window_id == self.current_window;
-            for candidate in window.displayable_candidates(is_current) {
+            for candidate in window.displayable_candidates(is_current, self.selection_mode) {
                 // Skip rejected candidates - they shouldn't be selectable
                 if candidate.status != CandidateStatus::Rejected {
                     candidates.push((*window_id, candidate));
@@ -1057,15 +1090,19 @@ mod tests {
         let window = model.windows.get(&window_id).unwrap();
         assert!(window.is_complete);
 
-        // Test current window shows all candidates
-        let current_displayable = window.displayable_candidates(true);
-        assert_eq!(current_displayable.len(), 3); // All candidates
+        // For complete windows, rejected candidates are always filtered out
+        // (even if it's the current window, even if not in selection mode)
+        let current_displayable = window.displayable_candidates(true, false);
+        assert_eq!(current_displayable.len(), 2); // Only non-rejected
 
-        // Test completed window only shows non-rejected candidates
-        let completed_displayable = window.displayable_candidates(false);
+        // Same for non-current complete windows
+        let completed_displayable = window.displayable_candidates(false, false);
         assert_eq!(completed_displayable.len(), 2); // Only non-rejected
 
         // Verify the rejected candidate is filtered out
+        for candidate in current_displayable {
+            assert_ne!(candidate.status, CandidateStatus::Rejected);
+        }
         for candidate in completed_displayable {
             assert_ne!(candidate.status, CandidateStatus::Rejected);
         }
@@ -1110,8 +1147,11 @@ mod tests {
 
         let window = model.windows.get(&window_id).unwrap();
 
-        // Incomplete window should always display
-        assert!(window.should_display());
+        // After all candidates are rejected, all_complete() is true and window is marked complete
+        assert!(window.is_complete);
+
+        // Complete window with only rejected candidates should not display
+        assert!(!window.should_display());
 
         // Mark window complete by starting window 2
         model.update(ProgressEvent {
@@ -1173,7 +1213,7 @@ mod tests {
         assert_eq!(window.candidates[3].frequency_hz, 87_900_000.0);
 
         // displayable_candidates should also maintain this order
-        let displayable = window.displayable_candidates(true);
+        let displayable = window.displayable_candidates(true, false);
         assert_eq!(displayable.len(), 4);
         assert_eq!(displayable[0].frequency_hz, 89_100_000.0);
         assert_eq!(displayable[1].frequency_hz, 88_300_000.0);
@@ -1682,5 +1722,110 @@ mod tests {
         let candidate = &window.candidates[0];
         assert_eq!(candidate.status, CandidateStatus::Completed);
         assert_eq!(candidate.completion, 1.0);
+    }
+
+    /// Test that rejected candidates disappear from the last window when scan completes
+    /// This is a regression test for the behavior where rejected candidates should
+    /// disappear as soon as all candidates finish processing, not just when entering
+    /// browse mode.
+    #[test]
+    fn test_rejected_candidates_disappear_when_scan_completes() {
+        let mut model = Model::new();
+        let window_id = 1;
+
+        // Create a mix of signal and rejected candidates in the window
+        let candidates = vec![
+            ("88.1-1", 88_100_000.0, false), // Signal
+            ("88.3-1", 88_300_000.0, true),  // Rejected
+            ("88.5-1", 88_500_000.0, false), // Signal
+            ("88.7-1", 88_700_000.0, true),  // Rejected
+        ];
+
+        for (id, freq, is_rejected) in &candidates {
+            // Create candidate
+            model.update(ProgressEvent {
+                event_type: ProgressEventType::CandidateCreated,
+                frequency_hz: *freq,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: *freq,
+                    window_id,
+                },
+                candidate_id: Some(id.to_string()),
+                audio_quality: None,
+                signal_strength: None,
+                timestamp: Instant::now(),
+            });
+
+            if *is_rejected {
+                // Mark as rejected
+                model.update(ProgressEvent {
+                    event_type: ProgressEventType::CandidateRejected,
+                    frequency_hz: *freq,
+                    metadata: crate::window::WindowMetadata {
+                        center_frequency_hz: *freq,
+                        window_id,
+                    },
+                    candidate_id: Some(id.to_string()),
+                    audio_quality: None,
+                    signal_strength: None,
+                    timestamp: Instant::now(),
+                });
+            } else {
+                // Complete as signal
+                model.update(ProgressEvent {
+                    event_type: ProgressEventType::SignalGenerated,
+                    frequency_hz: *freq,
+                    metadata: crate::window::WindowMetadata {
+                        center_frequency_hz: *freq,
+                        window_id,
+                    },
+                    candidate_id: Some(id.to_string()),
+                    audio_quality: Some(crate::audio_quality::AudioQuality::Good),
+                    signal_strength: Some(50.0),
+                    timestamp: Instant::now(),
+                });
+
+                model.update(ProgressEvent {
+                    event_type: ProgressEventType::AudioPlaybackCompleted,
+                    frequency_hz: *freq,
+                    metadata: crate::window::WindowMetadata {
+                        center_frequency_hz: *freq,
+                        window_id,
+                    },
+                    candidate_id: Some(id.to_string()),
+                    audio_quality: None,
+                    signal_strength: None,
+                    timestamp: Instant::now(),
+                });
+            }
+        }
+
+        // Verify all candidates exist
+        assert_eq!(model.windows.get(&window_id).unwrap().candidates.len(), 4);
+
+        // Verify that all_complete returns true (scan is done)
+        assert!(model.all_complete());
+
+        // After all_complete is true, the update() method should have marked the window complete
+        let window = model.windows.get(&window_id).unwrap();
+        assert!(window.is_complete);
+
+        // For a complete window, rejected candidates should be filtered out
+        // even if it's the current window (is_current_window=true)
+        let displayable_after_complete = window.displayable_candidates(true, false);
+        assert_eq!(displayable_after_complete.len(), 2); // Only 2 signals visible
+
+        // Verify only non-rejected candidates are shown
+        for candidate in displayable_after_complete {
+            assert_ne!(candidate.status, CandidateStatus::Rejected);
+        }
+
+        // In selection mode, rejected should also be filtered
+        let displayable_in_selection = window.displayable_candidates(true, true);
+        assert_eq!(displayable_in_selection.len(), 2); // Only 2 signals visible
+
+        for candidate in displayable_in_selection {
+            assert_ne!(candidate.status, CandidateStatus::Rejected);
+        }
     }
 }

@@ -20,7 +20,7 @@ pub fn render_instructions(
     if model.theme_selector_open {
         render_theme_selector(f, area, theme, model, all_themes);
     } else {
-        let left_instructions = if model.selection_mode {
+        let left_instructions = if model.selection_mode && !model.all_complete() {
             "  ⌃C Exit  ↑↓ Browse  ↵ Continue scan"
         } else {
             "  ⌃C Exit  ↑↓ Browse"

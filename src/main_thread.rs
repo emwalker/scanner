@@ -254,8 +254,126 @@ impl MainThread {
         Ok(())
     }
 
+    fn process_commands(
+        &mut self,
+        device: &soapy::Device,
+        window_num: usize,
+        total_windows: usize,
+        paused: &mut bool,
+        audio_session: &mut Option<crate::audio_session::AudioSession>,
+    ) -> Result<()> {
+        let mut commands = Vec::new();
+        if let Some(receiver) = &self.command_receiver {
+            while let Ok(command) = receiver.try_recv() {
+                commands.push(command);
+            }
+        }
+
+        for command in commands {
+            let (new_paused, next_cmd) = self.handle_command(
+                command,
+                device,
+                window_num,
+                total_windows,
+                *paused,
+                audio_session,
+            )?;
+            *paused = new_paused;
+            if let Some(cmd) = next_cmd {
+                let (final_paused, _) = self.handle_command(
+                    cmd,
+                    device,
+                    window_num,
+                    total_windows,
+                    *paused,
+                    audio_session,
+                )?;
+                *paused = final_paused;
+            }
+        }
+        Ok(())
+    }
+
+    fn check_and_handle_command(
+        &mut self,
+        device: &soapy::Device,
+        window_num: usize,
+        total_windows: usize,
+        paused: &mut bool,
+        audio_session: &mut Option<crate::audio_session::AudioSession>,
+    ) -> Result<()> {
+        if let Some(receiver) = &self.command_receiver
+            && let Ok(command) = receiver.try_recv()
+        {
+            let (new_paused, next_cmd) = self.handle_command(
+                command,
+                device,
+                window_num,
+                total_windows,
+                *paused,
+                audio_session,
+            )?;
+            *paused = new_paused;
+            if let Some(cmd) = next_cmd {
+                let (final_paused, _) = self.handle_command(
+                    cmd,
+                    device,
+                    window_num,
+                    total_windows,
+                    *paused,
+                    audio_session,
+                )?;
+                *paused = final_paused;
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_post_scan_waiting(
+        &mut self,
+        device: &soapy::Device,
+        windows_to_process: usize,
+        total_windows: usize,
+        paused: &mut bool,
+        audio_session: &mut Option<crate::audio_session::AudioSession>,
+    ) -> Result<bool> {
+        if self.shutdown_listener.is_triggered() {
+            return Ok(false);
+        }
+        self.check_and_handle_command(
+            device,
+            windows_to_process,
+            total_windows,
+            paused,
+            audio_session,
+        )?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        Ok(true)
+    }
+
+    fn handle_post_scan_browse_mode(
+        &mut self,
+        device: &soapy::Device,
+        windows_to_process: usize,
+        total_windows: usize,
+        paused: &mut bool,
+        audio_session: &mut Option<crate::audio_session::AudioSession>,
+    ) -> Result<bool> {
+        if self.shutdown_listener.is_triggered() {
+            return Ok(false);
+        }
+        self.process_commands(
+            device,
+            windows_to_process,
+            total_windows,
+            paused,
+            audio_session,
+        )?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        Ok(true)
+    }
+
     fn scan_band(&mut self, device: &soapy::Device) -> Result<()> {
-        // Clear any previously processed frequencies from earlier scans
         fm::clear_processed_frequencies();
 
         let window_centers = self
@@ -276,177 +394,130 @@ impl MainThread {
         let mut paused = false;
         let mut i = 0;
         let mut audio_session: Option<crate::audio_session::AudioSession> = None;
+        let mut scan_complete = false;
 
-        while i < windows_to_process {
-            debug!(
-                iteration = i,
-                total = windows_to_process,
-                paused = paused,
-                "Start of scan loop iteration"
-            );
-
-            // Collect commands without holding borrow of self
-            let mut commands = Vec::new();
-            if let Some(receiver) = &self.command_receiver {
-                while let Ok(command) = receiver.try_recv() {
-                    commands.push(command);
-                }
-            }
-
-            // Process commands
-            for command in commands {
-                let (new_paused, next_cmd) = self.handle_command(
-                    command,
+        loop {
+            if scan_complete && !paused {
+                if !self.handle_post_scan_waiting(
                     device,
-                    i + 1,
+                    windows_to_process,
                     window_centers.len(),
-                    paused,
+                    &mut paused,
                     &mut audio_session,
-                )?;
-                paused = new_paused;
-                if let Some(cmd) = next_cmd {
-                    let (final_paused, _) = self.handle_command(
-                        cmd,
-                        device,
-                        i + 1,
-                        window_centers.len(),
-                        paused,
-                        &mut audio_session,
-                    )?;
-                    paused = final_paused;
+                )? {
+                    break;
                 }
-            }
-
-            if paused {
-                std::thread::sleep(std::time::Duration::from_millis(100));
                 continue;
             }
 
-            debug!(
-                window = i + 1,
-                total = windows_to_process,
-                paused = paused,
-                "Not paused, will process window"
-            );
-
-            // Check for shutdown before processing each window
-            if self.shutdown_listener.is_triggered() {
-                debug!("Shutdown requested, stopping band scanning");
-                break;
+            if scan_complete && paused {
+                if !self.handle_post_scan_browse_mode(
+                    device,
+                    windows_to_process,
+                    window_centers.len(),
+                    &mut paused,
+                    &mut audio_session,
+                )? {
+                    break;
+                }
+                continue;
             }
 
-            if let Some(receiver) = &self.command_receiver
-                && let Ok(command) = receiver.try_recv()
-            {
-                let (new_paused, next_cmd) = self.handle_command(
-                    command,
+            // Check if we've scanned all windows
+            if i >= windows_to_process {
+                debug!("Scan band complete - all windows processed");
+                scan_complete = true;
+                continue;
+            }
+
+            if i < windows_to_process {
+                debug!(
+                    iteration = i,
+                    total = windows_to_process,
+                    paused = paused,
+                    "Start of scan loop iteration"
+                );
+
+                self.process_commands(
                     device,
                     i + 1,
                     window_centers.len(),
-                    paused,
+                    &mut paused,
                     &mut audio_session,
                 )?;
-                paused = new_paused;
-                if let Some(cmd) = next_cmd {
-                    let (final_paused, _) = self.handle_command(
-                        cmd,
-                        device,
-                        i + 1,
-                        window_centers.len(),
-                        paused,
-                        &mut audio_session,
-                    )?;
-                    paused = final_paused;
+
+                if paused {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
                 }
+
+                debug!(
+                    window = i + 1,
+                    total = windows_to_process,
+                    paused = paused,
+                    "Not paused, will process window"
+                );
+
+                if self.shutdown_listener.is_triggered() {
+                    debug!("Shutdown requested, stopping band scanning");
+                    break;
+                }
+
+                self.check_and_handle_command(
+                    device,
+                    i + 1,
+                    window_centers.len(),
+                    &mut paused,
+                    &mut audio_session,
+                )?;
                 if paused {
                     continue;
                 }
-            }
 
-            let center_freq = window_centers[i];
-            let window = Window::new(crate::window::WindowConfig {
-                center_freq,
-                window_num: i + 1,
-                total_windows: window_centers.len(),
-                device: device.clone(),
-                config: self.config.clone(),
-                progress_reporter: self.progress_reporter.clone(),
-                shutdown_listener: self.shutdown_listener.clone(),
-                pause_signal: Some(self.pause_signal.clone()),
-            });
-            let segment = device.tune(&self.config, center_freq)?;
+                let center_freq = window_centers[i];
+                let window = Window::new(crate::window::WindowConfig {
+                    center_freq,
+                    window_num: i + 1,
+                    total_windows: window_centers.len(),
+                    device: device.clone(),
+                    config: self.config.clone(),
+                    progress_reporter: self.progress_reporter.clone(),
+                    shutdown_listener: self.shutdown_listener.clone(),
+                    pause_signal: Some(self.pause_signal.clone()),
+                });
+                let segment = device.tune(&self.config, center_freq)?;
 
-            if let Some(receiver) = &self.command_receiver
-                && let Ok(command) = receiver.try_recv()
-            {
-                let (new_paused, next_cmd) = self.handle_command(
-                    command,
+                self.check_and_handle_command(
                     device,
                     i + 1,
                     window_centers.len(),
-                    paused,
+                    &mut paused,
                     &mut audio_session,
                 )?;
-                paused = new_paused;
-                if let Some(cmd) = next_cmd {
-                    let (final_paused, _) = self.handle_command(
-                        cmd,
-                        device,
-                        i + 1,
-                        window_centers.len(),
-                        paused,
-                        &mut audio_session,
-                    )?;
-                    paused = final_paused;
-                }
                 if paused {
                     continue;
                 }
-            }
 
-            window.process(&*segment)?;
+                window.process(&*segment)?;
 
-            // Collect commands without holding borrow of self
-            let mut commands = Vec::new();
-            if let Some(receiver) = &self.command_receiver {
-                while let Ok(command) = receiver.try_recv() {
-                    commands.push(command);
-                }
-            }
-
-            // Process commands
-            for command in commands {
-                let (new_paused, next_cmd) = self.handle_command(
-                    command,
+                self.process_commands(
                     device,
                     i + 1,
                     window_centers.len(),
-                    paused,
+                    &mut paused,
                     &mut audio_session,
                 )?;
-                paused = new_paused;
-                if let Some(cmd) = next_cmd {
-                    let (final_paused, _) = self.handle_command(
-                        cmd,
-                        device,
-                        i + 1,
-                        window_centers.len(),
-                        paused,
-                        &mut audio_session,
-                    )?;
-                    paused = final_paused;
-                }
-            }
 
-            debug!(
-                completed_window = i + 1,
-                next_window = i + 2,
-                remaining = windows_to_process - i - 1,
-                "Window complete, advancing to next"
-            );
-            i += 1;
+                debug!(
+                    completed_window = i + 1,
+                    next_window = i + 2,
+                    remaining = windows_to_process - i - 1,
+                    "Window complete, advancing to next"
+                );
+                i += 1;
+            }
         }
-        debug!("Scan band complete - all windows processed");
+
         Ok(())
     }
 }

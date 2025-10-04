@@ -218,20 +218,20 @@ fn test_peak_detection_with_synthetic_signal() {
     );
 
     // Create config with explicit values to avoid any default changes
-    let mut config = ScanningConfig::default();
-    config.samp_rate = sample_source.sample_rate();
-    config.fft_size = 1024;
-    config.peak_detection_threshold = 0.3; // Signal at 89.1 MHz has magnitude ~0.304
-
-    // Disable all advanced features for baseline test behavior
-    config.enable_exponential_smoothing = false;
-    config.enable_multi_frame_averaging = false;
-    config.enable_coherent_integration = false;
-    config.enable_moving_average_filter = false;
-    config.enable_cfar_detection = false;
-    config.enable_windowing = false;
-    config.zero_padding_factor = 1;
-    config.enable_multi_frame_integration = false;
+    let config = ScanningConfig {
+        samp_rate: sample_source.sample_rate(),
+        fft_size: 1024,
+        peak_detection_threshold: 0.3, // Signal at 89.1 MHz has magnitude ~0.304
+        enable_exponential_smoothing: false,
+        enable_multi_frame_averaging: false,
+        enable_coherent_integration: false,
+        enable_moving_average_filter: false,
+        enable_cfar_detection: false,
+        enable_windowing: false,
+        zero_padding_factor: 1,
+        enable_multi_frame_integration: false,
+        ..Default::default()
+    };
 
     // Process samples and find peaks
     let peaks = scanner::peaks::collect_peaks_from_source(&config, &mut sample_source)

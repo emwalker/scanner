@@ -128,7 +128,7 @@ mod tests {
         // Estimate should be reasonable (4 remaining peaks * ~10ms each)
         let estimate_ms = estimate.unwrap().as_millis();
         assert!(
-            estimate_ms >= 20 && estimate_ms <= 100,
+            (20..=100).contains(&estimate_ms),
             "Estimate should be reasonable, got {}ms",
             estimate_ms
         );

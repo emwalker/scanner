@@ -27,7 +27,7 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
 
     for (window_id, window) in displayable_windows.iter() {
         let is_current = **window_id == model.current_window;
-        let displayable = window.displayable_candidates(is_current);
+        let displayable = window.displayable_candidates(is_current, model.selection_mode);
 
         for candidate in displayable {
             if line_count >= max_lines {
@@ -135,8 +135,8 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
         }
     }
 
-    // Add "Continue scan" option if in selection mode
-    if model.selection_mode && line_count < max_lines {
+    // Add "Continue scan" option if in selection mode and scan is not complete
+    if model.selection_mode && !model.all_complete() && line_count < max_lines {
         let is_continue_selected = model.is_continue_scan_selected();
 
         let color = if is_continue_selected {

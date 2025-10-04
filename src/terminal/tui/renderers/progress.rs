@@ -45,12 +45,12 @@ pub fn render_progress(
         let candidates = if use_selectable {
             // In selection mode, never show rejected candidates
             window
-                .displayable_candidates(is_current_window)
+                .displayable_candidates(is_current_window, use_selectable)
                 .into_iter()
                 .filter(|c| c.status != crate::terminal::tui::model::CandidateStatus::Rejected)
                 .collect::<Vec<_>>()
         } else {
-            window.displayable_candidates(is_current_window)
+            window.displayable_candidates(is_current_window, use_selectable)
         };
         let candidate_count = candidates.len();
         let window_bars = candidate_count + 1; // +1 for window header
@@ -62,8 +62,8 @@ pub fn render_progress(
     let mut window_sizes = Vec::new();
     let mut running_total = 0;
 
-    // Add "Continue scan" line if in selection mode
-    if model.selection_mode {
+    // Add "Continue scan" line if in selection mode and scan is not complete
+    if model.selection_mode && !model.all_complete() {
         running_total += 1;
     }
 
@@ -84,7 +84,7 @@ pub fn render_progress(
         .iter()
         .map(|(_, count)| count + 1)
         .sum::<usize>();
-    if model.selection_mode {
+    if model.selection_mode && !model.all_complete() {
         total_lines += 1;
     }
     let constraints: Vec<Constraint> = (0..total_lines).map(|_| Constraint::Length(1)).collect();
@@ -109,12 +109,12 @@ pub fn render_progress(
         let displayable_candidates = if use_selectable {
             // In selection mode, filter out rejected candidates
             window
-                .displayable_candidates(is_current_window)
+                .displayable_candidates(is_current_window, use_selectable)
                 .into_iter()
                 .filter(|c| c.status != crate::terminal::tui::model::CandidateStatus::Rejected)
                 .collect::<Vec<_>>()
         } else {
-            window.displayable_candidates(is_current_window)
+            window.displayable_candidates(is_current_window, use_selectable)
         };
         let window_candidate_count = displayable_candidates.len();
 
@@ -149,8 +149,8 @@ pub fn render_progress(
         }
     }
 
-    // Add "Continue scan" option if in selection mode
-    if model.selection_mode && chunk_idx < chunks.len() {
+    // Add "Continue scan" option if in selection mode and scan is not complete
+    if model.selection_mode && !model.all_complete() && chunk_idx < chunks.len() {
         let is_continue_selected = model.is_continue_scan_selected();
         render_continue_scan(f, chunks[chunk_idx], is_continue_selected, theme);
     }
