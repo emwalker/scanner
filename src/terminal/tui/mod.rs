@@ -43,7 +43,7 @@ impl TuiProgressDisplay {
         receiver: mpsc::Receiver<ProgressEvent>,
         shutdown_listener: triggered::Listener,
     ) -> Self {
-        let current_theme = ThemeName::BasicDark;
+        let current_theme = ThemeName::CaladanDark;
         let theme = create_theme(&current_theme);
         Self {
             receiver,
@@ -134,12 +134,11 @@ impl TuiProgressDisplay {
         terminal: &mut Terminal<B>,
     ) -> io::Result<()> {
         let mut iterations = 0;
-        let mut needs_redraw = true;
+        let animation_interval = Duration::from_millis(100); // 10 FPS for slower, smoother animation
+
         loop {
-            if needs_redraw {
-                terminal.draw(|f| self.ui(f))?;
-                needs_redraw = false;
-            }
+            // Always redraw for animation
+            terminal.draw(|f| self.ui(f))?;
             iterations += 1;
 
             if self.model.should_quit || self.shutdown_listener.is_triggered() {
@@ -152,11 +151,10 @@ impl TuiProgressDisplay {
                 break;
             }
 
-            // Handle events with timeout
-            if event::poll(Duration::from_millis(50))?
+            // Handle events with timeout matching animation interval
+            if event::poll(animation_interval)?
                 && let Ok(Event::Key(key)) = event::read()
             {
-                needs_redraw = true;
                 match key.code {
                     KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                         self.model.quit();
@@ -272,21 +270,13 @@ impl TuiProgressDisplay {
                     });
                     self.model.frequency_tune_sent = true;
                     self.model.playback_active = true;
-                    needs_redraw = true;
                 }
             }
 
             // Process progress events
-            let mut received_events = false;
             while let Ok(event) = self.receiver.try_recv() {
                 self.model.update(event);
-                received_events = true;
-            }
-
-            // If we received events, reset iteration counter and request redraw
-            if received_events {
-                iterations = 0;
-                needs_redraw = true;
+                iterations = 0; // Reset iteration counter when we get events
             }
         }
 

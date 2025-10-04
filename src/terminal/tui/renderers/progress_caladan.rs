@@ -7,10 +7,39 @@ use crate::terminal::tui::{
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Paragraph},
 };
+
+fn wrap_with_bracket(
+    line: Line<'static>,
+    left: char,
+    right: char,
+    _theme: &dyn Theme,
+    in_selection_mode: bool,
+) -> Line<'static> {
+    let bracket_color = Color::Rgb(160, 200, 220); // Light cornflower blue
+    let bracket_style = if in_selection_mode {
+        Style::default()
+            .fg(bracket_color)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(bracket_color)
+            .add_modifier(Modifier::DIM)
+    };
+    let mut spans = vec![
+        Span::styled(" ".to_string(), bracket_style),
+        Span::styled(left.to_string(), bracket_style),
+        Span::styled(" ".to_string(), bracket_style),
+    ];
+    spans.extend(line.spans);
+    spans.push(Span::styled(" ".to_string(), bracket_style));
+    spans.push(Span::styled(right.to_string(), bracket_style));
+    spans.push(Span::styled(" ".to_string(), bracket_style));
+    Line::from(spans)
+}
 
 pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) {
     if area.height < 2 {
@@ -37,10 +66,8 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
     let has_content_above = model.scroll_offset > 0;
     if has_content_above {
         lines.push(Line::from(Span::styled(
-            "        ↑ more above ↑",
-            Style::default()
-                .fg(theme.instructions_dim())
-                .add_modifier(Modifier::DIM),
+            "       ↑ more above ↑",
+            Style::default().fg(theme.instructions_dim()),
         )));
         line_count += 1;
     }
@@ -124,7 +151,7 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
 
             let mut spans = vec![
                 Span::styled(
-                    format!(" {} {} ", selection_prefix, status_symbol),
+                    format!("{} {} ", selection_prefix, status_symbol),
                     Style::default().fg(status_color),
                 ),
                 Span::styled(
@@ -157,9 +184,12 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
                 };
                 spans.push(Span::raw("  "));
                 spans.push(Span::styled(
-                    format!("·{}", quality_text),
+                    format!("·{:<8}", quality_text), // Right-pad quality text to 9 chars (8 + ·)
                     Style::default().fg(quality_color),
                 ));
+            } else {
+                // Add padding when no quality to maintain alignment
+                spans.push(Span::raw("           ")); // 11 spaces (2 + 9)
             }
 
             lines.push(Line::from(spans));
@@ -181,8 +211,11 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
             theme.instructions_dim()
         };
 
+        // Pad to match the width of candidate lines (47 chars total)
+        // Candidate width: 4 (prefix+symbol) + 10 (freq) + 11 (status) + 2 (space) + 8 (graph) + 11 (quality) = 46
+        // Need 47 to align properly with the bracket wrapper
         lines.push(Line::from(vec![Span::styled(
-            " Continue scan →",
+            format!("{:<47}", "Continue scan →"),
             Style::default()
                 .fg(color)
                 .add_modifier(if is_continue_selected {
@@ -199,22 +232,39 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
     let has_content_below = total_rendered_or_skipped < total_candidates;
     if has_content_below && line_count < max_lines {
         lines.push(Line::from(Span::styled(
-            "        ↓ more below ↓",
-            Style::default()
-                .fg(theme.instructions_dim())
-                .add_modifier(Modifier::DIM),
+            "       ↓ more below ↓",
+            Style::default().fg(theme.instructions_dim()),
         )));
     }
 
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  awaiting signals...",
+            " awaiting signals...",
             Style::default().fg(theme.instructions_dim()),
         )));
     }
 
+    // Wrap all lines with brackets
+    let line_count = lines.len();
+    let wrapped_lines: Vec<Line> = lines
+        .into_iter()
+        .enumerate()
+        .map(|(idx, line)| {
+            let (left, right) = if idx == 0 {
+                ('╭', '╮') // Top corners
+            } else if idx == line_count - 1 {
+                ('╰', '╯') // Bottom corners
+            } else {
+                ('│', '│') // Sides
+            };
+            wrap_with_bracket(line, left, right, theme, model.selection_mode)
+        })
+        .collect();
+
+    let final_lines = wrapped_lines;
+
     let block = Block::default();
-    let paragraph = Paragraph::new(lines).block(block);
+    let paragraph = Paragraph::new(final_lines).block(block);
     f.render_widget(paragraph, area);
 }
 

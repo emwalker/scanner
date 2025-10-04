@@ -65,8 +65,13 @@ pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, 
 
     // Create title line with colored spans
     let title_spans = vec![
-        Span::raw(format!(" {}{}", title_text, " ".repeat(title_padding))),
-        Span::raw(format!("Candidates: {} | Stations: ", total_candidates)),
+        Span::styled(
+            format!(" {}{}", title_text, " ".repeat(title_padding)),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("Candidates: "),
+        Span::raw(total_candidates.to_string()),
+        Span::raw(" | Stations: "),
         Span::styled(
             stations_found.to_string(),
             Style::default()
@@ -76,20 +81,22 @@ pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, 
     ];
     let title_line = Line::from(title_spans);
 
-    let subtitle_line = format!(" {}{}", subtitle_text, " ".repeat(subtitle_padding));
+    let subtitle_line = Line::from(vec![Span::styled(
+        format!(" {}{}", subtitle_text, " ".repeat(subtitle_padding)),
+        Style::default().add_modifier(Modifier::BOLD),
+    )]);
 
     // Create header with mixed content (border, colored line, plain line)
     let header_content = vec![
-        Line::from(top_border),
+        Line::from(vec![Span::styled(
+            top_border,
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
         title_line,
-        Line::from(subtitle_line),
+        subtitle_line,
     ];
 
-    let title = Paragraph::new(header_content).style(
-        Style::default()
-            .fg(theme.primary())
-            .add_modifier(Modifier::BOLD),
-    );
+    let title = Paragraph::new(header_content).style(Style::default().fg(theme.primary()));
     f.render_widget(title, area);
 }
 

@@ -4,12 +4,19 @@ use crate::terminal::tui::{model::Model, themes::Theme};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
 
 pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    static ANIMATION_START: OnceLock<Instant> = OnceLock::new();
+    let start = ANIMATION_START.get_or_init(Instant::now);
+    let animation_time = start.elapsed().as_secs_f32();
+
     if area.height < 4 {
         return;
     }
@@ -41,9 +48,10 @@ pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
 
     lines.push(wrap_with_bracket(
         render_frequency_labels(content_width, fm_start, fm_range, theme),
-        '⎡',
-        '⎤',
+        '╭',
+        '╮',
         theme,
+        model.selection_mode,
     ));
 
     lines.push(wrap_with_bracket(
@@ -54,24 +62,28 @@ pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
             window_start,
             window_width,
             theme,
+            animation_time,
         ),
-        '⎢',
-        '⎥',
+        '│',
+        '│',
         theme,
+        model.selection_mode,
     ));
 
     lines.push(wrap_with_bracket(
         render_window_frequency_labels(content_width, window_start, window_width, theme),
-        '⎢',
-        '⎥',
+        '│',
+        '│',
         theme,
+        model.selection_mode,
     ));
 
     lines.push(wrap_with_bracket(
         render_window_detail_row(content_width, window_start, window_width, model, theme),
-        '⎣',
-        '⎦',
+        '╰',
+        '╯',
         theme,
+        model.selection_mode,
     ));
 
     let paragraph = Paragraph::new(lines);
@@ -82,9 +94,19 @@ fn wrap_with_bracket(
     line: Line<'static>,
     left: char,
     right: char,
-    theme: &dyn Theme,
+    _theme: &dyn Theme,
+    in_selection_mode: bool,
 ) -> Line<'static> {
-    let bracket_style = Style::default().fg(theme.secondary());
+    let bracket_color = Color::Rgb(160, 200, 220); // Light cornflower blue
+    let bracket_style = if in_selection_mode {
+        Style::default()
+            .fg(bracket_color)
+            .add_modifier(Modifier::DIM)
+    } else {
+        Style::default()
+            .fg(bracket_color)
+            .add_modifier(Modifier::BOLD)
+    };
     let mut spans = vec![
         Span::styled(" ".to_string(), bracket_style),
         Span::styled(left.to_string(), bracket_style),
@@ -188,16 +210,19 @@ fn render_window_frequency_labels(
         let start_label = format!("{:.1}", start_mhz);
         let end_label = format!("{:.1}", end_mhz);
 
+        // Center the start label on the left edge, shifted one column right
+        let start_label_offset = window_start_pos.saturating_sub(start_label.len() / 2) + 1;
         for (i, ch) in start_label.chars().enumerate() {
-            let pos = window_start_pos + i;
+            let pos = start_label_offset + i;
             if pos < width {
                 result[pos] = ch;
             }
         }
 
-        let end_start = window_end_pos.saturating_sub(end_label.len() - 1);
+        // Center the end label on the right edge, shifted one column right
+        let end_label_offset = window_end_pos.saturating_sub(end_label.len() / 2) + 1;
         for (i, ch) in end_label.chars().enumerate() {
-            let pos = end_start + i;
+            let pos = end_label_offset + i;
             if pos < width {
                 result[pos] = ch;
             }
@@ -225,6 +250,7 @@ fn render_full_spectrum_row(
     window_start: Option<f64>,
     window_width: f64,
     theme: &dyn Theme,
+    animation_time: f32,
 ) -> Line<'static> {
     let mut spans = Vec::new();
 
@@ -238,13 +264,26 @@ fn render_full_spectrum_row(
             false
         };
 
-        let offset = (col as f32 * 0.3).sin() * 0.5 + 0.5;
+        // Slower speeds (1.2, 0.7, 0.9)
+        // Add vertical undulation: vary amplitude based on position along the wave
+        let horizontal_phase = col as f32 * 0.3 + animation_time * 1.2;
+        let amplitude_modulation = (horizontal_phase * 0.5).sin() * 0.3 + 0.7; // Undulates between 0.4 and 1.0
+
+        let wave1 = horizontal_phase.sin() * 0.35 * amplitude_modulation;
+        let wave2 = (col as f32 * 0.17 + animation_time * 0.7).sin() * 0.25;
+        let wave3 = (col as f32 * 0.43 + animation_time * 0.9).sin() * 0.15;
+        let offset = (wave1 + wave2 + wave3) * 0.5 + 0.5;
+
         let ch = if in_window {
             '▬'
-        } else if offset > 0.6 {
+        } else if offset > 0.65 {
             '≋'
-        } else {
+        } else if offset > 0.45 {
             '≈'
+        } else if offset > 0.25 {
+            '~'
+        } else {
+            '·'
         };
 
         let color = if in_window {
@@ -272,11 +311,7 @@ fn render_window_detail_row(
     if let Some(ws) = window_start
         && let Some(current_window) = model.windows.get(&model.current_window)
     {
-        let mut stations: Vec<_> = current_window
-            .candidates
-            .iter()
-            .filter(|c| c.status != crate::terminal::tui::model::CandidateStatus::Rejected)
-            .collect();
+        let mut stations: Vec<_> = current_window.candidates.iter().collect();
 
         stations.sort_by(|a, b| a.frequency_hz.partial_cmp(&b.frequency_hz).unwrap());
 
@@ -286,6 +321,8 @@ fn render_window_detail_row(
                 let pos = (freq_in_window / window_width * width as f64) as usize;
                 let freq_mhz = candidate.frequency_hz / 1e6;
                 let label = format!("{:.1}", freq_mhz);
+                let rejected =
+                    candidate.status == crate::terminal::tui::model::CandidateStatus::Rejected;
 
                 let quality_char = match &candidate.audio_quality {
                     Some(crate::audio_quality::AudioQuality::Good) => '●',
@@ -296,13 +333,21 @@ fn render_window_detail_row(
                     _ => '○',
                 };
 
-                let quality_color = match &candidate.audio_quality {
-                    Some(crate::audio_quality::AudioQuality::Good) => theme.quality_good(),
-                    Some(crate::audio_quality::AudioQuality::Moderate) => theme.quality_moderate(),
-                    Some(crate::audio_quality::AudioQuality::Poor) => theme.quality_poor(),
-                    Some(crate::audio_quality::AudioQuality::Static) => theme.quality_static(),
-                    Some(crate::audio_quality::AudioQuality::NoAudio) => theme.quality_no_audio(),
-                    _ => theme.status_detected(),
+                let quality_color = if rejected {
+                    theme.status_rejected()
+                } else {
+                    match &candidate.audio_quality {
+                        Some(crate::audio_quality::AudioQuality::Good) => theme.quality_good(),
+                        Some(crate::audio_quality::AudioQuality::Moderate) => {
+                            theme.quality_moderate()
+                        }
+                        Some(crate::audio_quality::AudioQuality::Poor) => theme.quality_poor(),
+                        Some(crate::audio_quality::AudioQuality::Static) => theme.quality_static(),
+                        Some(crate::audio_quality::AudioQuality::NoAudio) => {
+                            theme.quality_no_audio()
+                        }
+                        _ => theme.status_detected(),
+                    }
                 };
 
                 let station_width = 1 + label.len();
@@ -584,8 +629,15 @@ mod tests {
         let window_start = Some(89.5e6);
         let window_width = 2.4e6;
 
-        let line =
-            render_full_spectrum_row(width, 88.0e6, 20.0e6, window_start, window_width, &theme);
+        let line = render_full_spectrum_row(
+            width,
+            88.0e6,
+            20.0e6,
+            window_start,
+            window_width,
+            &theme,
+            0.0,
+        );
 
         let char_count: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
         assert_eq!(
@@ -706,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rejected_stations_filtered_out() {
+    fn test_rejected_stations_shown() {
         let theme = MockTheme;
         let width = 100;
         let window_start = Some(89.5e6);
@@ -755,8 +807,8 @@ mod tests {
             "Should contain non-rejected station 89.9"
         );
         assert!(
-            !content.contains("90.5"),
-            "Should not contain rejected station 90.5"
+            content.contains("90.5"),
+            "Should contain rejected station 90.5"
         );
     }
 
@@ -765,7 +817,7 @@ mod tests {
         let theme = MockTheme;
         let inner_line = Line::from(vec![Span::raw("test")]);
 
-        let wrapped = wrap_with_bracket(inner_line, '[', ']', &theme);
+        let wrapped = wrap_with_bracket(inner_line, '[', ']', &theme, false);
 
         let content: String = wrapped.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(content.starts_with(" [ "), "Should start with ' [ '");
@@ -783,7 +835,7 @@ mod tests {
         }
         let inner_line = Line::from(inner_spans);
 
-        let wrapped = wrap_with_bracket(inner_line, '[', ']', &theme);
+        let wrapped = wrap_with_bracket(inner_line, '[', ']', &theme, false);
 
         let char_count: usize = wrapped
             .spans

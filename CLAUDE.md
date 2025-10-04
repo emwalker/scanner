@@ -12,7 +12,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - The `info!` macro is used for user-facing output, so don't use it.
 - Avoid the `get_` prefix in function names. Follow Rust conventions by omitting `get_` for accessor methods. Use `refined_frequency` instead of `get_refined_frequency`, `name` instead of `get_name`, etc. This differs from languages like Java/C# where `get_`/`set_` prefixes are common.
 - Keep methods at or below 20 lines if possible
-- Be eager to import namespaces, but use namespaces for disambiguation as well. Don't use "as" in an import, and instead use the namespace for disambiguation. But don't reference a long namespace with several parts in the code, either, if you can shorten it with some imports of the submodules.
+- Follow idiomatic Rust import style:
+  - Import types and functions directly (e.g., `use std::collections::HashMap;` then use `HashMap`, not `collections::HashMap`)
+  - Use namespaces as an alternative to "as" for disambiguation (e.g., import `use std::io;` and `use tokio::io;` then use `std::io::Error` vs `tokio::io::Error`)
+  - Only use namespaces at call sites for disambiguation or when it improves clarity
+  - Avoid long qualified paths like `foo::bar::baz::Thing` - instead import intermediate modules if needed
+  - Exception: For enum variants, prefer keeping the enum name (e.g., `Status::Success` not `Success`)
 
 ### Building and Checking
 - `cargo check` - Check for syntax errors and basic correctness (feel free to use anytime)

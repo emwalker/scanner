@@ -185,7 +185,7 @@ struct ScanArgs {
     window_overlap: f64,
 
     /// TUI theme selection (basic-dark, basic-light, bladerunner-dark, bladerunner-light, interstellar-dark, interstellar-light, dune-dark, dune-light, transport-dark, transport-light, archive-dark, archive-light, minimal-dark, minimal-light)
-    #[arg(long, default_value = "basic-dark")]
+    #[arg(long, default_value = "caladan-dark")]
     theme: String,
 }
 
