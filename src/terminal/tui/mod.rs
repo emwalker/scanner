@@ -12,6 +12,7 @@ use std::{
     sync::mpsc,
     time::{Duration, Instant},
 };
+use tokio_util::sync::CancellationToken;
 
 pub mod layout;
 pub mod model;
@@ -32,17 +33,14 @@ pub struct TuiProgressDisplay {
     command_sender: Option<mpsc::Sender<crate::terminal::ScannerCommand>>,
     model: Model,
     _last_update: Instant,
-    shutdown_listener: triggered::Listener,
+    shutdown_token: CancellationToken,
     theme: Box<dyn Theme>,
     current_theme: ThemeName,
 }
 
 impl TuiProgressDisplay {
     /// Create new TUI progress display with default theme
-    pub fn new(
-        receiver: mpsc::Receiver<ProgressEvent>,
-        shutdown_listener: triggered::Listener,
-    ) -> Self {
+    pub fn new(receiver: mpsc::Receiver<ProgressEvent>, shutdown_token: CancellationToken) -> Self {
         let current_theme = ThemeName::CaladanDark;
         let theme = create_theme(&current_theme);
         Self {
@@ -50,7 +48,7 @@ impl TuiProgressDisplay {
             command_sender: None,
             model: Model::new(),
             _last_update: Instant::now(),
-            shutdown_listener,
+            shutdown_token,
             theme,
             current_theme,
         }
@@ -59,7 +57,7 @@ impl TuiProgressDisplay {
     /// Create new TUI progress display with specified theme and command channel
     pub fn new_with_theme(
         receiver: mpsc::Receiver<ProgressEvent>,
-        shutdown_listener: triggered::Listener,
+        shutdown_token: CancellationToken,
         theme: Box<dyn Theme>,
         current_theme: ThemeName,
     ) -> Self {
@@ -68,7 +66,7 @@ impl TuiProgressDisplay {
             command_sender: None,
             model: Model::new(),
             _last_update: Instant::now(),
-            shutdown_listener,
+            shutdown_token,
             theme,
             current_theme,
         }
@@ -141,7 +139,7 @@ impl TuiProgressDisplay {
             terminal.draw(|f| self.ui(f))?;
             iterations += 1;
 
-            if self.model.should_quit || self.shutdown_listener.is_triggered() {
+            if self.model.should_quit || self.shutdown_token.is_cancelled() {
                 break;
             }
 
@@ -405,7 +403,7 @@ impl TuiProgressDisplay {
 
         loop {
             // Check for shutdown signal
-            if self.shutdown_listener.is_triggered() {
+            if self.shutdown_token.is_cancelled() {
                 break;
             }
 
@@ -454,7 +452,7 @@ impl TuiProgressDisplay {
 
         loop {
             // Check for shutdown signal
-            if self.shutdown_listener.is_triggered() {
+            if self.shutdown_token.is_cancelled() {
                 break;
             }
 

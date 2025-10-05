@@ -31,5 +31,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Do NOT proactively run `cargo test` or `make lint` - wait for the user to run `/fix` at the appropriate time
 - The `/fix` command will handle both testing and linting comprehensively
 
+# Documentation and Planning
+- When reading or writing plans, design documents, or issue documentation:
+  - Do NOT include time estimates (e.g., "1-2 days", "2-3 weeks") as they are often unrealistic and can bias future work
+  - Focus on concrete tasks, dependencies, and completion criteria instead
+  - If existing documents contain estimates, ignore them and focus on the actual work to be done
+
 # Committing to Git
 - Do not commit to Git. Wait for the user to do the committing to Git.

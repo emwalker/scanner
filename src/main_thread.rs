@@ -1,5 +1,6 @@
 use crate::scanner_state::{PauseSignal, ScannerState};
 use crate::sdr::Device;
+use crate::shutdown::ShutdownCoordinator;
 use crate::terminal::{NoOpProgressReporter, ProgressReporter};
 use crate::types::{ConsoleWriter, Logger, Result, ScannerError, ScanningConfig};
 use crate::window::Window;
@@ -13,7 +14,7 @@ pub struct MainThread {
     _logger: Arc<dyn Logger + Send + Sync>,
     devices: Vec<soapy::Device>,
     progress_reporter: Arc<dyn ProgressReporter>,
-    shutdown_listener: triggered::Listener,
+    shutdown_coordinator: Arc<ShutdownCoordinator>,
     command_receiver: Option<std::sync::mpsc::Receiver<crate::terminal::ScannerCommand>>,
     scanner_state: ScannerState,
     pause_signal: PauseSignal,
@@ -25,7 +26,7 @@ impl MainThread {
         console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
         logger: Arc<dyn Logger + Send + Sync>,
         devices: Vec<soapy::Device>,
-        shutdown_listener: triggered::Listener,
+        shutdown_coordinator: Arc<ShutdownCoordinator>,
     ) -> Result<Self> {
         Ok(MainThread {
             config,
@@ -33,7 +34,7 @@ impl MainThread {
             _logger: logger,
             devices,
             progress_reporter: Arc::new(NoOpProgressReporter),
-            shutdown_listener,
+            shutdown_coordinator,
             command_receiver: None,
             scanner_state: ScannerState::new(),
             pause_signal: PauseSignal::new(),
@@ -46,7 +47,7 @@ impl MainThread {
         logger: Arc<dyn Logger + Send + Sync>,
         devices: Vec<soapy::Device>,
         progress_reporter: Arc<dyn ProgressReporter>,
-        shutdown_listener: triggered::Listener,
+        shutdown_coordinator: Arc<ShutdownCoordinator>,
     ) -> Result<Self> {
         Ok(MainThread {
             config,
@@ -54,7 +55,7 @@ impl MainThread {
             _logger: logger,
             devices,
             progress_reporter,
-            shutdown_listener,
+            shutdown_coordinator,
             command_receiver: None,
             scanner_state: ScannerState::new(),
             pause_signal: PauseSignal::new(),
@@ -156,7 +157,10 @@ impl MainThread {
                 self.pause_signal.pause();
                 self.scanner_state.handle_pause(window_num);
 
-                *audio_session = Some(crate::audio_session::AudioSession::new(&self.config)?);
+                *audio_session = Some(crate::audio_session::AudioSession::new(
+                    &self.config,
+                    self.shutdown_coordinator.clone(),
+                )?);
                 debug!("AudioSession created for browse mode");
 
                 Ok(None)
@@ -221,12 +225,6 @@ impl MainThread {
 
         // Create a separate window for each station, using the station frequency as center frequency
         for (station_idx, station_freq) in stations.into_iter().enumerate() {
-            // Check for shutdown before processing each station
-            if self.shutdown_listener.is_triggered() {
-                debug!("Shutdown requested, stopping station scanning");
-                break;
-            }
-
             debug!(
                 "Processing station {} of {} at {:.1} MHz",
                 station_idx + 1,
@@ -243,7 +241,7 @@ impl MainThread {
                 device.clone(),
                 self.config.clone(),
                 self.progress_reporter.clone(),
-                self.shutdown_listener.clone(),
+                self.shutdown_coordinator.clone(),
             );
 
             // Process using the full band scanning pipeline (peak detection, candidates, etc.)
@@ -305,9 +303,6 @@ impl MainThread {
         total_windows: usize,
         audio_session: &mut Option<crate::audio_session::AudioSession>,
     ) -> Result<bool> {
-        if self.shutdown_listener.is_triggered() {
-            return Ok(false);
-        }
         self.check_and_handle_command(device, windows_to_process, total_windows, audio_session)?;
         std::thread::sleep(std::time::Duration::from_millis(100));
         Ok(true)
@@ -320,9 +315,6 @@ impl MainThread {
         total_windows: usize,
         audio_session: &mut Option<crate::audio_session::AudioSession>,
     ) -> Result<bool> {
-        if self.shutdown_listener.is_triggered() {
-            return Ok(false);
-        }
         self.process_commands(device, windows_to_process, total_windows, audio_session)?;
         std::thread::sleep(std::time::Duration::from_millis(100));
         Ok(true)
@@ -351,7 +343,7 @@ impl MainThread {
 
         loop {
             // Check for shutdown FIRST - compiler will force us to handle this in all match arms
-            if self.shutdown_listener.is_triggered() {
+            if self.shutdown_coordinator.is_shutdown() {
                 self.scanner_state.shutdown();
             }
 
@@ -448,7 +440,7 @@ impl MainThread {
                         device: device.clone(),
                         config: self.config.clone(),
                         progress_reporter: self.progress_reporter.clone(),
-                        shutdown_listener: self.shutdown_listener.clone(),
+                        shutdown_coordinator: self.shutdown_coordinator.clone(),
                         pause_signal: Some(self.pause_signal.clone()),
                     });
                     let segment = device.tune(&self.config, center_freq)?;
@@ -572,10 +564,15 @@ mod tests {
         let logger = Arc::new(MockLogger::new());
         let devices: Vec<soapy::Device> =
             vec![soapy::Device("driver=mock, label=Test Device".to_string())];
-        let (_trigger, shutdown_listener) = triggered::trigger();
+        let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
-        let main_thread =
-            MainThread::new(config, console_writer, logger, devices, shutdown_listener);
+        let main_thread = MainThread::new(
+            config,
+            console_writer,
+            logger,
+            devices,
+            shutdown_coordinator,
+        );
         assert!(main_thread.is_ok());
     }
 
@@ -585,10 +582,16 @@ mod tests {
         let console_writer = Arc::new(MockConsoleWriter::new());
         let logger = Arc::new(MockLogger::new());
         let devices: Vec<soapy::Device> = vec![];
-        let (_trigger, shutdown_listener) = triggered::trigger();
+        let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
-        let main_thread =
-            MainThread::new(config, console_writer, logger, devices, shutdown_listener).unwrap();
+        let main_thread = MainThread::new(
+            config,
+            console_writer,
+            logger,
+            devices,
+            shutdown_coordinator,
+        )
+        .unwrap();
         let result = main_thread.run(None);
 
         assert!(result.is_err());
@@ -605,10 +608,16 @@ mod tests {
         let logger = Arc::new(MockLogger::new());
         let devices: Vec<soapy::Device> =
             vec![soapy::Device("driver=mock, label=Test Device".to_string())];
-        let (_trigger, shutdown_listener) = triggered::trigger();
+        let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
-        let main_thread =
-            MainThread::new(config, console_writer, logger, devices, shutdown_listener).unwrap();
+        let main_thread = MainThread::new(
+            config,
+            console_writer,
+            logger,
+            devices,
+            shutdown_coordinator,
+        )
+        .unwrap();
 
         // This would normally call SoapySDR and process windows, but we can test the console output pattern
         main_thread.console_writer.write_info("Test message");
@@ -624,10 +633,16 @@ mod tests {
         let logger = Arc::new(MockLogger::new());
         let devices: Vec<soapy::Device> =
             vec![soapy::Device("driver=mock, label=Test Device".to_string())];
-        let (_trigger, shutdown_listener) = triggered::trigger();
+        let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
-        let main_thread =
-            MainThread::new(config, console_writer, logger, devices, shutdown_listener).unwrap();
+        let main_thread = MainThread::new(
+            config,
+            console_writer,
+            logger,
+            devices,
+            shutdown_coordinator,
+        )
+        .unwrap();
 
         let stations = main_thread
             .parse_stations("88.9e6,101.5e6,107.3e6")
@@ -642,10 +657,16 @@ mod tests {
         let logger = Arc::new(MockLogger::new());
         let devices: Vec<soapy::Device> =
             vec![soapy::Device("driver=mock, label=Test Device".to_string())];
-        let (_trigger, shutdown_listener) = triggered::trigger();
+        let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
-        let main_thread =
-            MainThread::new(config, console_writer, logger, devices, shutdown_listener).unwrap();
+        let main_thread = MainThread::new(
+            config,
+            console_writer,
+            logger,
+            devices,
+            shutdown_coordinator,
+        )
+        .unwrap();
 
         let result = main_thread.parse_stations("88.9e6,invalid,107.3e6");
         assert!(result.is_err());

@@ -1,23 +1,26 @@
+use crate::shutdown::ShutdownCoordinator;
 use crate::types::{Result, ScanningConfig, Signal};
 use crate::window::Window;
 use cpal::traits::StreamTrait;
 use cpal::{BufferSize, SampleFormat, StreamConfig};
 use rustradio::graph::GraphRunner;
+use std::sync::Arc;
 use tracing::debug;
 
 pub struct AudioSession {
     audio_tx: std::sync::mpsc::SyncSender<crate::mpsc::AudioPacket>,
     audio_packet_size: usize,
     _stream: cpal::Stream,
-    current_graph: Option<(
-        rustradio::graph::CancellationToken,
-        std::thread::JoinHandle<()>,
-    )>,
+    current_graph_cancel: Option<rustradio::graph::CancellationToken>,
     current_segment: Option<Box<dyn crate::sdr::Segment>>,
+    shutdown_coordinator: Arc<ShutdownCoordinator>,
 }
 
 impl AudioSession {
-    pub fn new(config: &ScanningConfig) -> Result<Self> {
+    pub fn new(
+        config: &ScanningConfig,
+        shutdown_coordinator: Arc<ShutdownCoordinator>,
+    ) -> Result<Self> {
         let audio_packet_size = 4096;
         let audio_buffer_packets = 16;
         let (audio_tx, audio_rx) =
@@ -47,8 +50,9 @@ impl AudioSession {
             audio_tx,
             audio_packet_size,
             _stream: stream,
-            current_graph: None,
+            current_graph_cancel: None,
             current_segment: None,
+            shutdown_coordinator,
         })
     }
 
@@ -77,41 +81,50 @@ impl AudioSession {
         )?;
 
         let cancel_token = audio_graph.cancel_token();
-        let thread_handle = std::thread::spawn(move || {
-            // Lower thread priority to reduce CPU impact
-            let _ =
-                thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
-            debug!("AudioSession: Audio graph thread started with low priority");
-            if let Err(e) = audio_graph.run() {
-                debug!(error = ?e, "AudioSession: Audio graph error");
-            } else {
-                debug!("AudioSession: Audio graph completed");
-            }
-            drop(audio_graph);
-            debug!("AudioSession: Audio graph dropped");
-        });
+        let cancel_token_for_thread = cancel_token.clone();
 
-        self.current_graph = Some((cancel_token, thread_handle));
+        self.shutdown_coordinator
+            .spawn_sdr_thread(move |shutdown_token| {
+                // Lower thread priority to reduce CPU impact
+                let _ = thread_priority::set_current_thread_priority(
+                    thread_priority::ThreadPriority::Min,
+                );
+                debug!("AudioSession: Audio graph thread started with low priority");
+
+                // Bridge: If coordinator signals shutdown, cancel the audio graph
+                if shutdown_token.is_cancelled() {
+                    debug!("AudioSession: Shutdown detected before graph start, cancelling");
+                    cancel_token_for_thread.cancel();
+                }
+
+                if let Err(e) = audio_graph.run() {
+                    debug!(error = ?e, "AudioSession: Audio graph error");
+                } else {
+                    debug!("AudioSession: Audio graph completed");
+                }
+                drop(audio_graph);
+                debug!("AudioSession: Audio graph dropped");
+            })?;
+
+        self.current_graph_cancel = Some(cancel_token);
         self.current_segment = Some(segment);
 
         Ok(())
     }
 
     pub fn stop_current_station(&mut self) {
-        // CRITICAL: Must join audio graph thread BEFORE dropping SDR segment
+        // CRITICAL: Must cancel audio graph thread BEFORE dropping SDR segment
         // to avoid use-after-free (audio graph accessing freed SoapySDR device)
 
-        // First, cancel and join the audio graph thread
-        if let Some((cancel_token, handle)) = self.current_graph.take() {
+        // Cancel the audio graph (coordinator manages the thread join)
+        if let Some(cancel_token) = self.current_graph_cancel.take() {
             debug!("AudioSession: Stopping current station, cancelling audio graph");
             cancel_token.cancel();
-            debug!("AudioSession: Joining audio graph thread");
-            let _ = handle.join();
-            debug!("AudioSession: Audio graph thread joined");
+            debug!("AudioSession: Audio graph cancellation requested");
         }
 
         // Now it's safe to drop the SDR segment
-        // The audio graph thread is guaranteed to be finished
+        // The coordinator will handle joining the thread during shutdown
         if let Some(segment) = self.current_segment.take() {
             debug!("AudioSession: Dropping SDR segment");
             drop(segment);

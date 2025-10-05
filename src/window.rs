@@ -1,4 +1,5 @@
 use crate::sdr::Segment;
+use crate::shutdown::ShutdownCoordinator;
 use crate::terminal::{ProgressEvent, ProgressEventType, ProgressReporter};
 use crate::types::{Result, ScanningConfig};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -7,6 +8,7 @@ use rustradio::graph::GraphRunner;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 /// Metadata about the window that the TUI needs
@@ -24,7 +26,7 @@ pub struct WindowConfig {
     pub device: crate::soapy::Device,
     pub config: ScanningConfig,
     pub progress_reporter: Arc<dyn ProgressReporter>,
-    pub shutdown_listener: triggered::Listener,
+    pub shutdown_coordinator: Arc<ShutdownCoordinator>,
     pub pause_signal: Option<crate::scanner_state::PauseSignal>,
 }
 
@@ -37,7 +39,7 @@ pub struct Window {
     device: crate::soapy::Device,
     config: ScanningConfig,
     progress_reporter: Arc<dyn ProgressReporter>,
-    shutdown_listener: triggered::Listener,
+    shutdown_token: CancellationToken,
     metadata: WindowMetadata,
     pause_signal: Option<crate::scanner_state::PauseSignal>,
 }
@@ -52,7 +54,7 @@ impl Window {
             device: window_config.device,
             config: window_config.config,
             progress_reporter: window_config.progress_reporter,
-            shutdown_listener: window_config.shutdown_listener,
+            shutdown_token: window_config.shutdown_coordinator.token(),
             metadata: WindowMetadata {
                 center_frequency_hz: window_config.center_freq,
                 window_id: window_config.window_num,
@@ -68,7 +70,7 @@ impl Window {
         device: crate::soapy::Device,
         config: ScanningConfig,
         progress_reporter: Arc<dyn ProgressReporter>,
-        shutdown_listener: triggered::Listener,
+        shutdown_coordinator: Arc<ShutdownCoordinator>,
     ) -> Self {
         Self {
             center_freq,
@@ -78,7 +80,7 @@ impl Window {
             device,
             config,
             progress_reporter,
-            shutdown_listener,
+            shutdown_token: shutdown_coordinator.token(),
             metadata: WindowMetadata {
                 center_frequency_hz: center_freq,
                 window_id: window_num,
@@ -407,7 +409,7 @@ impl Window {
         sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
         audio_tx: std::sync::mpsc::SyncSender<crate::mpsc::AudioPacket>,
         config: &ScanningConfig,
-        shutdown_listener: &triggered::Listener,
+        shutdown_token: &CancellationToken,
         pause_signal: Option<&crate::scanner_state::PauseSignal>,
         audio_packet_size: usize,
     ) -> Result<()> {
@@ -452,7 +454,7 @@ impl Window {
             remaining = remaining.saturating_sub(sleep_duration);
 
             // Check if shutdown requested
-            if shutdown_listener.is_triggered() {
+            if shutdown_token.is_cancelled() {
                 debug!("Shutdown requested during audio processing, stopping early");
                 break;
             }
@@ -718,7 +720,7 @@ impl Window {
                 sdr_rx,
                 audio_tx.clone(),
                 &self.config,
-                &self.shutdown_listener,
+                &self.shutdown_token,
                 self.pause_signal.as_ref(),
                 audio_packet_size,
             ) {
@@ -793,7 +795,7 @@ impl Window {
             let signals = self.process_candidates(candidates, segment)?;
 
             // Check for shutdown after candidate processing
-            if self.shutdown_listener.is_triggered() {
+            if self.shutdown_token.is_cancelled() {
                 debug!("Shutdown requested after candidate processing, skipping audio playback");
                 return Ok(());
             }
@@ -824,7 +826,7 @@ impl Window {
 
         while !remaining_threads.is_empty() && start_time.elapsed() < timeout {
             // Check shutdown signal - if shutdown requested, break early
-            if self.shutdown_listener.is_triggered() {
+            if self.shutdown_token.is_cancelled() {
                 debug!(
                     "Shutdown signal detected, stopping wait for {} remaining threads",
                     remaining_threads.len()

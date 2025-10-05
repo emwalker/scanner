@@ -13,6 +13,7 @@ pub mod peaks;
 pub mod pipeline;
 pub mod scanner_state;
 pub mod sdr;
+pub mod shutdown;
 #[cfg(feature = "soapysdr")]
 pub mod soapy;
 pub mod terminal;

@@ -393,13 +393,13 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         .map(|args| soapy::Device(format!("{}", args)))
         .collect::<Vec<soapy::Device>>();
 
-    // Create shutdown trigger/listener pair for graceful shutdown
-    let (shutdown_trigger, shutdown_listener) = triggered::trigger();
+    // Create shutdown coordinator for graceful shutdown
+    let shutdown_coordinator = Arc::new(scanner::shutdown::ShutdownCoordinator::new());
 
     // Setup signal handler using ctrlc - handles both TUI and headless modes
     // Uses double Ctrl+C pattern: first triggers graceful shutdown, second forces exit
     static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
-    let signal_trigger = shutdown_trigger.clone();
+    let signal_coordinator = shutdown_coordinator.clone();
     #[allow(clippy::print_stderr)]
     ctrlc::set_handler(move || {
         if SHUTDOWN_REQUESTED.swap(true, Ordering::SeqCst) {
@@ -410,7 +410,7 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         } else {
             eprintln!("\nShutting down gracefully...");
             eprintln!("Press Ctrl+C again to force quit");
-            signal_trigger.trigger();
+            signal_coordinator.shutdown();
         }
     })
     .expect("Failed to set signal handler");
@@ -429,9 +429,9 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         // Create command channel for TUI to control scanner
         let (command_sender, command_receiver) = mpsc::channel();
 
-        // Clone listeners for each thread
-        let tui_listener = shutdown_listener.clone();
-        let main_listener = shutdown_listener.clone();
+        // Clone coordinator for each thread
+        let tui_coordinator = shutdown_coordinator.clone();
+        let main_coordinator = shutdown_coordinator.clone();
 
         // Parse theme for TUI
         let theme_name = args
@@ -444,7 +444,7 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         let tui_handle = thread::spawn(move || {
             let mut tui_display = TuiProgressDisplay::new_with_theme(
                 progress_receiver,
-                tui_listener,
+                tui_coordinator.token(),
                 theme,
                 theme_name,
             )
@@ -471,7 +471,7 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
             logger,
             device_strings,
             progress_reporter,
-            main_listener,
+            main_coordinator,
         )?
         .with_command_receiver(command_receiver);
 
@@ -482,7 +482,7 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         let _ = tui_handle.join();
 
         // TUI finished, trigger shutdown for main thread
-        shutdown_trigger.trigger();
+        shutdown_coordinator.shutdown();
 
         // Wait for main thread to complete cleanup
         // This ensures SoapySdrManager::drop() completes before process exits
@@ -509,7 +509,7 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
             console_writer,
             logger,
             device_strings,
-            shutdown_listener,
+            shutdown_coordinator.clone(),
         )?;
 
         // Spawn main thread to allow signal interruption
@@ -519,7 +519,7 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         let result = main_handle.join();
         match result {
             Ok(r) => {
-                shutdown_trigger.trigger();
+                shutdown_coordinator.shutdown();
                 r?
             }
             Err(e) => {
