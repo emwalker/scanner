@@ -89,6 +89,10 @@ impl Window {
         }
     }
 
+    fn tuner_id(&self) -> Option<crate::sdr::TunerId> {
+        self.device.tuner_id().ok()
+    }
+
     fn peaks(&self, device: &dyn Segment) -> Result<Vec<crate::types::Peak>> {
         if self.station_mode {
             // Station mode: Create a single peak at the exact station frequency
@@ -220,6 +224,7 @@ impl Window {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: std::time::Instant::now(),
+                tuner_id: self.tuner_id(),
             });
 
             let sdr_rx = segment.audio_subscriber();
@@ -706,6 +711,7 @@ impl Window {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: std::time::Instant::now(),
+                tuner_id: self.tuner_id(), // Will be populated when we track active tuner
             });
 
             tracing::info!(
@@ -737,6 +743,7 @@ impl Window {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: std::time::Instant::now(),
+                tuner_id: self.tuner_id(), // Will be populated when we track active tuner
             });
         }
 
@@ -765,6 +772,7 @@ impl Window {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: std::time::Instant::now(),
+                tuner_id: self.tuner_id(), // Will be populated when we track active tuner
             });
         }
 
@@ -787,6 +795,7 @@ impl Window {
                     audio_quality: None,
                     signal_strength: None,
                     timestamp: std::time::Instant::now(),
+                    tuner_id: self.tuner_id(), // Will be populated when we track active tuner
                 });
             }
 

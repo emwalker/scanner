@@ -29,11 +29,11 @@ pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
     let fm_range = fm_end - fm_start;
     let window_width = 2.4e6;
 
-    // Use selected candidate's center frequency if in selection mode, otherwise current window
-    let window_start = if model.selection_mode {
+    // Use selected candidate's center frequency if in interactive mode, otherwise current window
+    let window_start = if model.is_interactive() {
         model
             .selected_candidate_info()
-            .map(|(_, center_freq, _, _, _)| center_freq - window_width / 2.0)
+            .map(|info| info.metadata.center_frequency_hz - window_width / 2.0)
     } else {
         model.windows.get(&model.current_window).map(|w| {
             if !w.candidates.is_empty() {
@@ -703,6 +703,7 @@ mod tests {
             window_id: 1,
             candidates: vec![
                 CandidateProgress {
+                    candidate_id: "89.9-1".to_string(),
                     frequency_hz: 89.9e6,
                     metadata: crate::window::WindowMetadata {
                         center_frequency_hz: 89.9e6,
@@ -715,6 +716,7 @@ mod tests {
                     last_update: std::time::Instant::now(),
                 },
                 CandidateProgress {
+                    candidate_id: "90.5-1".to_string(),
                     frequency_hz: 90.5e6,
                     metadata: crate::window::WindowMetadata {
                         center_frequency_hz: 90.5e6,
@@ -759,6 +761,7 @@ mod tests {
         let window = WindowProgress {
             window_id: 1,
             candidates: vec![CandidateProgress {
+                candidate_id: "91.8-1".to_string(),
                 frequency_hz: 91.8e6,
                 metadata: crate::window::WindowMetadata {
                     center_frequency_hz: 91.8e6,
@@ -797,6 +800,7 @@ mod tests {
             window_id: 1,
             candidates: vec![
                 CandidateProgress {
+                    candidate_id: "89.9-1".to_string(),
                     frequency_hz: 89.9e6,
                     metadata: crate::window::WindowMetadata {
                         center_frequency_hz: 89.9e6,
@@ -809,6 +813,7 @@ mod tests {
                     last_update: std::time::Instant::now(),
                 },
                 CandidateProgress {
+                    candidate_id: "90.5-1".to_string(),
                     frequency_hz: 90.5e6,
                     metadata: crate::window::WindowMetadata {
                         center_frequency_hz: 90.5e6,

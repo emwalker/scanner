@@ -13,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
+use tracing::debug;
 
 pub mod layout;
 pub mod model;
@@ -149,6 +150,9 @@ impl TuiProgressDisplay {
                 break;
             }
 
+            // Track if we need to redraw after keyboard input
+            let mut needs_redraw = false;
+
             // Handle events with timeout matching animation interval
             if event::poll(animation_interval)?
                 && let Ok(Event::Key(key)) = event::read()
@@ -218,13 +222,20 @@ impl TuiProgressDisplay {
                                 self.model.focus_state,
                                 crate::terminal::tui::model::FocusState::Scan
                             )
-                            && self.model.selection_mode
-                            && !self.model.browsing_mode
-                            && self.model.selected_candidate_index.is_some() =>
+                            && self.model.selection_mode()
+                            && !self.model.browsing_mode()
+                            && self.model.selected_candidate_index().is_some() =>
                     {
                         // Enter browsing mode: pause scan, then tune when Paused event arrives
-                        self.model.browsing_mode = true;
-                        self.model.pending_tune = true;
+                        // Transition: NavigatingScanner → AwaitingTune
+                        if let Some(selected_index) = self.model.selected_candidate_index() {
+                            self.model.ui_mode =
+                                crate::terminal::tui::model::UiMode::AwaitingTune {
+                                    navigation_index: selected_index,
+                                    tuning_index: selected_index,
+                                };
+                            needs_redraw = true;
+                        }
 
                         // Send Pause - we'll tune when we receive Paused event
                         if let Some(sender) = &self.command_sender {
@@ -233,11 +244,59 @@ impl TuiProgressDisplay {
                     }
                     KeyCode::Enter
                         if !self.model.theme_selector_open
-                            && self.model.browsing_mode
+                            && matches!(
+                                self.model.ui_mode,
+                                crate::terminal::tui::model::UiMode::Listening { .. }
+                            )
+                            && !self.model.is_continue_scan_selected()
+                            && self.model.selected_candidate_index().is_some() =>
+                    {
+                        // Switch to a different station while listening (but not while awaiting tune)
+                        if let Some(info) = self.model.selected_candidate_info()
+                            && let Some(sender) = &self.command_sender
+                            && let Some(selected_index) = self.model.selected_candidate_index()
+                        {
+                            debug!(
+                                candidate_id = ?info.candidate_id,
+                                window_id = info.metadata.window_id,
+                                candidate_frequency_mhz = info.candidate_frequency / 1e6,
+                                "TUI: Sending TuneToCandidate command"
+                            );
+
+                            // Transition to AwaitingTune when switching stations
+                            self.model.ui_mode =
+                                crate::terminal::tui::model::UiMode::AwaitingTune {
+                                    navigation_index: selected_index,
+                                    tuning_index: selected_index,
+                                };
+                            needs_redraw = true;
+
+                            let _ = sender.send(crate::terminal::ScannerCommand::TuneToCandidate {
+                                candidate_id: info.candidate_id,
+                                window_id: info.metadata.window_id,
+                                center_frequency: info.metadata.center_frequency_hz,
+                                candidate_frequency: info.candidate_frequency,
+                                signal_strength: info.signal_strength,
+                                audio_quality: info.audio_quality,
+                            });
+                            self.model.playback_active = true;
+                        }
+                    }
+                    KeyCode::Enter
+                        if !self.model.theme_selector_open
+                            && matches!(
+                                self.model.ui_mode,
+                                crate::terminal::tui::model::UiMode::Listening { .. }
+                                    | crate::terminal::tui::model::UiMode::AwaitingTune { .. }
+                            )
                             && self.model.is_continue_scan_selected() =>
                     {
                         // Exit browsing mode and resume scan
                         self.model.exit_browsing_mode();
+
+                        // Transition: Listening/AwaitingTune → Idle
+                        self.model.ui_mode = crate::terminal::tui::model::UiMode::Idle;
+
                         if let Some(sender) = &self.command_sender {
                             let _ = sender.send(crate::terminal::ScannerCommand::ResumeScan);
                         }
@@ -254,33 +313,35 @@ impl TuiProgressDisplay {
                 }
             }
 
+            // Redraw immediately if state changed from keyboard input
+            if needs_redraw {
+                terminal.draw(|f| self.ui(f))?;
+            }
+
             // Process TUI events (progress and discovery)
             while let Ok(event) = self.receiver.try_recv() {
-                let is_paused_event = matches!(event, crate::terminal::TuiEvent::Paused);
+                let is_paused_event = matches!(event, crate::terminal::TuiEvent::Paused { .. });
                 self.model.update_tui_event(event);
                 iterations = 0; // Reset iteration counter when we get events
 
-                // If we received Paused event and have a pending tune, send it now
-                if is_paused_event && self.model.pending_tune {
-                    self.model.pending_tune = false;
-                    if let Some((
-                        window_id,
-                        center_freq,
-                        candidate_freq,
-                        signal_strength,
-                        audio_quality,
-                    )) = self.model.selected_candidate_info()
-                        && let Some(sender) = &self.command_sender
-                    {
-                        let _ = sender.send(crate::terminal::ScannerCommand::TuneToCandidate {
-                            window_id,
-                            center_frequency: center_freq,
-                            candidate_frequency: candidate_freq,
-                            signal_strength,
-                            audio_quality,
-                        });
-                        self.model.playback_active = true;
-                    }
+                // If we received Paused event and we're awaiting tune, send it now
+                if is_paused_event
+                    && matches!(
+                        self.model.ui_mode,
+                        crate::terminal::tui::model::UiMode::AwaitingTune { .. }
+                    )
+                    && let Some(info) = self.model.selected_candidate_info()
+                    && let Some(sender) = &self.command_sender
+                {
+                    let _ = sender.send(crate::terminal::ScannerCommand::TuneToCandidate {
+                        candidate_id: info.candidate_id,
+                        window_id: info.metadata.window_id,
+                        center_frequency: info.metadata.center_frequency_hz,
+                        candidate_frequency: info.candidate_frequency,
+                        signal_strength: info.signal_strength,
+                        audio_quality: info.audio_quality,
+                    });
+                    self.model.playback_active = true;
                 }
             }
         }

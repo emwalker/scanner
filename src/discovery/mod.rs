@@ -11,6 +11,7 @@ pub use enumerator::{DeviceEnumerator, MultiEnumerator, SourcePriority};
 pub use service::{Event, Service};
 
 use crate::sdr;
+use crate::types::Result;
 use std::time::Duration;
 
 pub enum DiscoveryMode {
@@ -91,5 +92,46 @@ pub fn create_for_testing(
                 Box::new(polling::Polling::new(enumerator, Duration::from_secs(3)))
             }
         }
+    }
+}
+
+/// Synchronously enumerate devices matching an optional filter
+///
+/// This provides a one-time synchronous device enumeration, useful for
+/// initial device selection before starting the async discovery service.
+///
+/// # Arguments
+/// * `backends` - List of backends to query for devices
+/// * `filter` - Optional driver filter (e.g., "driver=sdrplay")
+///
+/// # Returns
+/// List of discovered devices matching the filter
+pub fn enumerate_once(
+    backends: &[Box<dyn sdr::Backend>],
+    filter: Option<&str>,
+) -> Result<Vec<sdr::TunerInfo>> {
+    let mut all_devices = Vec::new();
+
+    for backend in backends {
+        let devices = backend.enumerate_devices()?;
+        all_devices.extend(devices);
+    }
+
+    // Apply filter if provided
+    if let Some(filter_str) = filter {
+        // Parse filter format: "key=value"
+        if let Some((key, value)) = filter_str.split_once('=') {
+            Ok(all_devices
+                .into_iter()
+                .filter(|device| match (&device.id, key) {
+                    (sdr::TunerId::Backend { backend, .. }, "driver") => backend == value,
+                    _ => false,
+                })
+                .collect())
+        } else {
+            Ok(all_devices)
+        }
+    } else {
+        Ok(all_devices)
     }
 }

@@ -1,6 +1,6 @@
 //! SoapySDR backend implementation
 
-use super::{Backend, Capabilities, DeviceId, DeviceInfo, DeviceTrait};
+use super::{Backend, Capabilities, DeviceTrait, TunerId, TunerInfo};
 use crate::types::Result;
 use rustradio::Complex;
 use rustradio::graph::GraphRunner;
@@ -44,7 +44,7 @@ where
 pub struct Soapy;
 
 impl Backend for Soapy {
-    fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
+    fn enumerate_devices(&self) -> Result<Vec<TunerInfo>> {
         // Suppress stderr during enumeration to prevent RtAudio spam
         let devices = suppress_stderr(|| soapysdr::enumerate(""))?;
 
@@ -69,18 +69,18 @@ impl Backend for Soapy {
                     format!("{}:{}", serial, mode)
                 };
 
-                Some(DeviceInfo {
-                    id: DeviceId::from_serial(driver, &unique_serial),
+                Some(TunerInfo {
+                    id: TunerId::from_serial(driver, &unique_serial),
                     label: format!("{} ({}:{})", model, driver, serial),
                 })
             })
             .collect())
     }
 
-    fn open_device(&self, id: &DeviceId) -> Result<Box<dyn DeviceTrait>> {
+    fn open_device(&self, id: &TunerId) -> Result<Box<dyn DeviceTrait>> {
         let (backend, serial) = match id {
-            DeviceId::Backend { backend, serial } => (backend.as_str(), serial.as_str()),
-            DeviceId::Usb { .. } => {
+            TunerId::Backend { backend, serial } => (backend.as_str(), serial.as_str()),
+            TunerId::Usb { .. } => {
                 return Err(crate::types::ScannerError::Custom(
                     "USB device IDs not supported for opening via SoapySDR backend".to_string(),
                 ));
@@ -103,7 +103,7 @@ impl Backend for Soapy {
 /// 2. We need to create multiple graphs from the same device
 /// 3. Creating a fresh device each time is safe with SoapySDR
 pub struct SoapyDevice {
-    device_id: DeviceId,
+    tuner_id: TunerId,
     device_args: String,
     capabilities: Capabilities,
 }
@@ -116,10 +116,10 @@ impl SoapyDevice {
         let temp_device = soapysdr::Device::new(args)?;
 
         let capabilities = Capabilities::from_soapy_device(&temp_device)?;
-        let device_id = capabilities.device_id.clone();
+        let tuner_id = capabilities.tuner_id.clone();
 
         Ok(Self {
-            device_id,
+            tuner_id,
             device_args,
             capabilities,
         })
@@ -127,8 +127,8 @@ impl SoapyDevice {
 }
 
 impl DeviceTrait for SoapyDevice {
-    fn id(&self) -> &DeviceId {
-        &self.device_id
+    fn id(&self) -> &TunerId {
+        &self.tuner_id
     }
 
     fn capabilities(&self) -> &Capabilities {
@@ -289,8 +289,8 @@ mod tests {
                 format!("{}:{}", serial, mode)
             };
 
-            processed_devices.push(DeviceInfo {
-                id: DeviceId::from_serial(driver, &unique_serial),
+            processed_devices.push(TunerInfo {
+                id: TunerId::from_serial(driver, &unique_serial),
                 label: format!("{} ({}:{})", model, driver, serial),
             });
         }
@@ -305,7 +305,7 @@ mod tests {
         assert_eq!(
             ids.len(),
             4,
-            "All 4 RSPduo modes should have unique DeviceIds (regression test for duplicate serial issue)"
+            "All 4 RSPduo modes should have unique TunerIds (regression test for duplicate serial issue)"
         );
 
         let expected_ids = vec![
@@ -318,7 +318,7 @@ mod tests {
         for expected_id in expected_ids {
             assert!(
                 processed_devices.iter().any(|d| match &d.id {
-                    DeviceId::Backend { backend, serial } =>
+                    TunerId::Backend { backend, serial } =>
                         format!("{}:{}", backend, serial) == expected_id,
                     _ => false,
                 }),

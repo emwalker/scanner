@@ -23,6 +23,7 @@ pub struct SquelchMonitoringParams {
     pub original_frequency_hz: f64,
     pub candidate_id: String,
     pub metadata: crate::window::WindowMetadata,
+    pub tuner_id: Option<crate::sdr::TunerId>,
 }
 
 /// Process a single peak through the complete pipeline to generate a signal
@@ -51,6 +52,7 @@ pub fn process_peak_to_signal(
         audio_quality: None,
         signal_strength: None,
         timestamp: std::time::Instant::now(),
+        tuner_id: context.device.tuner_id().ok(),
     });
 
     // Refine frequency using tracking
@@ -74,6 +76,7 @@ pub fn process_peak_to_signal(
         audio_quality: None,
         signal_strength: None,
         timestamp: std::time::Instant::now(),
+        tuner_id: context.device.tuner_id().ok(),
     });
 
     // Run the detection and squelch analysis
@@ -195,6 +198,7 @@ fn run_detection_analysis(
             original_frequency_hz,
             candidate_id: candidate_id.to_string(),
             metadata: context.metadata,
+            tuner_id: context.device.tuner_id().ok(),
         },
         decision_state,
         detection_cancel_token,
@@ -208,8 +212,8 @@ fn run_detection_analysis(
         original_frequency_hz,
         &*context.progress_reporter,
         rejection_rx,
-        context.metadata.window_id,
         candidate_id,
+        context.device.tuner_id().ok(),
     )
 }
 
@@ -264,6 +268,7 @@ fn spawn_squelch_monitoring_thread(
                         audio_quality: None,
                         signal_strength: None,
                         timestamp: std::time::Instant::now(),
+                        tuner_id: params.tuner_id.clone(),
                     });
 
                     detection_cancel_token.cancel();
@@ -285,6 +290,7 @@ fn spawn_squelch_monitoring_thread(
                         audio_quality: None,
                         signal_strength: None,
                         timestamp: std::time::Instant::now(),
+                        tuner_id: params.tuner_id.clone(),
                     });
 
                     tracing::debug!("Audio detected, terminating detection graph");
@@ -311,6 +317,7 @@ fn spawn_squelch_monitoring_thread(
             audio_quality: None,
             signal_strength: None,
             timestamp: std::time::Instant::now(),
+            tuner_id: params.tuner_id.clone(),
         });
 
         detection_cancel_token.cancel();
@@ -331,8 +338,8 @@ fn wait_for_threads_completion(
     frequency_hz: f64,
     progress_reporter: &dyn ProgressReporter,
     rejection_rx: std::sync::mpsc::Receiver<crate::terminal::ProgressEvent>,
-    _window_id: usize,
     candidate_id: &str,
+    tuner_id: Option<crate::sdr::TunerId>,
 ) -> Result<()> {
     tracing::debug!(
         "Waiting for detection graph and timer threads to complete for {:.1} MHz",
@@ -384,6 +391,7 @@ fn wait_for_threads_completion(
             audio_quality: None,
             signal_strength: None,
             timestamp: std::time::Instant::now(),
+            tuner_id,
         });
     }
 

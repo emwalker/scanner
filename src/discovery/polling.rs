@@ -12,7 +12,7 @@ use tracing::debug;
 
 pub struct Polling {
     enumerator: MultiEnumerator,
-    known_devices: HashMap<sdr::DeviceId, sdr::DeviceInfo>,
+    known_devices: HashMap<sdr::TunerId, sdr::TunerInfo>,
     poll_interval: Duration,
 }
 
@@ -36,14 +36,14 @@ impl Polling {
         let (added, removed) = common::detect_changes(&self.known_devices, &current_devices);
 
         for device in added {
-            debug!(device_id = ?device.id, "new device detected");
+            debug!(tuner_id = ?device.id, "new device detected");
             event_tx
                 .send(Event::Added(device.clone()))
                 .map_err(|_| ())?;
         }
 
         for id in removed {
-            debug!(device_id = ?id, "device removed");
+            debug!(tuner_id = ?id, "device removed");
             event_tx.send(Event::Removed(id.clone())).map_err(|_| ())?;
         }
 

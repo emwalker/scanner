@@ -418,6 +418,7 @@ pub fn create_detection_graph(
         audio_capturer,
         progress_reporter,
         window_id,
+        tuner_id: _device.tuner_id().ok(),
     };
     let (squelch_block, decision_state) = SquelchBlock::new(prev, squelch_config);
     graph.add(Box::new(squelch_block));

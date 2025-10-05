@@ -29,7 +29,7 @@ use tokio::sync::broadcast;
 // Re-export commonly used types
 pub use backend::Backend;
 pub use device::DeviceTrait;
-pub use types::{Capabilities, DeviceError, DeviceErrorKind, DeviceId, DeviceInfo};
+pub use types::{Capabilities, DeviceError, DeviceErrorKind, TunerId, TunerInfo};
 
 // Re-export backend implementations
 pub use mock::Mock;

@@ -25,10 +25,11 @@ pub struct ProgressEvent {
     pub audio_quality: Option<crate::audio_quality::AudioQuality>,
     pub signal_strength: Option<f64>,
     pub timestamp: std::time::Instant,
+    pub tuner_id: Option<crate::sdr::TunerId>,
 }
 
 /// Types of progress events that can be reported
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ProgressEventType {
     PeakDetected,
     CandidateCreated,
@@ -46,12 +47,18 @@ pub enum ProgressEventType {
 pub enum TuiEvent {
     /// Scanning progress event (from ProgressReporter)
     Progress(ProgressEvent),
-    /// Device discovered and added (from discovery service)
-    DeviceAdded(crate::sdr::DeviceInfo),
-    /// Device removed/disconnected (from discovery service)
-    DeviceRemoved(crate::sdr::DeviceId),
+    /// Tuner discovered and added (from discovery service)
+    TunerAdded(crate::sdr::TunerInfo),
+    /// Tuner removed/disconnected (from discovery service)
+    TunerRemoved(crate::sdr::TunerId),
     /// Scanner has been paused and is ready for browsing
-    Paused,
+    Paused { tuner_id: crate::sdr::TunerId },
+    /// Active tuners state has been updated
+    ActiveTunersUpdated {
+        available: Vec<crate::sdr::TunerId>,
+        scanning: Vec<crate::sdr::TunerId>,
+        listening: Vec<crate::sdr::TunerId>,
+    },
 }
 
 /// Commands sent from TUI to scanner for interactive control
@@ -63,6 +70,7 @@ pub enum ScannerCommand {
     ResumeScan,
     /// Tune to a specific candidate frequency and play audio
     TuneToCandidate {
+        candidate_id: String,
         window_id: usize,
         center_frequency: f64,    // For spectrum visualization
         candidate_frequency: f64, // Specific station frequency
@@ -165,6 +173,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: std::time::Instant::now(),
+            tuner_id: None,
         };
 
         mock_reporter.report(event.clone());
@@ -200,6 +209,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: std::time::Instant::now(),
+                tuner_id: None,
             },
             ProgressEvent {
                 event_type: ProgressEventType::CandidateCreated,
@@ -212,6 +222,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: std::time::Instant::now(),
+                tuner_id: None,
             },
             ProgressEvent {
                 event_type: ProgressEventType::ThreadCompleted,
@@ -224,6 +235,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: std::time::Instant::now(),
+                tuner_id: None,
             },
         ];
 
@@ -267,6 +279,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: std::time::Instant::now(),
+            tuner_id: None,
         });
 
         assert_eq!(mock_reporter.event_count(), 1);
@@ -298,6 +311,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: std::time::Instant::now(),
+            tuner_id: None,
         };
 
         channel_reporter.report(event.clone());
@@ -324,6 +338,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: std::time::Instant::now(),
+                tuner_id: None,
             },
             ProgressEvent {
                 event_type: ProgressEventType::ThreadCompleted,
@@ -336,6 +351,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: std::time::Instant::now(),
+                tuner_id: None,
             },
         ];
 
@@ -381,6 +397,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: std::time::Instant::now(),
+            tuner_id: None,
         };
 
         channel_reporter.report(event); // Should not panic
@@ -402,6 +419,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: std::time::Instant::now(),
+            tuner_id: None,
         });
 
         // No way to verify it did nothing, but it shouldn't crash

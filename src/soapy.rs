@@ -38,6 +38,48 @@ impl Device {
     pub fn new(device_string: String) -> Result<Self> {
         Ok(Self(device_string))
     }
+
+    /// Extract TunerId from the SoapySDR device string
+    ///
+    /// Parses strings like "driver=sdrplay,serial=1234" or "driver=rtlsdr,serial=5678"
+    /// Returns TunerId::Backend { backend, serial }
+    pub fn tuner_id(&self) -> Result<crate::sdr::TunerId> {
+        let mut driver = None;
+        let mut serial = None;
+        let mut mode = None;
+
+        // Parse key=value pairs from device string
+        for pair in self.0.split(',') {
+            let parts: Vec<&str> = pair.split('=').collect();
+            if parts.len() == 2 {
+                match parts[0].trim() {
+                    "driver" => driver = Some(parts[1].trim().to_string()),
+                    "serial" => serial = Some(parts[1].trim().to_string()),
+                    "mode" => mode = Some(parts[1].trim().to_string()),
+                    _ => {}
+                }
+            }
+        }
+
+        match (driver, serial) {
+            (Some(backend), Some(ser)) => {
+                // Append mode to serial for devices like RSPduo to match TunerId format
+                let unique_serial = if let Some(m) = mode {
+                    format!("{}:{}", ser, m)
+                } else {
+                    ser
+                };
+                Ok(crate::sdr::TunerId::Backend {
+                    backend,
+                    serial: unique_serial,
+                })
+            }
+            _ => Err(crate::types::ScannerError::Custom(format!(
+                "Failed to extract tuner ID from device string: {}",
+                self.0
+            ))),
+        }
+    }
 }
 
 impl From<String> for Device {

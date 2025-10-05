@@ -19,14 +19,14 @@ pub fn render_tuners(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme
 
     let bracket_color = ratatui::style::Color::Rgb(160, 200, 220);
 
-    // Use discovered devices if available, otherwise show "No devices" message
-    if model.devices.is_empty() {
+    // Use discovered tuners if available, otherwise show "No tuners" message
+    if model.tuners.is_empty() {
         render_no_devices(f, area, theme, bracket_color);
         return;
     }
 
     let mut y_offset = 0;
-    for (idx, device) in model.devices.iter().enumerate() {
+    for (idx, tuner) in model.tuners.iter().enumerate() {
         if y_offset + 5 > area.height {
             break;
         }
@@ -39,7 +39,16 @@ pub fn render_tuners(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme
         };
 
         let has_focus = matches!(model.focus_state, FocusState::Tuner(i) if i == idx);
-        render_tuner_block(f, tuner_area, device, theme, bracket_color, has_focus);
+        let tuner_state = model.tuner_state(&tuner.id);
+        render_tuner_block(
+            f,
+            tuner_area,
+            tuner,
+            theme,
+            bracket_color,
+            has_focus,
+            tuner_state,
+        );
         y_offset += 5;
     }
 }
@@ -96,10 +105,11 @@ fn render_no_devices(
 fn render_tuner_block(
     f: &mut Frame,
     area: Rect,
-    device: &crate::sdr::DeviceInfo,
+    tuner: &crate::sdr::TunerInfo,
     theme: &dyn Theme,
     bracket_color: ratatui::style::Color,
     has_focus: bool,
+    tuner_state: crate::terminal::tui::model::TunerState,
 ) {
     let border_style = if has_focus {
         Style::default()
@@ -129,12 +139,12 @@ fn render_tuner_block(
 
     let inner = block.inner(area);
 
-    // Extract device info from label and ID
-    let device_id_str = match &device.id {
-        crate::sdr::DeviceId::Backend { backend, serial } => {
+    // Extract tuner info from label and ID
+    let tuner_id_str = match &tuner.id {
+        crate::sdr::TunerId::Backend { backend, serial } => {
             format!("{}:{}", backend, serial)
         }
-        crate::sdr::DeviceId::Usb {
+        crate::sdr::TunerId::Usb {
             vid, pid, serial, ..
         } => {
             format!("USB {:04x}:{:04x} ({})", vid, pid, serial)
@@ -143,17 +153,17 @@ fn render_tuner_block(
 
     let lines = vec![
         Line::from(vec![Span::styled(
-            &device.label,
+            &tuner.label,
             Style::default()
                 .fg(theme.primary())
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(vec![Span::styled(
-            &device_id_str,
+            &tuner_id_str,
             Style::default().fg(theme.secondary()),
         )]),
         Line::from(vec![Span::styled(
-            "Ready",
+            tuner_state.display(),
             Style::default()
                 .fg(theme.foreground())
                 .add_modifier(Modifier::DIM),

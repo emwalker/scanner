@@ -8,17 +8,51 @@ use crate::{fm, soapy};
 use std::sync::Arc;
 use tracing::{debug, info};
 
+#[derive(Clone)]
+struct TuneParams {
+    candidate_id: String,
+    window_id: usize,
+    center_frequency: f64,
+    candidate_frequency: f64,
+    signal_strength: Option<f64>,
+    audio_quality: Option<crate::audio_quality::AudioQuality>,
+}
+
+/// Tracks which tuners are available and actively allocated to different functions
+#[derive(Clone, Debug)]
+pub struct ActiveTuners {
+    /// Pool of tuners that can be allocated (relatively static, changes with discovery)
+    pub available: Vec<crate::sdr::TunerId>,
+    /// Tuners currently allocated to scanning
+    pub scanning: Vec<crate::sdr::TunerId>,
+    /// Tuners currently allocated to listening
+    pub listening: Vec<crate::sdr::TunerId>,
+}
+
+impl ActiveTuners {
+    fn new(selected_tuner_id: crate::sdr::TunerId) -> Self {
+        Self {
+            available: vec![selected_tuner_id.clone()],
+            scanning: vec![selected_tuner_id],
+            listening: vec![],
+        }
+    }
+}
+
 pub struct MainThread {
     config: ScanningConfig,
     console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
     _logger: Arc<dyn Logger + Send + Sync>,
-    devices: Vec<soapy::Device>,
+    selected_tuner_id: crate::sdr::TunerId,
+    _backend: Arc<dyn crate::sdr::Backend>,
     progress_reporter: Arc<dyn ProgressReporter>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
     command_receiver: Option<std::sync::mpsc::Receiver<crate::terminal::ScannerCommand>>,
     tui_event_sender: Option<std::sync::mpsc::Sender<crate::terminal::TuiEvent>>,
     scanner_state: ScannerState,
     pause_signal: PauseSignal,
+    current_playing: Option<TuneParams>,
+    active_tuners: ActiveTuners,
 }
 
 impl MainThread {
@@ -26,20 +60,25 @@ impl MainThread {
         config: ScanningConfig,
         console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
         logger: Arc<dyn Logger + Send + Sync>,
-        devices: Vec<soapy::Device>,
+        selected_tuner_id: crate::sdr::TunerId,
+        backend: Arc<dyn crate::sdr::Backend>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
     ) -> Result<Self> {
+        let active_tuners = ActiveTuners::new(selected_tuner_id.clone());
         Ok(MainThread {
             config,
             console_writer,
             _logger: logger,
-            devices,
+            selected_tuner_id,
+            _backend: backend,
             progress_reporter: Arc::new(NoOpProgressReporter),
             shutdown_coordinator,
             command_receiver: None,
             tui_event_sender: None,
             scanner_state: ScannerState::new(),
             pause_signal: PauseSignal::new(),
+            current_playing: None,
+            active_tuners,
         })
     }
 
@@ -47,21 +86,26 @@ impl MainThread {
         config: ScanningConfig,
         console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
         logger: Arc<dyn Logger + Send + Sync>,
-        devices: Vec<soapy::Device>,
+        selected_tuner_id: crate::sdr::TunerId,
+        backend: Arc<dyn crate::sdr::Backend>,
         progress_reporter: Arc<dyn ProgressReporter>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
     ) -> Result<Self> {
+        let active_tuners = ActiveTuners::new(selected_tuner_id.clone());
         Ok(MainThread {
             config,
             console_writer,
             _logger: logger,
-            devices,
+            selected_tuner_id,
+            _backend: backend,
             progress_reporter,
             shutdown_coordinator,
             command_receiver: None,
             tui_event_sender: None,
             scanner_state: ScannerState::new(),
             pause_signal: PauseSignal::new(),
+            current_playing: None,
+            active_tuners,
         })
     }
 
@@ -81,19 +125,26 @@ impl MainThread {
         self
     }
 
+    fn send_active_tuners_update(&self) {
+        if let Some(ref sender) = self.tui_event_sender {
+            let event = crate::terminal::TuiEvent::ActiveTunersUpdated {
+                available: self.active_tuners.available.clone(),
+                scanning: self.active_tuners.scanning.clone(),
+                listening: self.active_tuners.listening.clone(),
+            };
+            let _ = sender.send(event);
+        }
+    }
+
     pub fn run(mut self, stations: Option<String>) -> Result<()> {
         // Logging is now initialized in main() before SDR operations
 
-        // Discover available SDR devices
-        if self.devices.is_empty() {
-            return Err(crate::types::ScannerError::Custom(
-                "No SDR devices found".to_string(),
-            ));
-        }
-
-        // Create device from the first available device string
-        let device = self.devices[0].clone();
+        // Open the selected device
+        let device = self.open_device()?;
         self.console_writer.write_info("Scanning for stations ...");
+
+        // Send initial active tuners state (tuner is scanning)
+        self.send_active_tuners_update();
 
         if let Some(stations_str) = stations {
             self.scan_stations(&device, &stations_str)?;
@@ -103,6 +154,27 @@ impl MainThread {
 
         self.console_writer.write_info("Scan complete.");
         Ok(())
+    }
+
+    fn open_device(&self) -> Result<soapy::Device> {
+        // For now, convert the new TunerId back to the old soapy::Device format
+        // This maintains compatibility with existing code while we migrate
+        let device_string = match &self.selected_tuner_id {
+            crate::sdr::TunerId::Backend { backend, serial } => {
+                // Handle RSPduo format: serial can be "1234:master" or just "1234"
+                if let Some((actual_serial, mode)) = serial.split_once(':') {
+                    format!("driver={},serial={},mode={}", backend, actual_serial, mode)
+                } else {
+                    format!("driver={},serial={}", backend, serial)
+                }
+            }
+            crate::sdr::TunerId::Usb { .. } => {
+                return Err(crate::types::ScannerError::Custom(
+                    "USB device IDs not supported for legacy soapy::Device".to_string(),
+                ));
+            }
+        };
+        Ok(soapy::Device(device_string))
     }
 
     fn parse_stations(&self, stations_str: &str) -> Result<Vec<f64>> {
@@ -116,31 +188,31 @@ impl MainThread {
         &self,
         device: &soapy::Device,
         audio_session: &mut crate::audio_session::AudioSession,
-        center_frequency: f64,
-        candidate_frequency: f64,
-        signal_strength: Option<f64>,
-        audio_quality: Option<crate::audio_quality::AudioQuality>,
+        params: TuneParams,
     ) -> Result<()> {
         debug!(
-            candidate_mhz = candidate_frequency / 1e6,
-            center_mhz = center_frequency / 1e6,
-            signal_strength = ?signal_strength,
-            audio_quality = ?audio_quality,
+            candidate_id = ?params.candidate_id,
+            candidate_mhz = params.candidate_frequency / 1e6,
+            center_mhz = params.center_frequency / 1e6,
+            signal_strength = ?params.signal_strength,
+            audio_quality = ?params.audio_quality,
             "Tuning to candidate"
         );
 
-        let segment = device.tune(&self.config, center_frequency)?;
+        let segment = device.tune(&self.config, params.center_frequency)?;
 
         let signal = crate::types::Signal {
-            frequency_hz: candidate_frequency,
-            signal_strength: signal_strength.unwrap_or(0.1) as f32,
+            frequency_hz: params.candidate_frequency,
+            signal_strength: params.signal_strength.unwrap_or(0.1) as f32,
             bandwidth_hz: 200_000.0,
             modulation: crate::types::ModulationType::WFM,
             audio_sample_rate: self.config.audio_sample_rate,
             detected_at: std::time::SystemTime::now(),
             analysis_duration_ms: 0,
-            detection_center_freq: center_frequency,
-            audio_quality: audio_quality.unwrap_or(crate::audio_quality::AudioQuality::Unknown),
+            detection_center_freq: params.center_frequency,
+            audio_quality: params
+                .audio_quality
+                .unwrap_or(crate::audio_quality::AudioQuality::Unknown),
         };
 
         tracing::info!(
@@ -150,6 +222,27 @@ impl MainThread {
         );
 
         audio_session.tune_to_station(&signal, segment, &self.config)?;
+
+        debug!(
+            candidate_id = ?params.candidate_id,
+            event_type = "AudioPlaybackStarted",
+            "MainThread: Sending AudioPlaybackStarted event to TUI"
+        );
+
+        self.progress_reporter
+            .report(crate::terminal::ProgressEvent {
+                event_type: crate::terminal::ProgressEventType::AudioPlaybackStarted,
+                frequency_hz: params.candidate_frequency,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: params.center_frequency,
+                    window_id: params.window_id,
+                },
+                candidate_id: Some(params.candidate_id),
+                audio_quality: None,
+                signal_strength: None,
+                timestamp: std::time::Instant::now(),
+                tuner_id: device.tuner_id().ok(),
+            });
 
         Ok(())
     }
@@ -176,7 +269,11 @@ impl MainThread {
 
                 // Send Paused event to TUI so it knows scanning has stopped and can now tune
                 if let Some(ref sender) = self.tui_event_sender {
-                    let _ = sender.send(crate::terminal::TuiEvent::Paused);
+                    let tuner_id = device
+                        .tuner_id()
+                        .ok()
+                        .unwrap_or_else(|| crate::sdr::TunerId::from_serial("unknown", "0"));
+                    let _ = sender.send(crate::terminal::TuiEvent::Paused { tuner_id });
                 }
 
                 Ok(None)
@@ -189,29 +286,48 @@ impl MainThread {
                 self.pause_signal.unpause();
                 let _next_window = self.scanner_state.handle_resume();
 
+                // Move tuner from listening back to scanning
+                self.active_tuners.listening.clear();
+                self.active_tuners.scanning = self.active_tuners.available.clone();
+                self.send_active_tuners_update();
+
                 *audio_session = None;
                 debug!("AudioSession dropped, returning to scan mode");
 
                 Ok(None)
             }
             crate::terminal::ScannerCommand::TuneToCandidate {
-                window_id: _,
+                candidate_id,
+                window_id,
                 center_frequency,
                 candidate_frequency,
                 signal_strength,
                 audio_quality,
             } => {
+                debug!(
+                    candidate_id = ?candidate_id,
+                    window_id = window_id,
+                    candidate_frequency_mhz = candidate_frequency / 1e6,
+                    "MainThread: Received TuneToCandidate command"
+                );
                 self.scanner_state.handle_tune(window_num);
 
+                // Move tuner from scanning to listening
+                self.active_tuners.scanning.clear();
+                self.active_tuners.listening = self.active_tuners.available.clone();
+                self.send_active_tuners_update();
+
                 if let Some(session) = audio_session {
-                    self.handle_tune_command(
-                        device,
-                        session,
+                    let params = TuneParams {
+                        candidate_id,
+                        window_id,
                         center_frequency,
                         candidate_frequency,
                         signal_strength,
                         audio_quality,
-                    )?;
+                    };
+                    self.handle_tune_command(device, session, params.clone())?;
+                    self.current_playing = Some(params);
                     Ok(None)
                 } else {
                     debug!("TuneToCandidate received but no AudioSession exists");
@@ -224,6 +340,24 @@ impl MainThread {
 
                 if let Some(session) = audio_session {
                     session.stop_current_station();
+                }
+
+                // Send AudioPlaybackCompleted event if we were playing something
+                if let Some(params) = self.current_playing.take() {
+                    self.progress_reporter
+                        .report(crate::terminal::ProgressEvent {
+                            event_type: crate::terminal::ProgressEventType::AudioPlaybackCompleted,
+                            frequency_hz: params.candidate_frequency,
+                            metadata: crate::window::WindowMetadata {
+                                center_frequency_hz: params.center_frequency,
+                                window_id: params.window_id,
+                            },
+                            candidate_id: Some(params.candidate_id),
+                            audio_quality: params.audio_quality,
+                            signal_strength: params.signal_strength,
+                            timestamp: std::time::Instant::now(),
+                            tuner_id: device.tuner_id().ok(),
+                        });
                 }
 
                 Ok(None)
@@ -573,47 +707,55 @@ mod tests {
         }
     }
 
+    fn create_test_tuner_id() -> crate::sdr::TunerId {
+        crate::sdr::TunerId::from_serial("mock", "test123")
+    }
+
+    fn create_test_backend() -> Arc<dyn crate::sdr::Backend> {
+        Arc::new(crate::sdr::mock::Mock)
+    }
+
     #[test]
     fn test_main_thread_creation() {
         let config = create_test_config();
         let console_writer = Arc::new(MockConsoleWriter::new());
         let logger = Arc::new(MockLogger::new());
-        let devices: Vec<soapy::Device> =
-            vec![soapy::Device("driver=mock, label=Test Device".to_string())];
+        let tuner_id = create_test_tuner_id();
+        let backend = create_test_backend();
         let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
         let main_thread = MainThread::new(
             config,
             console_writer,
             logger,
-            devices,
+            tuner_id,
+            backend,
             shutdown_coordinator,
         );
         assert!(main_thread.is_ok());
     }
 
     #[test]
-    fn test_main_thread_run_no_devices() {
+    fn test_main_thread_run_with_mock_tuner() {
         let config = create_test_config();
         let console_writer = Arc::new(MockConsoleWriter::new());
         let logger = Arc::new(MockLogger::new());
-        let devices: Vec<soapy::Device> = vec![];
+        let tuner_id = create_test_tuner_id();
+        let backend = create_test_backend();
         let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
-        let main_thread = MainThread::new(
+        let _main_thread = MainThread::new(
             config,
             console_writer,
             logger,
-            devices,
+            tuner_id,
+            backend,
             shutdown_coordinator,
         )
         .unwrap();
-        let result = main_thread.run(None);
 
-        assert!(result.is_err());
-        if let Err(e) = result {
-            assert!(e.to_string().contains("No SDR devices found"));
-        }
+        // Mock backend will fail when trying to open the device
+        // This test just verifies MainThread construction works with new API
     }
 
     #[test]
@@ -622,15 +764,16 @@ mod tests {
         let console_writer = Arc::new(MockConsoleWriter::new());
         let console_clone = Arc::clone(&console_writer);
         let logger = Arc::new(MockLogger::new());
-        let devices: Vec<soapy::Device> =
-            vec![soapy::Device("driver=mock, label=Test Device".to_string())];
+        let tuner_id = create_test_tuner_id();
+        let backend = create_test_backend();
         let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
         let main_thread = MainThread::new(
             config,
             console_writer,
             logger,
-            devices,
+            tuner_id,
+            backend,
             shutdown_coordinator,
         )
         .unwrap();
@@ -647,15 +790,16 @@ mod tests {
         let config = create_test_config();
         let console_writer = Arc::new(MockConsoleWriter::new());
         let logger = Arc::new(MockLogger::new());
-        let devices: Vec<soapy::Device> =
-            vec![soapy::Device("driver=mock, label=Test Device".to_string())];
+        let tuner_id = create_test_tuner_id();
+        let backend = create_test_backend();
         let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
         let main_thread = MainThread::new(
             config,
             console_writer,
             logger,
-            devices,
+            tuner_id,
+            backend,
             shutdown_coordinator,
         )
         .unwrap();
@@ -671,15 +815,16 @@ mod tests {
         let config = create_test_config();
         let console_writer = Arc::new(MockConsoleWriter::new());
         let logger = Arc::new(MockLogger::new());
-        let devices: Vec<soapy::Device> =
-            vec![soapy::Device("driver=mock, label=Test Device".to_string())];
+        let tuner_id = create_test_tuner_id();
+        let backend = create_test_backend();
         let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
         let main_thread = MainThread::new(
             config,
             console_writer,
             logger,
-            devices,
+            tuner_id,
+            backend,
             shutdown_coordinator,
         )
         .unwrap();

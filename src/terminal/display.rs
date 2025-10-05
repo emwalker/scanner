@@ -148,6 +148,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             },
             ProgressEvent {
                 event_type: ProgressEventType::CandidateCreated,
@@ -160,6 +161,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             },
             ProgressEvent {
                 event_type: ProgressEventType::PeakDetected,
@@ -172,6 +174,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             },
         ];
 
@@ -226,6 +229,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             })
             .expect("Should send event");
 

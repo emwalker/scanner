@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tracing::debug;
 
 pub trait DeviceEnumerator: Send {
-    fn enumerate(&self) -> Result<Vec<sdr::DeviceInfo>, Box<dyn std::error::Error>>;
+    fn enumerate(&self) -> Result<Vec<sdr::TunerInfo>, Box<dyn std::error::Error>>;
     fn name(&self) -> &str;
 }
 
@@ -18,7 +18,7 @@ pub struct MultiEnumerator {
 }
 
 impl MultiEnumerator {
-    pub fn enumerate(&self) -> Vec<sdr::DeviceInfo> {
+    pub fn enumerate(&self) -> Vec<sdr::TunerInfo> {
         let mut devices_by_id = HashMap::new();
 
         for (enumerator, priority) in &self.enumerators {
@@ -66,7 +66,7 @@ pub struct BackendEnumerator {
 }
 
 impl DeviceEnumerator for BackendEnumerator {
-    fn enumerate(&self) -> Result<Vec<sdr::DeviceInfo>, Box<dyn std::error::Error>> {
+    fn enumerate(&self) -> Result<Vec<sdr::TunerInfo>, Box<dyn std::error::Error>> {
         let mut devices = Vec::new();
         for backend in &self.backends {
             if let Ok(devs) = backend.enumerate_devices() {
@@ -121,7 +121,7 @@ impl UsbEnumerator {
 
 #[cfg(target_os = "linux")]
 impl DeviceEnumerator for UsbEnumerator {
-    fn enumerate(&self) -> Result<Vec<sdr::DeviceInfo>, Box<dyn std::error::Error>> {
+    fn enumerate(&self) -> Result<Vec<sdr::TunerInfo>, Box<dyn std::error::Error>> {
         let mut devices = Vec::new();
         let mut enumerator = udev::Enumerator::new()?;
         enumerator.match_subsystem("usb")?;
@@ -151,8 +151,8 @@ impl DeviceEnumerator for UsbEnumerator {
                         .and_then(|s| s.to_str())
                         .unwrap_or("unknown");
 
-                    devices.push(sdr::DeviceInfo {
-                        id: sdr::DeviceId::Usb {
+                    devices.push(sdr::TunerInfo {
+                        id: sdr::TunerId::Usb {
                             vid,
                             pid,
                             serial: serial.to_string(),

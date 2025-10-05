@@ -4,20 +4,20 @@
 //! Implementation is optional and depends on whether Seify provides
 //! sufficient performance for RTL-SDR devices.
 
-use super::{Backend, DeviceError, DeviceErrorKind, DeviceId, DeviceInfo, DeviceTrait};
+use super::{Backend, DeviceError, DeviceErrorKind, DeviceTrait, TunerId, TunerInfo};
 use crate::types::Result;
 
 /// RTL-SDR native backend (future optimization)
 pub struct RtlSdr;
 
 impl Backend for RtlSdr {
-    fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
+    fn enumerate_devices(&self) -> Result<Vec<TunerInfo>> {
         // When rtl-sdr-rs is integrated:
         // let devices = rtlsdr::get_device_count()?;
         Ok(vec![]) // Stub for now
     }
 
-    fn open_device(&self, _id: &DeviceId) -> Result<Box<dyn DeviceTrait>> {
+    fn open_device(&self, _id: &TunerId) -> Result<Box<dyn DeviceTrait>> {
         Err(DeviceError::new(
             DeviceErrorKind::Unsupported,
             "RtlSdr",

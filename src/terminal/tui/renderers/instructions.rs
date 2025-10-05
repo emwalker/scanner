@@ -1,6 +1,9 @@
 //! Instructions rendering for the bottom of the TUI
 
-use crate::terminal::tui::{model::Model, themes::Theme};
+use crate::terminal::tui::{
+    model::{Model, UiMode},
+    themes::Theme,
+};
 use ratatui::{
     Frame,
     layout::Alignment,
@@ -20,26 +23,30 @@ pub fn render_instructions(
     if model.theme_selector_open {
         render_theme_selector(f, area, theme, model, all_themes);
     } else {
-        let left_instructions = if model.browsing_mode && !model.all_complete() {
-            "  ⌃C Exit  ↑↓ Browse  ↵ Continue scan"
-        } else if model.selection_mode {
-            "  ⌃C Exit  ↑↓ Navigate  ↵ Listen"
-        } else {
-            "  ⌃C Exit  ↑↓ Navigate"
+        let left_instructions = match &model.ui_mode {
+            UiMode::Listening { .. } if !model.all_complete() => {
+                "  ⌃C Exit  ↑↓ Browse  ↵ Continue scan"
+            }
+            UiMode::AwaitingTune { .. } if !model.all_complete() => {
+                "  ⌃C Exit  ↑↓ Browse  ↵ Continue scan"
+            }
+            UiMode::NavigatingScanner { .. } => "  ⌃C Exit  ↑↓ Navigate  ↵ Listen",
+            _ => "  ⌃C Exit  ↑↓ Navigate",
         };
 
         let instruction =
             Paragraph::new(left_instructions).style(Style::default().fg(theme.instructions_dim()));
         f.render_widget(instruction, area);
 
-        let right_text = if model.browsing_mode {
-            if let Some((_, _, candidate_freq, _, _)) = model.selected_candidate_info() {
-                format!("[Listening: {:.1} MHz]  ", candidate_freq / 1e6)
-            } else {
-                format!("{}  ", theme_name)
+        let right_text = match &model.ui_mode {
+            UiMode::Listening { .. } => {
+                if let Some(info) = model.selected_candidate_info() {
+                    format!("[Listening: {:.1} MHz]  ", info.candidate_frequency / 1e6)
+                } else {
+                    format!("{}  ", theme_name)
+                }
             }
-        } else {
-            format!("{}  ", theme_name)
+            _ => format!("{}  ", theme_name),
         };
 
         let theme_display = Paragraph::new(right_text)

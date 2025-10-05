@@ -1,6 +1,6 @@
 //! Device trait for individual SDR devices
 
-use super::{Capabilities, DeviceId};
+use super::{Capabilities, TunerId};
 use crate::types::Result;
 use rustradio::Complex;
 use std::any::Any;
@@ -39,8 +39,8 @@ use std::any::Any;
 /// # Ok::<(), scanner::types::ScannerError>(())
 /// ```
 pub trait DeviceTrait: Send {
-    /// Stable device identifier
-    fn id(&self) -> &DeviceId;
+    /// Stable tuner identifier
+    fn id(&self) -> &TunerId;
 
     /// Device capabilities (frequency range, sample rates, etc.)
     fn capabilities(&self) -> &Capabilities;

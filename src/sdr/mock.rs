@@ -1,8 +1,6 @@
 //! Mock backend for testing without hardware
 
-use super::{
-    Backend, Capabilities, DeviceError, DeviceErrorKind, DeviceId, DeviceInfo, DeviceTrait,
-};
+use super::{Backend, Capabilities, DeviceError, DeviceErrorKind, DeviceTrait, TunerId, TunerInfo};
 use crate::types::Result;
 use rustradio::Complex;
 use rustradio::graph::GraphRunner;
@@ -16,20 +14,20 @@ use std::any::Any;
 pub struct Mock;
 
 impl Backend for Mock {
-    fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
+    fn enumerate_devices(&self) -> Result<Vec<TunerInfo>> {
         Ok(vec![
-            DeviceInfo {
-                id: DeviceId::from_serial("mock", "001"),
+            TunerInfo {
+                id: TunerId::from_serial("mock", "001"),
                 label: "Mock RTL-SDR (mock:001)".to_string(),
             },
-            DeviceInfo {
-                id: DeviceId::from_serial("mock", "002"),
+            TunerInfo {
+                id: TunerId::from_serial("mock", "002"),
                 label: "Mock SDRplay (mock:002)".to_string(),
             },
         ])
     }
 
-    fn open_device(&self, id: &DeviceId) -> Result<Box<dyn DeviceTrait>> {
+    fn open_device(&self, id: &TunerId) -> Result<Box<dyn DeviceTrait>> {
         Ok(Box::new(MockDevice::new(id.clone(), false)))
     }
 
@@ -43,7 +41,7 @@ impl Backend for Mock {
 /// Generates realistic test signals (sine waves) and supports
 /// failure injection for robustness testing.
 pub struct MockDevice {
-    device_id: DeviceId,
+    tuner_id: TunerId,
     capabilities: Capabilities,
     fail_on_tune: bool,
 }
@@ -53,11 +51,11 @@ impl MockDevice {
     ///
     /// # Arguments
     ///
-    /// * `device_id` - Device identifier
+    /// * `tuner_id` - Tuner identifier
     /// * `fail_on_tune` - If true, `tune()` will return an error (for testing error handling)
-    pub fn new(device_id: DeviceId, fail_on_tune: bool) -> Self {
+    pub fn new(tuner_id: TunerId, fail_on_tune: bool) -> Self {
         let capabilities = Capabilities {
-            device_id: device_id.clone(),
+            tuner_id: tuner_id.clone(),
             rx_frequency_ranges: vec![(24e6, 1766e6)], // Typical RTL-SDR range
             rx_sample_rate_ranges: vec![(225_000.0, 2_400_000.0)],
             gain_range: (0.0, 48.0),
@@ -69,7 +67,7 @@ impl MockDevice {
         };
 
         Self {
-            device_id,
+            tuner_id,
             capabilities,
             fail_on_tune,
         }
@@ -77,8 +75,8 @@ impl MockDevice {
 }
 
 impl DeviceTrait for MockDevice {
-    fn id(&self) -> &DeviceId {
-        &self.device_id
+    fn id(&self) -> &TunerId {
+        &self.tuner_id
     }
 
     fn capabilities(&self) -> &Capabilities {
@@ -128,7 +126,7 @@ impl DeviceTrait for MockDevice {
     }
 
     fn into_inner(self: Box<Self>) -> Box<dyn Any> {
-        Box::new(self.device_id)
+        Box::new(self.tuner_id)
     }
 }
 
@@ -143,8 +141,8 @@ mod tests {
         let devices = backend.enumerate_devices().unwrap();
 
         assert_eq!(devices.len(), 2, "Mock backend should return 2 devices");
-        assert_eq!(devices[0].id, DeviceId::from_serial("mock", "001"));
-        assert_eq!(devices[1].id, DeviceId::from_serial("mock", "002"));
+        assert_eq!(devices[0].id, TunerId::from_serial("mock", "001"));
+        assert_eq!(devices[1].id, TunerId::from_serial("mock", "002"));
         assert!(devices[0].label.contains("Mock"));
     }
 
@@ -154,7 +152,7 @@ mod tests {
         let devices = backend.enumerate_devices().unwrap();
         let device = backend.open_device(&devices[0].id).unwrap();
 
-        assert_eq!(device.id(), &DeviceId::from_serial("mock", "001"));
+        assert_eq!(device.id(), &TunerId::from_serial("mock", "001"));
     }
 
     #[test]
@@ -194,8 +192,8 @@ mod tests {
 
     #[test]
     fn test_mock_device_tune_failure() {
-        let device_id = DeviceId::from_serial("mock", "999");
-        let mut device = MockDevice::new(device_id, true); // fail_on_tune = true
+        let tuner_id = TunerId::from_serial("mock", "999");
+        let mut device = MockDevice::new(tuner_id, true); // fail_on_tune = true
 
         // Should fail
         let result = device.tune(100e6);
@@ -209,7 +207,7 @@ mod tests {
         let device = backend.open_device(&devices[0].id).unwrap();
 
         let raw = device.into_inner();
-        let device_id = raw.downcast::<DeviceId>().unwrap();
-        assert_eq!(*device_id, DeviceId::from_serial("mock", "001"));
+        let tuner_id = raw.downcast::<TunerId>().unwrap();
+        assert_eq!(*tuner_id, TunerId::from_serial("mock", "001"));
     }
 }

@@ -17,6 +17,9 @@ pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) 
         return;
     }
 
+    // Interactive mode means user is navigating/browsing
+    let in_interactive_mode = model.is_interactive();
+
     // Count total displayable candidates for scroll indicators
     let displayable_windows = model.get_displayable_windows();
     let total_candidates: usize = displayable_windows
@@ -24,7 +27,7 @@ pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) 
         .map(|(window_id, window)| {
             let is_current = **window_id == model.current_window;
             window
-                .displayable_candidates(is_current, model.selection_mode)
+                .displayable_candidates(is_current, in_interactive_mode)
                 .len()
         })
         .sum();
@@ -112,7 +115,7 @@ pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) 
 
     for (window_id, window) in displayable_windows.iter() {
         let is_current = **window_id == model.current_window;
-        let displayable = window.displayable_candidates(is_current, model.selection_mode);
+        let displayable = window.displayable_candidates(is_current, in_interactive_mode);
 
         for candidate in displayable {
             // Track candidate_index for ALL candidates (to match selection logic)
@@ -134,19 +137,29 @@ pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) 
                 break;
             }
 
-            // Check if this candidate is selected
-            let is_selected = model.selection_mode
+            // Check if this candidate is selected (for arrow key navigation)
+            let is_selected = in_interactive_mode
                 && candidate.status != CandidateStatus::Rejected
-                && model.selected_candidate_index == Some(current_candidate_index);
+                && model.selected_candidate_index() == Some(current_candidate_index);
 
-            let is_playing = model.browsing_mode && is_selected;
+            // Determine which station should be highlighted
+            // In AwaitingTune/Listening modes, highlight the station being tuned/played, not arrow selection
+            let should_highlight = match &model.ui_mode {
+                crate::terminal::tui::model::UiMode::AwaitingTune { tuning_index, .. } => {
+                    current_candidate_index == *tuning_index
+                }
+                crate::terminal::tui::model::UiMode::Listening { playing_index, .. } => {
+                    current_candidate_index == *playing_index
+                }
+                _ => false,
+            };
 
             rendered_candidates += 1;
 
             lines.push(render_candidate_line(
                 candidate,
                 is_selected,
-                is_playing,
+                should_highlight,
                 theme,
                 inner.width,
             ));
@@ -158,8 +171,8 @@ pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) 
         }
     }
 
-    // Add "Continue scan" option if in browsing mode and scan is not complete
-    if model.browsing_mode && !model.all_complete() && line_count < max_lines {
+    // Add "Continue scan" option if in interactive mode and scan is not complete
+    if in_interactive_mode && !model.all_complete() && line_count < max_lines {
         let is_continue_selected = model.is_continue_scan_selected();
 
         let color = if is_continue_selected {
@@ -207,7 +220,7 @@ pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) 
 fn render_candidate_line(
     candidate: &crate::terminal::tui::model::CandidateProgress,
     is_selected: bool,
-    is_playing: bool,
+    should_highlight: bool,
     theme: &dyn Theme,
     inner_width: u16,
 ) -> Line<'static> {
@@ -246,13 +259,15 @@ fn render_candidate_line(
     let progress_pct = (candidate.completion * 100.0) as u8;
     let mini_graph = create_mini_graph(progress_pct);
 
-    let selection_prefix = if is_selected {
+    let selection_prefix = if should_highlight {
+        "▶"
+    } else if is_selected {
         theme.selection_indicator()
     } else {
         " "
     };
 
-    let base_style = if is_playing {
+    let base_style = if should_highlight {
         Style::default()
             .bg(Color::Rgb(0, 60, 90))
             .add_modifier(Modifier::BOLD)
@@ -264,7 +279,7 @@ fn render_candidate_line(
 
     spans.push(Span::styled(
         format!("{} {} ", selection_prefix, status_symbol),
-        base_style.fg(if is_playing {
+        base_style.fg(if should_highlight {
             Color::White
         } else {
             status_color
@@ -273,7 +288,7 @@ fn render_candidate_line(
     spans.push(Span::styled(
         format!("{:>5.1} MHz  ", freq_mhz),
         base_style
-            .fg(if is_playing {
+            .fg(if should_highlight {
                 Color::White
             } else if is_selected {
                 theme.selection_highlight()
@@ -284,7 +299,7 @@ fn render_candidate_line(
     ));
     spans.push(Span::styled(
         format!("{:<8}", status_text),
-        base_style.fg(if is_playing {
+        base_style.fg(if should_highlight {
             Color::Rgb(200, 220, 255)
         } else {
             theme.foreground()
@@ -293,7 +308,7 @@ fn render_candidate_line(
     spans.push(Span::styled("  ", base_style));
     spans.push(Span::styled(
         mini_graph,
-        base_style.fg(if is_playing {
+        base_style.fg(if should_highlight {
             Color::White
         } else {
             status_color
@@ -313,7 +328,7 @@ fn render_candidate_line(
         spans.push(Span::styled("  ", base_style));
         spans.push(Span::styled(
             format!("·{:<8}", quality_text),
-            base_style.fg(if is_playing {
+            base_style.fg(if should_highlight {
                 Color::Rgb(150, 255, 150)
             } else {
                 quality_color

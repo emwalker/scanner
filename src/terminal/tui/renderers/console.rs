@@ -70,7 +70,7 @@ impl ConsoleRenderer {
             Self::tty_println(&format!("\x1B[1;37mWindow {}\x1B[0m", window_id)); // Bold white
             let is_current_window = window_id == model.current_window;
             let displayable_candidates =
-                window.displayable_candidates(is_current_window, model.selection_mode);
+                window.displayable_candidates(is_current_window, model.selection_mode());
             for candidate in displayable_candidates {
                 let freq_mhz = candidate.frequency_hz / 1e6;
                 let progress_percent = (candidate.completion * 100.0) as u8;
@@ -164,7 +164,7 @@ impl ConsoleRenderer {
             Self::tty_println(&format!("Window {}", window_id));
             let is_current_window = window_id == model.current_window;
             let displayable_candidates =
-                window.displayable_candidates(is_current_window, model.selection_mode);
+                window.displayable_candidates(is_current_window, model.selection_mode());
             for candidate in displayable_candidates {
                 let freq_mhz = candidate.frequency_hz / 1e6;
                 let progress_percent = (candidate.completion * 100.0) as u8;

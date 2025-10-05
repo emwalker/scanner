@@ -380,18 +380,25 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         ..Default::default()
     };
 
-    let driver = args.device_args.as_deref().unwrap_or(DEFAULT_DRIVER);
-
     // Reset SoapySDR state to avoid mutex hangs from previous runs
     // This unloads and reloads all SoapySDR modules, clearing any stale locks
     soapy::reset_soapysdr_state();
 
-    // Enumerate SDR devices early (before TUI/headless split)
-    // This ensures device enumeration works regardless of display mode
-    let device_strings = soapysdr::enumerate(driver)?
-        .into_iter()
-        .map(|args| soapy::Device(format!("{}", args)))
-        .collect::<Vec<soapy::Device>>();
+    // Enumerate devices synchronously to select initial device
+    // Use discovery service for consistent device enumeration
+    let backends: Vec<Box<dyn scanner::sdr::Backend>> = vec![Box::new(scanner::sdr::Soapy)];
+    let driver_filter = args.device_args.as_deref().or(Some(DEFAULT_DRIVER));
+    let discovered_devices = scanner::discovery::enumerate_once(&backends, driver_filter)?;
+
+    if discovered_devices.is_empty() {
+        return Err(scanner::types::ScannerError::Custom(
+            "No SDR devices found".to_string(),
+        ));
+    }
+
+    // Select first device
+    let selected_device = &discovered_devices[0];
+    let selected_tuner_id = selected_device.id.clone();
 
     // Create shutdown coordinator for graceful shutdown
     let shutdown_coordinator = Arc::new(scanner::shutdown::ShutdownCoordinator::new());
@@ -470,8 +477,8 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         let discovery_forwarder = thread::spawn(move || {
             while let Ok(event) = discovery_receiver.recv() {
                 let tui_event = match event {
-                    discovery::Event::Added(device) => TuiEvent::DeviceAdded(device),
-                    discovery::Event::Removed(device_id) => TuiEvent::DeviceRemoved(device_id),
+                    discovery::Event::Added(device) => TuiEvent::TunerAdded(device),
+                    discovery::Event::Removed(tuner_id) => TuiEvent::TunerRemoved(tuner_id),
                 };
                 if tui_event_sender_clone2.send(tui_event).is_err() {
                     break; // TUI closed
@@ -509,11 +516,13 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         scanner::logging::init(logger.as_ref(), args.verbose)?;
 
         let console_writer = Arc::new(DefaultConsoleWriter);
+        let backend = Arc::new(scanner::sdr::Soapy);
         let main_thread = MainThread::new_with_progress(
             config,
             console_writer,
             logger,
-            device_strings,
+            selected_tuner_id.clone(),
+            backend,
             progress_reporter,
             main_coordinator,
         )?
@@ -553,12 +562,14 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         // Initialize logging before SDR operations to suppress library messages
         scanner::logging::init(logger.as_ref(), args.verbose)?;
 
-        // Create and setup MainThread with device strings
+        // Create and setup MainThread with selected tuner
+        let backend = Arc::new(scanner::sdr::Soapy);
         let main_thread = MainThread::new(
             config,
             console_writer,
             logger,
-            device_strings,
+            selected_tuner_id,
+            backend,
             shutdown_coordinator.clone(),
         )?;
 

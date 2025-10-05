@@ -68,6 +68,7 @@ pub struct SquelchBlock {
     // Progress reporting
     progress_reporter: Option<std::sync::Arc<dyn crate::terminal::ProgressReporter + Send + Sync>>,
     metadata: crate::window::WindowMetadata,
+    tuner_id: Option<crate::sdr::TunerId>,
 }
 
 /// Configuration for squelch block creation
@@ -85,6 +86,7 @@ pub struct SquelchConfig {
     pub progress_reporter:
         Option<std::sync::Arc<dyn crate::terminal::ProgressReporter + Send + Sync>>,
     pub window_id: usize,
+    pub tuner_id: Option<crate::sdr::TunerId>,
 }
 
 impl SquelchBlock {
@@ -120,6 +122,7 @@ impl SquelchBlock {
                 center_frequency_hz: config.center_freq,
                 window_id: config.window_id,
             },
+            tuner_id: config.tuner_id,
         };
 
         (block, decision_state)
@@ -243,6 +246,7 @@ impl SquelchBlock {
                             audio_quality: Some(audio_quality),
                             signal_strength: Some(signal_strength as f64),
                             timestamp: std::time::Instant::now(),
+                            tuner_id: self.tuner_id.clone(),
                         });
                     }
 
@@ -347,6 +351,7 @@ impl BlockEOF for SquelchBlock {
                             audio_quality: Some(audio_quality),
                             signal_strength: Some(signal_strength as f64),
                             timestamp: std::time::Instant::now(),
+                            tuner_id: self.tuner_id.clone(),
                         });
                     }
 
@@ -465,6 +470,7 @@ mod tests {
             audio_capturer: None,    // no audio capture for tests
             progress_reporter: None, // no progress reporting for tests
             window_id: 0,            // default window for tests
+            tuner_id: None,
         };
         let (mut squelch, _decision_state) = SquelchBlock::new(input_read_stream, squelch_config);
 
@@ -587,6 +593,7 @@ mod tests {
             audio_capturer: Some(capturer),
             progress_reporter: None, // no progress reporting for tests
             window_id: 0,            // default window for tests
+            tuner_id: None,
         };
         let (mut squelch, _decision_state) = SquelchBlock::new(input_read_stream, squelch_config);
 
@@ -644,6 +651,7 @@ mod tests {
             audio_capturer: Some(capturer),
             progress_reporter: None, // no progress reporting for tests
             window_id: 0,            // default window for tests
+            tuner_id: None,
         };
         let (mut squelch, _decision_state) = SquelchBlock::new(input_read_stream, squelch_config);
 

@@ -1,7 +1,7 @@
 //! TUI data model using The Elm Architecture pattern
 
 use crate::{
-    sdr::DeviceInfo,
+    sdr::TunerInfo,
     terminal::{ProgressEvent, ProgressEventType, TuiEvent},
 };
 use std::{
@@ -10,18 +10,20 @@ use std::{
 };
 use tracing::debug;
 
-/// Selected candidate information: (window_id, center_freq, candidate_freq, signal_strength, audio_quality)
-pub type SelectedCandidateInfo = (
-    usize,
-    f64,
-    f64,
-    Option<f64>,
-    Option<crate::audio_quality::AudioQuality>,
-);
+/// Selected candidate information
+#[derive(Debug, Clone)]
+pub struct SelectedCandidateInfo {
+    pub candidate_id: String,
+    pub metadata: crate::window::WindowMetadata,
+    pub candidate_frequency: f64,
+    pub signal_strength: Option<f64>,
+    pub audio_quality: Option<crate::audio_quality::AudioQuality>,
+}
 
 /// Information about a candidate's progress
 #[derive(Debug, Clone)]
 pub struct CandidateProgress {
+    pub candidate_id: String,
     pub frequency_hz: f64,
     pub metadata: crate::window::WindowMetadata,
     pub completion: f64,
@@ -128,6 +130,51 @@ pub enum FocusState {
     Tuner(usize), // Index of focused tuner
 }
 
+/// Tuner state - what a specific tuner/SDR device is doing
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TunerState {
+    /// Tuner is idle and available for use
+    Available,
+    /// Tuner is actively scanning for signals
+    Scanning,
+    /// Tuner is listening to a station
+    Listening,
+}
+
+impl TunerState {
+    pub fn display(&self) -> &'static str {
+        match self {
+            TunerState::Available => "Available",
+            TunerState::Scanning => "Scanning",
+            TunerState::Listening => "Listening",
+        }
+    }
+}
+
+/// UI interaction mode - what the user is currently doing
+/// This is separate from scanner state (what SDRs are doing in background)
+#[derive(Debug, Clone, PartialEq)]
+pub enum UiMode {
+    /// Watching scan progress (no candidate selected)
+    Idle,
+
+    /// Candidate selected, navigating scanner results while scan may still be running
+    NavigatingScanner { selected_index: usize },
+
+    /// Scan paused, waiting for Paused event before tuning to station
+    AwaitingTune {
+        navigation_index: usize,
+        tuning_index: usize,
+    },
+
+    /// Actively listening to a station (scan paused, audio playing)
+    Listening {
+        navigation_index: usize,
+        playing_index: usize,
+        playing_candidate_id: String,
+    },
+}
+
 /// Main application model following The Elm Architecture
 #[derive(Debug)]
 pub struct Model {
@@ -137,14 +184,16 @@ pub struct Model {
     pub should_quit: bool,
     pub theme_selector_open: bool,
     pub theme_selector_index: usize,
-    pub selection_mode: bool, // Whether a candidate is currently selected (can be while scan is running)
-    pub browsing_mode: bool,  // Whether scan is paused for manual browsing/listening
-    pub pending_tune: bool,   // Waiting for Paused event to send TuneToCandidate
-    pub selected_candidate_index: Option<usize>, // Index in flattened displayable candidates list
+
+    // State machine-based UI mode
+    pub ui_mode: UiMode,
+
     pub scroll_offset: usize, // Number of candidates to skip when rendering (for scrolling)
     pub playback_active: bool, // Tracks if actively listening to a station
     pub focus_state: FocusState, // Which component has focus
-    pub devices: Vec<DeviceInfo>, // Discovered SDR devices
+    pub tuners: Vec<TunerInfo>, // Discovered SDR tuners
+    pub tuner_states: HashMap<crate::sdr::TunerId, TunerState>, // State of each tuner
+    pub active_tuners: Option<crate::main_thread::ActiveTuners>, // Source of truth for tuner allocation
 }
 
 impl Default for Model {
@@ -162,117 +211,185 @@ impl Model {
             should_quit: false,
             theme_selector_open: false,
             theme_selector_index: 0,
-            selection_mode: false,
-            browsing_mode: false,
-            pending_tune: false,
-            selected_candidate_index: None,
+            ui_mode: UiMode::Idle,
             scroll_offset: 0,
             playback_active: false,
             focus_state: FocusState::Spectrum,
-            devices: Vec::new(),
+            tuners: Vec::new(),
+            tuner_states: HashMap::new(),
+            active_tuners: None,
         }
     }
 
-    /// Add a newly discovered device
-    pub fn add_device(&mut self, device: DeviceInfo) {
-        // Check if device already exists
-        if !self.devices.iter().any(|d| d.id == device.id) {
-            debug!(device_id = ?device.id, label = %device.label, "Device added to TUI model");
-            self.devices.push(device);
+    /// Add a newly discovered tuner
+    pub fn add_device(&mut self, tuner: TunerInfo) {
+        // Check if tuner already exists
+        if !self.tuners.iter().any(|d| d.id == tuner.id) {
+            debug!(tuner_id = ?tuner.id, label = %tuner.label, "Tuner added to TUI model");
+
+            // All newly discovered tuners start as Available
+            // Progress events will update state to Scanning/Listening for the tuner actually in use
+            self.tuner_states
+                .insert(tuner.id.clone(), TunerState::Available);
+            self.tuners.push(tuner);
         }
     }
 
-    /// Remove a device that was unplugged
-    pub fn remove_device(&mut self, device_id: &crate::sdr::DeviceId) {
-        if let Some(pos) = self.devices.iter().position(|d| &d.id == device_id) {
-            let device = self.devices.remove(pos);
-            debug!(device_id = ?device.id, label = %device.label, "Device removed from TUI model");
+    /// Remove a tuner that was unplugged
+    pub fn remove_device(&mut self, tuner_id: &crate::sdr::TunerId) {
+        if let Some(pos) = self.tuners.iter().position(|d| &d.id == tuner_id) {
+            let tuner = self.tuners.remove(pos);
+            self.tuner_states.remove(&tuner.id);
+            debug!(tuner_id = ?tuner.id, label = %tuner.label, "Tuner removed from TUI model");
         }
     }
 
-    /// Get count of discovered devices
+    /// Get the state of a specific tuner based on active tuners allocation
+    pub fn tuner_state(&self, tuner_id: &crate::sdr::TunerId) -> TunerState {
+        if let Some(ref active) = self.active_tuners {
+            if active.scanning.contains(tuner_id) {
+                return TunerState::Scanning;
+            }
+            if active.listening.contains(tuner_id) {
+                return TunerState::Listening;
+            }
+        }
+        // Fall back to HashMap for backward compatibility during transition
+        // (e.g., Paused event still uses HashMap)
+        self.tuner_states
+            .get(tuner_id)
+            .cloned()
+            .unwrap_or(TunerState::Available)
+    }
+
+    /// Get count of discovered tuners
     pub fn device_count(&self) -> usize {
-        self.devices.len()
+        self.tuners.len()
     }
 
     /// Update the model based on a TUI event (progress or discovery)
     pub fn update_tui_event(&mut self, event: TuiEvent) {
         match event {
             TuiEvent::Progress(progress_event) => self.update(progress_event),
-            TuiEvent::DeviceAdded(device) => self.add_device(device),
-            TuiEvent::DeviceRemoved(device_id) => self.remove_device(&device_id),
-            TuiEvent::Paused => {
-                // Scanning has paused, ready for tune command
-                debug!("Received Paused event");
+            TuiEvent::TunerAdded(tuner) => self.add_device(tuner),
+            TuiEvent::TunerRemoved(tuner_id) => self.remove_device(&tuner_id),
+            TuiEvent::Paused { tuner_id } => {
+                debug!(tuner_id = ?tuner_id, "Scanning paused, tuner now available");
+                self.tuner_states.insert(tuner_id, TunerState::Available);
+            }
+            TuiEvent::ActiveTunersUpdated {
+                available,
+                scanning,
+                listening,
+            } => {
+                debug!(
+                    available_count = available.len(),
+                    scanning_count = scanning.len(),
+                    listening_count = listening.len(),
+                    "Active tuners updated"
+                );
+                self.active_tuners = Some(crate::main_thread::ActiveTuners {
+                    available,
+                    scanning,
+                    listening,
+                });
             }
         }
     }
 
     /// Update the model based on a progress event
     pub fn update(&mut self, event: ProgressEvent) {
-        // Ignore all events when in browsing mode - user is focused on manually listening
-        if self.browsing_mode {
+        if !self.should_process_event(&event) {
             return;
         }
 
-        // Only process events for actual candidates, not peaks
-        if let ProgressEventType::PeakDetected = event.event_type {
-            // Ignore peak detection events - we only care about candidates
-            return;
+        self.update_current_window(&event);
+        // Tuner state now managed by ActiveTunersUpdated events
+
+        if let Some(candidate_id) = event.candidate_id.clone() {
+            self.update_candidate(event, &candidate_id);
         }
 
-        // Track current window for determining when to freeze older windows
+        self.complete_window_if_done();
+    }
+
+    fn should_process_event(&self, event: &ProgressEvent) -> bool {
+        if self.is_interactive()
+            && event.event_type != ProgressEventType::AudioPlaybackStarted
+            && event.event_type != ProgressEventType::AudioPlaybackCompleted
+        {
+            return false;
+        }
+
+        !matches!(event.event_type, ProgressEventType::PeakDetected)
+    }
+
+    fn update_current_window(&mut self, event: &ProgressEvent) {
         if event.metadata.window_id > self.current_window {
             self.current_window = event.metadata.window_id;
-            // Mark previous windows as complete to prevent further updates
             for (window_id, window) in self.windows.iter_mut() {
                 if *window_id < self.current_window {
                     window.is_complete = true;
                 }
             }
         }
+    }
 
-        if let Some(candidate_id) = &event.candidate_id {
-            // Don't process events for old windows at all
-            if event.metadata.window_id < self.current_window {
-                // Ignore events for completed windows
-                return;
-            }
+    // Tuner state is now managed by ActiveTunersUpdated events from MainThread
+    // No longer need to infer state from progress events
 
-            // Get or create window (only for current or future windows)
-            let window = self
-                .windows
-                .entry(event.metadata.window_id)
-                .or_insert_with(|| WindowProgress {
-                    window_id: event.metadata.window_id,
-                    candidates: Vec::new(),
-                    is_complete: false,
-                    candidate_lookup: HashMap::new(),
-                });
+    fn update_candidate(&mut self, event: ProgressEvent, candidate_id: &str) {
+        debug!(
+            event_type = ?event.event_type,
+            candidate_id = ?candidate_id,
+            window_id = event.metadata.window_id,
+            current_window = self.current_window,
+            ui_mode = ?self.ui_mode,
+            "Processing event with candidate_id"
+        );
 
-            // Find or create candidate
-            let candidate_index = if let Some(&index) = window.candidate_lookup.get(candidate_id) {
-                index
-            } else {
-                // Create new candidate
-                let new_candidate = CandidateProgress {
-                    frequency_hz: event.frequency_hz,
-                    metadata: event.metadata,
-                    completion: 0.0,
-                    status: CandidateStatus::Detected,
-                    audio_quality: None,
-                    signal_strength: None,
-                    last_update: Instant::now(),
-                };
-                let index = window.candidates.len();
-                window.candidates.push(new_candidate);
-                window.candidate_lookup.insert(candidate_id.clone(), index);
-                index
+        if event.metadata.window_id < self.current_window
+            && !(self.is_interactive()
+                && (event.event_type == ProgressEventType::AudioPlaybackStarted
+                    || event.event_type == ProgressEventType::AudioPlaybackCompleted))
+        {
+            debug!("Ignoring event for old window");
+            return;
+        }
+
+        if event.event_type == ProgressEventType::AudioPlaybackStarted {
+            self.clear_playing_candidates(candidate_id);
+        }
+
+        let window_id = event.metadata.window_id;
+        let window = self.get_or_create_window(window_id);
+
+        let candidate_index = if let Some(&index) = window.candidate_lookup.get(candidate_id) {
+            debug!(index = index, "Found existing candidate");
+            index
+        } else {
+            debug!("Creating new candidate");
+            let new_candidate = CandidateProgress {
+                candidate_id: candidate_id.to_string(),
+                frequency_hz: event.frequency_hz,
+                metadata: event.metadata,
+                completion: 0.0,
+                status: CandidateStatus::Detected,
+                audio_quality: None,
+                signal_strength: None,
+                last_update: Instant::now(),
             };
+            let index = window.candidates.len();
+            window.candidates.push(new_candidate);
+            window
+                .candidate_lookup
+                .insert(candidate_id.to_string(), index);
+            index
+        };
 
+        {
             let candidate = &mut window.candidates[candidate_index];
 
-            // Update candidate based on event type
             match event.event_type {
                 ProgressEventType::CandidateCreated => {
                     candidate.status = CandidateStatus::Detected;
@@ -283,15 +400,11 @@ impl Model {
                     candidate.completion = 0.5;
                 }
                 ProgressEventType::AudioAnalysisCompleted => {
-                    // Don't override completion if we already have a Signal status with its own progress
                     if candidate.status == CandidateStatus::Signal {
-                        // Keep the Signal completion percentage (60%)
                     } else if candidate.status != CandidateStatus::Rejected {
-                        // For non-Signal, non-Rejected candidates, mark as complete
                         candidate.status = CandidateStatus::Signal;
-                        candidate.completion = 0.6; // 60% - analysis complete, signal found
+                        candidate.completion = 0.6;
                     } else {
-                        // For rejected candidates, set to 100%
                         candidate.completion = 1.0;
                     }
                 }
@@ -301,7 +414,7 @@ impl Model {
                 }
                 ProgressEventType::SignalGenerated => {
                     candidate.status = CandidateStatus::Signal;
-                    candidate.completion = 0.6; // 60% - signal found but not yet playing
+                    candidate.completion = 0.6;
                     if let Some(quality) = event.audio_quality {
                         candidate.audio_quality = Some(quality);
                     }
@@ -310,31 +423,81 @@ impl Model {
                     }
                 }
                 ProgressEventType::AudioPlaybackStarted => {
+                    debug!(
+                        frequency_mhz = event.frequency_hz / 1e6,
+                        candidate_id = ?candidate_id,
+                        "Setting candidate to Playing status"
+                    );
                     candidate.status = CandidateStatus::Playing;
-                    candidate.completion = 0.8; // 80% - now playing audio
+                    candidate.completion = 0.8;
                 }
                 ProgressEventType::AudioPlaybackCompleted => {
                     candidate.status = CandidateStatus::Completed;
-                    candidate.completion = 1.0; // 100% - finished playing, completely done
+                    candidate.completion = 1.0;
                 }
-                ProgressEventType::ThreadCompleted => {
-                    // This might not have a candidate ID, ignore for now
-                }
-                ProgressEventType::PeakDetected => {
-                    // Already handled above
-                }
+                ProgressEventType::ThreadCompleted | ProgressEventType::PeakDetected => {}
             }
 
-            // Update audio quality if provided in the event
             if let Some(quality) = event.audio_quality {
                 candidate.audio_quality = Some(quality);
             }
-
             candidate.last_update = Instant::now();
         }
 
-        // Check if all candidates across all windows are complete
-        // If so, mark the current window as complete to hide rejected candidates
+        if event.event_type == ProgressEventType::AudioPlaybackStarted {
+            match &self.ui_mode {
+                UiMode::AwaitingTune {
+                    navigation_index,
+                    tuning_index,
+                }
+                | UiMode::Listening {
+                    navigation_index,
+                    playing_index: tuning_index,
+                    ..
+                } => {
+                    self.ui_mode = UiMode::Listening {
+                        navigation_index: *navigation_index,
+                        playing_index: *tuning_index,
+                        playing_candidate_id: candidate_id.to_string(),
+                    };
+                    // Note: Tuner state is set to Listening by update_tuner_state()
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn clear_playing_candidates(&mut self, new_playing_id: &str) {
+        debug!(
+            new_playing_candidate = ?new_playing_id,
+            "Clearing all other Playing candidates before setting new one"
+        );
+        for window in self.windows.values_mut() {
+            for candidate in &mut window.candidates {
+                if candidate.status == CandidateStatus::Playing {
+                    debug!(
+                        cleared_candidate = ?candidate.candidate_id,
+                        "Clearing Playing status from candidate"
+                    );
+                    candidate.status = CandidateStatus::Completed;
+                    candidate.completion = 1.0;
+                }
+            }
+        }
+    }
+
+    fn get_or_create_window(&mut self, window_id: usize) -> &mut WindowProgress {
+        self.windows
+            .entry(window_id)
+            .or_insert_with(|| WindowProgress {
+                window_id,
+                candidates: Vec::new(),
+                is_complete: false,
+                candidate_lookup: HashMap::new(),
+            })
+    }
+
+    fn complete_window_if_done(&mut self) {
         if self.all_complete()
             && let Some(window) = self.windows.get_mut(&self.current_window)
         {
@@ -380,6 +543,57 @@ impl Model {
         self.should_quit = true;
     }
 
+    // UiMode helper methods
+    pub fn is_idle(&self) -> bool {
+        matches!(self.ui_mode, UiMode::Idle)
+    }
+
+    pub fn is_navigating(&self) -> bool {
+        matches!(self.ui_mode, UiMode::NavigatingScanner { .. })
+    }
+
+    pub fn is_awaiting_tune(&self) -> bool {
+        matches!(self.ui_mode, UiMode::AwaitingTune { .. })
+    }
+
+    pub fn is_listening(&self) -> bool {
+        matches!(self.ui_mode, UiMode::Listening { .. })
+    }
+
+    pub fn is_interactive(&self) -> bool {
+        !matches!(self.ui_mode, UiMode::Idle)
+    }
+
+    /// Computed property: selection_mode derived from UiMode
+    /// Returns true when user can navigate with arrow keys
+    pub fn selection_mode(&self) -> bool {
+        self.is_interactive()
+    }
+
+    /// Computed property: browsing_mode derived from UiMode
+    /// Returns true when scan is paused for manual browsing/listening
+    pub fn browsing_mode(&self) -> bool {
+        matches!(
+            self.ui_mode,
+            UiMode::AwaitingTune { .. } | UiMode::Listening { .. }
+        )
+    }
+
+    /// Computed property: selected_candidate_index derived from UiMode
+    /// Returns the navigation index (where arrow keys are positioned)
+    pub fn selected_candidate_index(&self) -> Option<usize> {
+        match &self.ui_mode {
+            UiMode::NavigatingScanner { selected_index } => Some(*selected_index),
+            UiMode::AwaitingTune {
+                navigation_index, ..
+            } => Some(*navigation_index),
+            UiMode::Listening {
+                navigation_index, ..
+            } => Some(*navigation_index),
+            UiMode::Idle => None,
+        }
+    }
+
     pub fn toggle_theme_selector(&mut self) {
         self.theme_selector_open = !self.theme_selector_open;
     }
@@ -402,32 +616,23 @@ impl Model {
 
     /// Enter selection mode - pauses scanning and allows browsing candidates
     pub fn enter_selection_mode(&mut self) {
-        self.selection_mode = true;
-
-        // Complete all Signal and Playing candidates across all windows when entering browsing mode
-        let window_ids: Vec<usize> = self.windows.keys().copied().collect();
-        for window_id in window_ids {
-            self.complete_playing_candidates_in_window(window_id);
-        }
-
         // Start with most recent candidate selected
         let candidate_count = self.get_selectable_candidate_count();
         if candidate_count > 0 {
-            self.selected_candidate_index = Some(candidate_count - 1);
+            let selected_index = candidate_count - 1;
+            self.ui_mode = UiMode::NavigatingScanner { selected_index };
         }
     }
 
     /// Exit selection mode - returns to normal scanning
     pub fn exit_selection_mode(&mut self) {
-        self.selection_mode = false;
-        self.selected_candidate_index = None;
+        self.ui_mode = UiMode::Idle;
     }
 
     /// Exit browsing mode and return to normal scanning (clears both modes)
     pub fn exit_browsing_mode(&mut self) {
-        self.browsing_mode = false;
-        self.selection_mode = false;
-        self.selected_candidate_index = None;
+        self.ui_mode = UiMode::Idle;
+        // Tuner state is now managed by ActiveTunersUpdated events from MainThread
     }
 
     /// Get ordered list of displayable windows (oldest to newest)
@@ -453,7 +658,7 @@ impl Model {
         let mut candidates = Vec::new();
         for (window_id, window) in self.get_displayable_windows() {
             let is_current = *window_id == self.current_window;
-            for candidate in window.displayable_candidates(is_current, self.selection_mode) {
+            for candidate in window.displayable_candidates(is_current, self.selection_mode()) {
                 candidates.push((*window_id, candidate));
             }
         }
@@ -466,7 +671,7 @@ impl Model {
         let mut candidates = Vec::new();
         for (window_id, window) in self.get_displayable_windows() {
             let is_current = *window_id == self.current_window;
-            for candidate in window.displayable_candidates(is_current, self.selection_mode) {
+            for candidate in window.displayable_candidates(is_current, self.selection_mode()) {
                 // Skip rejected candidates - they shouldn't be selectable
                 if candidate.status != CandidateStatus::Rejected {
                     candidates.push((*window_id, candidate));
@@ -488,11 +693,11 @@ impl Model {
 
     /// Get the window_id, center frequency, and candidate frequency for the currently selected candidate
     pub fn selected_candidate_info(&self) -> Option<SelectedCandidateInfo> {
-        if !self.selection_mode {
+        if !self.selection_mode() {
             return None;
         }
 
-        let selected_idx = self.selected_candidate_index?;
+        let selected_idx = self.selected_candidate_index()?;
         let candidates = self.get_selectable_candidates();
 
         if selected_idx >= candidates.len() {
@@ -509,34 +714,13 @@ impl Model {
             "Selected candidate info"
         );
 
-        Some((
-            window_id,
-            candidate.metadata.center_frequency_hz,
-            candidate.frequency_hz,
-            candidate.signal_strength,
-            candidate.audio_quality,
-        ))
-    }
-
-    /// Complete any accepted candidates when entering browsing mode or changing windows
-    /// This transitions candidates in Signal or Playing states to Completed
-    fn complete_playing_candidates_in_window(&mut self, window_id: usize) {
-        if let Some(window) = self.windows.get_mut(&window_id) {
-            for candidate in &mut window.candidates {
-                match candidate.status {
-                    CandidateStatus::Signal | CandidateStatus::Playing => {
-                        candidate.status = CandidateStatus::Completed;
-                        candidate.completion = 1.0;
-                    }
-                    CandidateStatus::Detected
-                    | CandidateStatus::Analyzing
-                    | CandidateStatus::Rejected
-                    | CandidateStatus::Completed => {
-                        // Leave other states as-is
-                    }
-                }
-            }
-        }
+        Some(SelectedCandidateInfo {
+            candidate_id: candidate.candidate_id.clone(),
+            metadata: candidate.metadata,
+            candidate_frequency: candidate.frequency_hz,
+            signal_strength: candidate.signal_strength,
+            audio_quality: candidate.audio_quality,
+        })
     }
 
     /// Select next candidate (moving forward in time)
@@ -546,7 +730,7 @@ impl Model {
 
     /// Select next candidate with viewport height for scroll adjustment
     pub fn select_next_candidate_with_viewport(&mut self, viewport_height: usize) {
-        if !self.selection_mode {
+        if !self.selection_mode() {
             return;
         }
 
@@ -555,27 +739,38 @@ impl Model {
             return;
         }
 
-        let old_window_id = self
-            .selected_candidate_info()
-            .map(|(window_id, _, _, _, _)| window_id);
-
-        let current = self.selected_candidate_index.unwrap_or(0);
+        let current = self.selected_candidate_index().unwrap_or(0);
         // Can move past last candidate to "Continue scan" position
         let next = (current + 1).min(candidate_count);
 
         if next != current {
-            self.selected_candidate_index = Some(next);
-            self.adjust_scroll_to_selection(viewport_height);
-
-            // If we moved to a different window, complete any playing candidates in the old window
-            if let Some(new_window_id) = self
-                .selected_candidate_info()
-                .map(|(window_id, _, _, _, _)| window_id)
-                && let Some(old_id) = old_window_id
-                && old_id != new_window_id
-            {
-                self.complete_playing_candidates_in_window(old_id);
+            // Update navigation index based on mode
+            match &self.ui_mode {
+                UiMode::NavigatingScanner { .. } => {
+                    self.ui_mode = UiMode::NavigatingScanner {
+                        selected_index: next,
+                    };
+                }
+                UiMode::AwaitingTune { tuning_index, .. } => {
+                    self.ui_mode = UiMode::AwaitingTune {
+                        navigation_index: next,
+                        tuning_index: *tuning_index,
+                    };
+                }
+                UiMode::Listening {
+                    playing_index,
+                    playing_candidate_id,
+                    ..
+                } => {
+                    self.ui_mode = UiMode::Listening {
+                        navigation_index: next,
+                        playing_index: *playing_index,
+                        playing_candidate_id: playing_candidate_id.clone(),
+                    };
+                }
+                UiMode::Idle => {}
             }
+            self.adjust_scroll_to_selection(viewport_height);
         }
     }
 
@@ -586,44 +781,56 @@ impl Model {
 
     /// Select previous candidate with viewport height for scroll adjustment
     pub fn select_previous_candidate_with_viewport(&mut self, viewport_height: usize) {
-        if !self.selection_mode {
+        if !self.selection_mode() {
             return;
         }
 
-        let old_window_id = self
-            .selected_candidate_info()
-            .map(|(window_id, _, _, _, _)| window_id);
-
-        let current = self.selected_candidate_index.unwrap_or(0);
+        let current = self.selected_candidate_index().unwrap_or(0);
         if current > 0 {
-            self.selected_candidate_index = Some(current - 1);
-            self.adjust_scroll_to_selection(viewport_height);
-
-            // If we moved to a different window, complete any playing candidates in the old window
-            if let Some(new_window_id) = self
-                .selected_candidate_info()
-                .map(|(window_id, _, _, _, _)| window_id)
-                && let Some(old_id) = old_window_id
-                && old_id != new_window_id
-            {
-                self.complete_playing_candidates_in_window(old_id);
+            let prev = current - 1;
+            // Update navigation index based on mode
+            match &self.ui_mode {
+                UiMode::NavigatingScanner { .. } => {
+                    self.ui_mode = UiMode::NavigatingScanner {
+                        selected_index: prev,
+                    };
+                }
+                UiMode::AwaitingTune { tuning_index, .. } => {
+                    self.ui_mode = UiMode::AwaitingTune {
+                        navigation_index: prev,
+                        tuning_index: *tuning_index,
+                    };
+                }
+                UiMode::Listening {
+                    playing_index,
+                    playing_candidate_id,
+                    ..
+                } => {
+                    self.ui_mode = UiMode::Listening {
+                        navigation_index: prev,
+                        playing_index: *playing_index,
+                        playing_candidate_id: playing_candidate_id.clone(),
+                    };
+                }
+                UiMode::Idle => {}
             }
+            self.adjust_scroll_to_selection(viewport_height);
         }
     }
 
     /// Check if "Continue scan" option is currently selected
     pub fn is_continue_scan_selected(&self) -> bool {
-        if !self.selection_mode {
+        if !self.selection_mode() {
             return false;
         }
 
         let candidate_count = self.get_selectable_candidate_count();
-        self.selected_candidate_index == Some(candidate_count)
+        self.selected_candidate_index() == Some(candidate_count)
     }
 
     /// Adjust scroll offset to ensure the selected candidate is visible
     pub fn adjust_scroll_to_selection(&mut self, viewport_height: usize) {
-        if let Some(selected_idx) = self.selected_candidate_index {
+        if let Some(selected_idx) = self.selected_candidate_index() {
             // Ensure selected item is within visible range
             if selected_idx < self.scroll_offset {
                 // Scrolled too far down, need to scroll up
@@ -656,7 +863,7 @@ impl Model {
                 self.focus_state = FocusState::Scan;
             }
             FocusState::Scan => {
-                if self.selection_mode {
+                if self.selection_mode() {
                     self.select_next_candidate();
                 }
             }
@@ -669,22 +876,23 @@ impl Model {
         match self.focus_state {
             FocusState::Spectrum => {}
             FocusState::Scan => {
-                if !self.selection_mode {
+                if !self.selection_mode() {
                     // Start with most recent candidate selected (don't enter browsing mode yet)
                     let candidate_count = self.get_selectable_candidate_count();
                     if candidate_count > 0 {
-                        self.selected_candidate_index = Some(candidate_count - 1);
-                        self.selection_mode = true;
+                        let selected_index = candidate_count - 1;
+                        // Transition: Idle → NavigatingScanner
+                        self.ui_mode = UiMode::NavigatingScanner { selected_index };
                     }
                     self.focus_state = FocusState::Scan;
                 } else {
                     // Try to select previous candidate (in browsing mode)
-                    let prev_idx = self.selected_candidate_index;
+                    let prev_idx = self.selected_candidate_index();
                     self.select_previous_candidate();
 
                     // If selection went to None, we've gone past the first candidate
                     // Move focus to Spectrum and exit selection mode
-                    if self.selected_candidate_index.is_none() && prev_idx.is_some() {
+                    if self.selected_candidate_index().is_none() && prev_idx.is_some() {
                         self.focus_state = FocusState::Spectrum;
                         self.exit_selection_mode();
                     }
@@ -699,7 +907,7 @@ impl Model {
         match self.focus_state {
             FocusState::Spectrum => {}
             FocusState::Scan => {
-                if self.selection_mode && tuner_count > 0 {
+                if self.selection_mode() && tuner_count > 0 {
                     self.focus_state = FocusState::Tuner(0);
                 }
             }
@@ -753,6 +961,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -772,6 +981,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -791,6 +1001,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -810,6 +1021,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -829,6 +1041,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -857,6 +1070,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         // Step 2: Audio analysis started
@@ -871,6 +1085,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         // Step 3: Candidate rejected (noise)
@@ -885,6 +1100,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -921,6 +1137,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
         }
 
@@ -937,6 +1154,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
         }
 
@@ -952,6 +1170,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         model.update(ProgressEvent {
@@ -965,6 +1184,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         // Complete signal paths for others
@@ -980,6 +1200,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
 
             model.update(ProgressEvent {
@@ -993,6 +1214,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
 
             model.update(ProgressEvent {
@@ -1006,6 +1228,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
         }
 
@@ -1053,6 +1276,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         assert_eq!(model.current_window, 1);
@@ -1070,6 +1294,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         assert_eq!(model.current_window, 2);
@@ -1088,6 +1313,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         assert_eq!(model.current_window, 3);
@@ -1113,6 +1339,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         // Start window 2 (marks window 1 complete)
@@ -1127,6 +1354,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window1_candidate_count = model.windows.get(&1).unwrap().candidates.len();
@@ -1143,6 +1371,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         // Window 1 should still have the same number of candidates
@@ -1163,6 +1392,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         // Candidate should still be in original state
@@ -1196,6 +1426,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
         }
 
@@ -1211,6 +1442,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         for (id, freq) in &candidates[1..] {
@@ -1225,6 +1457,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
 
             model.update(ProgressEvent {
@@ -1238,6 +1471,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
 
             model.update(ProgressEvent {
@@ -1251,6 +1485,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
         }
 
@@ -1266,6 +1501,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -1310,6 +1546,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
 
             model.update(ProgressEvent {
@@ -1323,6 +1560,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
         }
 
@@ -1339,6 +1577,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         // After window 2 is created, window 1 should be marked complete
@@ -1375,6 +1614,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
         }
 
@@ -1422,6 +1662,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
         }
 
@@ -1443,6 +1684,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
         }
 
@@ -1485,6 +1727,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         model.update(ProgressEvent {
@@ -1498,6 +1741,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         // Generate signal first
@@ -1512,6 +1756,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -1531,6 +1776,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -1571,6 +1817,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -1588,6 +1835,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -1605,6 +1853,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -1622,6 +1871,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -1639,6 +1889,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -1658,6 +1909,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         model.update(ProgressEvent {
@@ -1671,6 +1923,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         let window = model.windows.get(&window_id).unwrap();
@@ -1679,7 +1932,249 @@ mod tests {
     }
 
     #[test]
-    fn test_playing_candidates_completed_when_entering_selection_mode() {
+    fn test_browsing_mode_playing_correct_candidate() {
+        let mut model = Model::new();
+        let window_id = 1;
+
+        // Create three candidates at different frequencies
+        let freq1 = 88_500_000.0;
+        let freq2 = 88_900_000.0;
+        let freq3 = 89_300_000.0;
+        let candidate1_id = "88.5-1".to_string();
+        let candidate2_id = "88.9-1".to_string();
+        let candidate3_id = "89.3-1".to_string();
+
+        // Create all three candidates in Signal state
+        for (freq, candidate_id) in [
+            (freq1, candidate1_id.clone()),
+            (freq2, candidate2_id.clone()),
+            (freq3, candidate3_id.clone()),
+        ] {
+            model.update(ProgressEvent {
+                event_type: ProgressEventType::CandidateCreated,
+                frequency_hz: freq,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: freq,
+                    window_id,
+                },
+                candidate_id: Some(candidate_id.clone()),
+                audio_quality: None,
+                signal_strength: None,
+                timestamp: Instant::now(),
+                tuner_id: None,
+            });
+
+            model.update(ProgressEvent {
+                event_type: ProgressEventType::SignalGenerated,
+                frequency_hz: freq,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: freq,
+                    window_id,
+                },
+                candidate_id: Some(candidate_id.clone()),
+                audio_quality: Some(crate::audio_quality::AudioQuality::Good),
+                signal_strength: Some(50.0),
+                timestamp: Instant::now(),
+                tuner_id: None,
+            });
+        }
+
+        model.current_window = window_id;
+
+        // Verify all three candidates are in Signal state
+        let window = model.windows.get(&window_id).unwrap();
+        assert_eq!(window.candidates.len(), 3);
+        assert_eq!(window.candidates[0].frequency_hz, freq1);
+        assert_eq!(window.candidates[1].frequency_hz, freq2);
+        assert_eq!(window.candidates[2].frequency_hz, freq3);
+        assert_eq!(window.candidates[0].status, CandidateStatus::Signal);
+        assert_eq!(window.candidates[1].status, CandidateStatus::Signal);
+        assert_eq!(window.candidates[2].status, CandidateStatus::Signal);
+
+        // Enter browsing mode and transition to AwaitingTune
+        model.ui_mode = UiMode::AwaitingTune {
+            navigation_index: 1,
+            tuning_index: 1,
+        };
+
+        // Send AudioPlaybackStarted for the middle candidate (88.9)
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::AudioPlaybackStarted,
+            frequency_hz: freq2,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq2,
+                window_id,
+            },
+            candidate_id: Some(candidate2_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Verify ONLY the middle candidate is Playing
+        let window = model.windows.get(&window_id).unwrap();
+        assert_eq!(
+            window.candidates[0].status,
+            CandidateStatus::Signal,
+            "First candidate should still be Signal"
+        );
+        assert_eq!(
+            window.candidates[1].status,
+            CandidateStatus::Playing,
+            "Second candidate should be Playing"
+        );
+        assert_eq!(
+            window.candidates[2].status,
+            CandidateStatus::Signal,
+            "Third candidate should still be Signal"
+        );
+
+        // Now switch to a different candidate (89.3)
+        model.ui_mode = UiMode::NavigatingScanner { selected_index: 2 };
+
+        // Send AudioPlaybackStarted for the third candidate
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::AudioPlaybackStarted,
+            frequency_hz: freq3,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq3,
+                window_id,
+            },
+            candidate_id: Some(candidate3_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Verify only the third candidate is Playing - the second should have been auto-completed
+        let window = model.windows.get(&window_id).unwrap();
+        assert_eq!(
+            window.candidates[0].status,
+            CandidateStatus::Signal,
+            "First candidate should still be Signal"
+        );
+        assert_eq!(
+            window.candidates[1].status,
+            CandidateStatus::Completed,
+            "Second candidate should be Completed (was replaced)"
+        );
+        assert_eq!(
+            window.candidates[2].status,
+            CandidateStatus::Playing,
+            "Third candidate should be Playing"
+        );
+    }
+
+    #[test]
+    fn test_browsing_mode_allows_old_window_playback() {
+        let mut model = Model::new();
+
+        // Create candidate in window 1
+        let window1_id = 1;
+        let freq1 = 88_900_000.0;
+        let candidate1_id = "88.9-1".to_string();
+
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::CandidateCreated,
+            frequency_hz: freq1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq1,
+                window_id: window1_id,
+            },
+            candidate_id: Some(candidate1_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::SignalGenerated,
+            frequency_hz: freq1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq1,
+                window_id: window1_id,
+            },
+            candidate_id: Some(candidate1_id.clone()),
+            audio_quality: Some(crate::audio_quality::AudioQuality::Good),
+            signal_strength: Some(50.0),
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Create candidate in window 2 (this marks window 1 as complete)
+        let window2_id = 2;
+        let freq2 = 89_300_000.0;
+        let candidate2_id = "89.3-2".to_string();
+
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::CandidateCreated,
+            frequency_hz: freq2,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq2,
+                window_id: window2_id,
+            },
+            candidate_id: Some(candidate2_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Verify we're now in window 2
+        assert_eq!(model.current_window, window2_id);
+        assert!(model.windows.get(&window1_id).unwrap().is_complete);
+
+        // In normal scanning mode, events to old windows should be blocked
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::AudioAnalysisStarted,
+            frequency_hz: freq1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq1,
+                window_id: window1_id,
+            },
+            candidate_id: Some(candidate1_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Status should still be Signal (event was blocked)
+        let window1 = model.windows.get(&window1_id).unwrap();
+        assert_eq!(window1.candidates[0].status, CandidateStatus::Signal);
+
+        // Now enter browsing mode by transitioning to Navigating mode
+        model.ui_mode = UiMode::NavigatingScanner { selected_index: 0 };
+
+        // Send AudioPlaybackStarted for the old window candidate
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::AudioPlaybackStarted,
+            frequency_hz: freq1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq1,
+                window_id: window1_id,
+            },
+            candidate_id: Some(candidate1_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // In browsing mode, AudioPlaybackStarted should work even for old windows
+        let window1 = model.windows.get(&window1_id).unwrap();
+        assert_eq!(
+            window1.candidates[0].status,
+            CandidateStatus::Playing,
+            "AudioPlaybackStarted should work for old windows in browsing mode"
+        );
+    }
+
+    #[test]
+    fn test_playing_candidates_remain_playing_when_entering_selection_mode() {
         let mut model = Model::new();
 
         let window_id = 1;
@@ -1698,6 +2193,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         model.update(ProgressEvent {
@@ -1711,6 +2207,7 @@ mod tests {
             audio_quality: Some(crate::audio_quality::AudioQuality::Good),
             signal_strength: Some(50.0),
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         model.update(ProgressEvent {
@@ -1724,6 +2221,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         // Set current window to match the candidate's window
@@ -1737,15 +2235,15 @@ mod tests {
         // Enter selection mode (simulates pressing Up to browse)
         model.enter_selection_mode();
 
-        // Verify candidate is now Completed
+        // Verify candidate remains Playing (navigation doesn't stop playback)
         let window = model.windows.get(&window_id).unwrap();
         let candidate = &window.candidates[0];
-        assert_eq!(candidate.status, CandidateStatus::Completed);
-        assert_eq!(candidate.completion, 1.0);
+        assert_eq!(candidate.status, CandidateStatus::Playing);
+        assert_eq!(candidate.completion, 0.8);
     }
 
     #[test]
-    fn test_playing_candidates_completed_when_changing_windows() {
+    fn test_playing_candidates_remain_when_entering_selection_mode() {
         let mut model = Model::new();
 
         // Create two windows with candidates
@@ -1768,6 +2266,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         model.update(ProgressEvent {
@@ -1781,6 +2280,7 @@ mod tests {
             audio_quality: Some(crate::audio_quality::AudioQuality::Good),
             signal_strength: Some(50.0),
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         model.update(ProgressEvent {
@@ -1794,6 +2294,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         // Verify candidate is Playing
@@ -1813,6 +2314,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         model.update(ProgressEvent {
@@ -1826,29 +2328,30 @@ mod tests {
             audio_quality: Some(crate::audio_quality::AudioQuality::Moderate),
             signal_strength: Some(40.0),
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         // Set current window to window 1 (where the Playing candidate is)
         model.current_window = window1_id;
 
-        // Enter selection mode - this will complete ALL Signal and Playing candidates
+        // Enter selection mode - candidates should remain in their current state
         model.enter_selection_mode();
 
-        // Verify window 1 candidate is now Completed (was Playing)
+        // Verify window 1 candidate remains Playing
         let window = model.windows.get(&window1_id).unwrap();
         let candidate = &window.candidates[0];
-        assert_eq!(candidate.status, CandidateStatus::Completed);
-        assert_eq!(candidate.completion, 1.0);
+        assert_eq!(candidate.status, CandidateStatus::Playing);
+        assert_eq!(candidate.completion, 0.8);
 
-        // Verify window 2 candidate is also Completed (was Signal)
+        // Verify window 2 candidate remains Signal
         let window = model.windows.get(&window2_id).unwrap();
         let candidate = &window.candidates[0];
-        assert_eq!(candidate.status, CandidateStatus::Completed);
-        assert_eq!(candidate.completion, 1.0);
+        assert_eq!(candidate.status, CandidateStatus::Signal);
+        assert_eq!(candidate.completion, 0.6);
     }
 
     #[test]
-    fn test_signal_candidates_completed_when_entering_selection_mode() {
+    fn test_signal_candidates_remain_signal_when_entering_selection_mode() {
         let mut model = Model::new();
 
         let window_id = 1;
@@ -1867,6 +2370,7 @@ mod tests {
             audio_quality: None,
             signal_strength: None,
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         model.update(ProgressEvent {
@@ -1880,6 +2384,7 @@ mod tests {
             audio_quality: Some(crate::audio_quality::AudioQuality::Good),
             signal_strength: Some(50.0),
             timestamp: Instant::now(),
+            tuner_id: None,
         });
 
         // Set current window to match the candidate's window
@@ -1893,11 +2398,129 @@ mod tests {
         // Enter selection mode (simulates pressing Up to browse)
         model.enter_selection_mode();
 
-        // Verify candidate is now Completed
+        // Verify candidate remains Signal (navigation doesn't complete candidates)
         let window = model.windows.get(&window_id).unwrap();
         let candidate = &window.candidates[0];
-        assert_eq!(candidate.status, CandidateStatus::Completed);
-        assert_eq!(candidate.completion, 1.0);
+        assert_eq!(candidate.status, CandidateStatus::Signal);
+        assert_eq!(candidate.completion, 0.6);
+    }
+
+    /// Regression test: Navigating between windows with arrow keys should not stop playback
+    /// This tests the fix for the bug where a playing station would lose its Playing status
+    /// when the user navigated to a different window or candidate using arrow keys.
+    #[test]
+    fn test_playing_candidate_persists_during_cross_window_navigation() {
+        let mut model = Model::new();
+
+        // Create two windows with candidates
+        let window1_id = 1;
+        let window2_id = 2;
+        let freq1 = 88_900_000.0;
+        let freq2 = 89_100_000.0;
+        let candidate1_id = "88.9-1".to_string();
+        let candidate2_id = "89.1-2".to_string();
+
+        // Window 1: Create candidate and set to Playing
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::CandidateCreated,
+            frequency_hz: freq1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq1,
+                window_id: window1_id,
+            },
+            candidate_id: Some(candidate1_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::SignalGenerated,
+            frequency_hz: freq1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq1,
+                window_id: window1_id,
+            },
+            candidate_id: Some(candidate1_id.clone()),
+            audio_quality: Some(crate::audio_quality::AudioQuality::Good),
+            signal_strength: Some(50.0),
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::AudioPlaybackStarted,
+            frequency_hz: freq1,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq1,
+                window_id: window1_id,
+            },
+            candidate_id: Some(candidate1_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Window 2: Create another candidate
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::CandidateCreated,
+            frequency_hz: freq2,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq2,
+                window_id: window2_id,
+            },
+            candidate_id: Some(candidate2_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::SignalGenerated,
+            frequency_hz: freq2,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: freq2,
+                window_id: window2_id,
+            },
+            candidate_id: Some(candidate2_id.clone()),
+            audio_quality: Some(crate::audio_quality::AudioQuality::Moderate),
+            signal_strength: Some(40.0),
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Enter selection mode and set up selection on window 2's candidate
+        model.ui_mode = UiMode::NavigatingScanner { selected_index: 1 };
+
+        // Verify window 1 candidate is Playing
+        let window1 = model.windows.get(&window1_id).unwrap();
+        assert_eq!(window1.candidates[0].status, CandidateStatus::Playing);
+
+        // Simulate navigating with arrow keys - move up to window 1's candidate
+        model.select_previous_candidate();
+
+        // REGRESSION TEST: Window 1 candidate should STILL be Playing after navigation
+        let window1 = model.windows.get(&window1_id).unwrap();
+        assert_eq!(
+            window1.candidates[0].status,
+            CandidateStatus::Playing,
+            "Playing candidate should remain Playing when navigating with arrow keys"
+        );
+        assert_eq!(window1.candidates[0].completion, 0.8);
+
+        // Navigate back down to window 2
+        model.select_next_candidate();
+
+        // Window 1 candidate should STILL be Playing
+        let window1 = model.windows.get(&window1_id).unwrap();
+        assert_eq!(
+            window1.candidates[0].status,
+            CandidateStatus::Playing,
+            "Playing candidate should persist across multiple navigation actions"
+        );
     }
 
     /// Test that rejected candidates disappear from the last window when scan completes
@@ -1930,6 +2553,7 @@ mod tests {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: Instant::now(),
+                tuner_id: None,
             });
 
             if *is_rejected {
@@ -1945,6 +2569,7 @@ mod tests {
                     audio_quality: None,
                     signal_strength: None,
                     timestamp: Instant::now(),
+                    tuner_id: None,
                 });
             } else {
                 // Complete as signal
@@ -1959,6 +2584,7 @@ mod tests {
                     audio_quality: Some(crate::audio_quality::AudioQuality::Good),
                     signal_strength: Some(50.0),
                     timestamp: Instant::now(),
+                    tuner_id: None,
                 });
 
                 model.update(ProgressEvent {
@@ -1972,6 +2598,7 @@ mod tests {
                     audio_quality: None,
                     signal_strength: None,
                     timestamp: Instant::now(),
+                    tuner_id: None,
                 });
             }
         }
@@ -2015,6 +2642,928 @@ mod tests {
 
         for candidate in displayable_in_selection {
             assert_ne!(candidate.status, CandidateStatus::Rejected);
+        }
+    }
+
+    // UiMode State Machine Tests
+
+    #[test]
+    fn test_ui_mode_transition_idle_to_navigating() {
+        let mut model = Model::new();
+        assert!(matches!(model.ui_mode, UiMode::Idle));
+
+        // Simulate pressing Up arrow (first navigation)
+        model.ui_mode = UiMode::NavigatingScanner { selected_index: 0 };
+
+        assert!(model.is_navigating());
+        assert!(!model.is_idle());
+    }
+
+    #[test]
+    fn test_ui_mode_transition_navigating_to_awaiting_tune() {
+        let mut model = Model::new();
+        model.ui_mode = UiMode::NavigatingScanner { selected_index: 0 };
+
+        // Simulate pressing Enter
+        model.ui_mode = UiMode::AwaitingTune {
+            navigation_index: 0,
+            tuning_index: 0,
+        };
+
+        assert!(model.is_awaiting_tune());
+        assert!(!model.is_navigating());
+    }
+
+    #[test]
+    fn test_ui_mode_transition_awaiting_tune_to_listening() {
+        let mut model = Model::new();
+        let window_id = 1;
+        let candidate_id = "88.9-1".to_string();
+
+        // Setup: Create a candidate
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::CandidateCreated,
+            frequency_hz: 88_900_000.0,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        model.ui_mode = UiMode::AwaitingTune {
+            navigation_index: 0,
+            tuning_index: 0,
+        };
+
+        // Simulate AudioPlaybackStarted event
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::AudioPlaybackStarted,
+            frequency_hz: 88_900_000.0,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Should transition to Listening
+        assert!(model.is_listening());
+        match &model.ui_mode {
+            UiMode::Listening {
+                playing_candidate_id,
+                ..
+            } => {
+                assert_eq!(playing_candidate_id, &candidate_id);
+            }
+            _ => panic!("Expected Listening mode"),
+        }
+    }
+
+    #[test]
+    fn test_ui_mode_transition_listening_to_listening_switch_station() {
+        let mut model = Model::new();
+        let window_id = 1;
+
+        // Create two candidates
+        let candidate1_id = "88.5-1".to_string();
+        let candidate2_id = "88.9-1".to_string();
+
+        for (id, freq) in [
+            (candidate1_id.clone(), 88_500_000.0),
+            (candidate2_id.clone(), 88_900_000.0),
+        ] {
+            model.update(ProgressEvent {
+                event_type: ProgressEventType::CandidateCreated,
+                frequency_hz: freq,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: freq,
+                    window_id,
+                },
+                candidate_id: Some(id),
+                audio_quality: None,
+                signal_strength: None,
+                timestamp: Instant::now(),
+                tuner_id: None,
+            });
+        }
+
+        // Start listening to first station
+        model.ui_mode = UiMode::Listening {
+            navigation_index: 0,
+            playing_index: 0,
+            playing_candidate_id: candidate1_id.clone(),
+        };
+
+        // Switch to second station while still in Listening mode
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::AudioPlaybackStarted,
+            frequency_hz: 88_900_000.0,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id,
+            },
+            candidate_id: Some(candidate2_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Should still be Listening but with new candidate
+        assert!(model.is_listening());
+        match &model.ui_mode {
+            UiMode::Listening {
+                playing_candidate_id,
+                navigation_index,
+                ..
+            } => {
+                assert_eq!(playing_candidate_id, &candidate2_id);
+                assert_eq!(*navigation_index, 0); // Preserves original navigation_index from Listening mode
+            }
+            _ => panic!("Expected Listening mode"),
+        }
+    }
+
+    #[test]
+    fn test_ui_mode_transition_listening_to_idle() {
+        let mut model = Model::new();
+        model.ui_mode = UiMode::Listening {
+            navigation_index: 0,
+            playing_index: 0,
+            playing_candidate_id: "88.9-1".to_string(),
+        };
+
+        // Simulate exiting browsing mode (Continue scan)
+        model.ui_mode = UiMode::Idle;
+
+        assert!(model.is_idle());
+        assert!(!model.is_listening());
+    }
+
+    #[test]
+    fn test_ui_mode_helper_methods() {
+        let model_idle = Model::new();
+        assert!(model_idle.is_idle());
+        assert!(!model_idle.is_interactive());
+
+        let mut model_navigating = Model::new();
+        model_navigating.ui_mode = UiMode::NavigatingScanner { selected_index: 0 };
+        assert!(model_navigating.is_navigating());
+        assert!(model_navigating.is_interactive());
+
+        let mut model_awaiting = Model::new();
+        model_awaiting.ui_mode = UiMode::AwaitingTune {
+            navigation_index: 0,
+            tuning_index: 0,
+        };
+        assert!(model_awaiting.is_awaiting_tune());
+        assert!(model_awaiting.is_interactive());
+
+        let mut model_listening = Model::new();
+        model_listening.ui_mode = UiMode::Listening {
+            navigation_index: 0,
+            playing_index: 0,
+            playing_candidate_id: "88.9-1".to_string(),
+        };
+        assert!(model_listening.is_listening());
+        assert!(model_listening.is_interactive());
+    }
+
+    #[test]
+    fn test_ui_mode_invalid_transitions_prevented() {
+        let mut model = Model::new();
+        let window_id = 1;
+        let candidate_id = "88.9-1".to_string();
+
+        // Create candidate
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::CandidateCreated,
+            frequency_hz: 88_900_000.0,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // AudioPlaybackStarted in Idle mode - should not transition
+        model.ui_mode = UiMode::Idle;
+
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::AudioPlaybackStarted,
+            frequency_hz: 88_900_000.0,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id,
+            },
+            candidate_id: Some(candidate_id),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Should still be Idle (transition only happens in AwaitingTune/Listening)
+        assert!(model.is_idle());
+    }
+
+    #[test]
+    fn test_browsing_mode_only_true_when_scan_paused() {
+        let mut model = Model::new();
+        let window_id = 0;
+
+        // Add a candidate
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::CandidateCreated,
+            frequency_hz: 88_900_000.0,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id,
+            },
+            candidate_id: Some("test-candidate".to_string()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Idle mode - browsing_mode should be false
+        assert!(model.is_idle());
+        assert!(!model.browsing_mode());
+
+        // Enter selection mode (NavigatingScanner) - browsing_mode should still be false
+        model.enter_selection_mode();
+        assert!(matches!(model.ui_mode, UiMode::NavigatingScanner { .. }));
+        assert!(model.selection_mode());
+        assert!(!model.browsing_mode()); // Key assertion: browsing_mode is false while navigating
+
+        // Transition to AwaitingTune - browsing_mode should now be true
+        if let Some(selected_index) = model.selected_candidate_index() {
+            model.ui_mode = UiMode::AwaitingTune {
+                navigation_index: selected_index,
+                tuning_index: selected_index,
+            };
+        }
+        assert!(matches!(model.ui_mode, UiMode::AwaitingTune { .. }));
+        assert!(model.browsing_mode()); // Now true because scan is paused
+
+        // Transition to Listening - browsing_mode should remain true
+        if let Some(selected_index) = model.selected_candidate_index() {
+            model.ui_mode = UiMode::Listening {
+                navigation_index: selected_index,
+                playing_index: selected_index,
+                playing_candidate_id: "test-candidate".to_string(),
+            };
+        }
+        assert!(matches!(model.ui_mode, UiMode::Listening { .. }));
+        assert!(model.browsing_mode()); // Still true when listening
+    }
+
+    #[test]
+    fn test_enter_key_tunes_to_selected_station() {
+        let mut model = Model::new();
+        let window_id = 0;
+        let candidate_id = "test-candidate".to_string();
+
+        // Add a Signal candidate
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::CandidateCreated,
+            frequency_hz: 88_900_000.0,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::SignalGenerated,
+            frequency_hz: 88_900_000.0,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: None,
+            signal_strength: Some(0.8),
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Start in Idle mode
+        assert!(model.is_idle());
+
+        // User presses UP arrow to enter selection mode (NavigatingScanner)
+        model.enter_selection_mode();
+        assert!(matches!(model.ui_mode, UiMode::NavigatingScanner { .. }));
+        assert!(model.selection_mode());
+        assert!(!model.browsing_mode()); // Not in browsing mode yet
+
+        // User presses ENTER - should transition to AwaitingTune
+        // This simulates the ENTER key handler logic
+        if let Some(selected_index) = model.selected_candidate_index() {
+            model.ui_mode = UiMode::AwaitingTune {
+                navigation_index: selected_index,
+                tuning_index: selected_index,
+            };
+        }
+
+        // Verify transition to AwaitingTune
+        assert!(matches!(model.ui_mode, UiMode::AwaitingTune { .. }));
+        assert!(model.browsing_mode()); // Now in browsing mode (scan paused)
+
+        // Verify selected_candidate_info works in AwaitingTune mode
+        let info = model.selected_candidate_info();
+        assert!(info.is_some());
+        let info = info.unwrap();
+        assert_eq!(info.candidate_id, candidate_id);
+        assert_eq!(info.candidate_frequency, 88_900_000.0);
+
+        // Simulate receiving AudioPlaybackStarted event
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::AudioPlaybackStarted,
+            frequency_hz: 88_900_000.0,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: 88_900_000.0,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: None,
+            signal_strength: Some(0.8),
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Should transition to Listening mode
+        assert!(matches!(model.ui_mode, UiMode::Listening { .. }));
+        if let UiMode::Listening {
+            playing_candidate_id,
+            ..
+        } = &model.ui_mode
+        {
+            assert_eq!(playing_candidate_id, &candidate_id);
+        }
+    }
+
+    #[test]
+    fn test_navigation_and_highlight_separate_in_listening_mode() {
+        let mut model = Model::new();
+        let window_id = 0;
+
+        // Add three candidates
+        for i in 0..3 {
+            let freq = 88_100_000.0 + (i as f64 * 200_000.0); // 88.1, 88.3, 88.5 MHz
+            let candidate_id = format!("candidate_{}", i);
+
+            model.update(ProgressEvent {
+                event_type: ProgressEventType::CandidateCreated,
+                frequency_hz: freq,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: freq,
+                    window_id,
+                },
+                candidate_id: Some(candidate_id.clone()),
+                audio_quality: None,
+                signal_strength: None,
+                timestamp: Instant::now(),
+                tuner_id: None,
+            });
+
+            model.update(ProgressEvent {
+                event_type: ProgressEventType::SignalGenerated,
+                frequency_hz: freq,
+                metadata: crate::window::WindowMetadata {
+                    center_frequency_hz: freq,
+                    window_id,
+                },
+                candidate_id: Some(candidate_id),
+                audio_quality: None,
+                signal_strength: Some(0.8),
+                timestamp: Instant::now(),
+                tuner_id: None,
+            });
+        }
+
+        // Enter selection mode and select first candidate (index 0)
+        model.enter_selection_mode();
+        assert_eq!(model.selected_candidate_index(), Some(2)); // Most recent
+
+        // Move to first candidate
+        model.select_previous_candidate();
+        model.select_previous_candidate();
+        assert_eq!(model.selected_candidate_index(), Some(0));
+
+        // Press ENTER on first candidate - transition to AwaitingTune
+        model.ui_mode = UiMode::AwaitingTune {
+            navigation_index: 0,
+            tuning_index: 0,
+        };
+
+        // Verify we're tuning to index 0
+        if let UiMode::AwaitingTune {
+            navigation_index,
+            tuning_index,
+        } = &model.ui_mode
+        {
+            assert_eq!(*navigation_index, 0);
+            assert_eq!(*tuning_index, 0);
+        }
+
+        // Arrow down to navigate to second candidate
+        model.select_next_candidate();
+
+        // Verify navigation moved but tuning index stayed the same
+        if let UiMode::AwaitingTune {
+            navigation_index,
+            tuning_index,
+        } = &model.ui_mode
+        {
+            assert_eq!(*navigation_index, 1, "Navigation should move to index 1");
+            assert_eq!(*tuning_index, 0, "Tuning should stay at index 0");
+        } else {
+            panic!("Should still be in AwaitingTune mode");
+        }
+
+        // Transition to Listening mode
+        model.ui_mode = UiMode::Listening {
+            navigation_index: 1,
+            playing_index: 0,
+            playing_candidate_id: "candidate_0".to_string(),
+        };
+
+        // Arrow down again to third candidate
+        model.select_next_candidate();
+
+        // Verify navigation moved but playing index stayed the same
+        if let UiMode::Listening {
+            navigation_index,
+            playing_index,
+            playing_candidate_id,
+        } = &model.ui_mode
+        {
+            assert_eq!(*navigation_index, 2, "Navigation should move to index 2");
+            assert_eq!(*playing_index, 0, "Playing should stay at index 0");
+            assert_eq!(playing_candidate_id, "candidate_0");
+        } else {
+            panic!("Should still be in Listening mode");
+        }
+
+        // Arrow up back to second candidate
+        model.select_previous_candidate();
+
+        // Verify navigation moved back but playing index still unchanged
+        if let UiMode::Listening {
+            navigation_index,
+            playing_index,
+            ..
+        } = &model.ui_mode
+        {
+            assert_eq!(
+                *navigation_index, 1,
+                "Navigation should move back to index 1"
+            );
+            assert_eq!(*playing_index, 0, "Playing should still be at index 0");
+        }
+    }
+
+    #[test]
+    fn test_stop_listening_transitions_candidate_to_completed() {
+        let mut model = Model::default();
+        let window_id = 1;
+        let frequency = 88_900_000.0;
+        let candidate_id = format!("{:.1}-{}", frequency / 1e6, window_id);
+
+        // Step 1: Create candidate in window 1
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::CandidateCreated,
+            frequency_hz: frequency,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Step 2: Complete audio analysis
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::AudioAnalysisCompleted,
+            frequency_hz: frequency,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Step 3: Generate signal
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::SignalGenerated,
+            frequency_hz: frequency,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: Some(crate::audio_quality::AudioQuality::Good),
+            signal_strength: Some(50.0),
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Step 4: Pause scanning and enter interactive mode
+        model.enter_selection_mode();
+        if let Some(selected_index) = model.selected_candidate_index() {
+            model.ui_mode = UiMode::AwaitingTune {
+                navigation_index: selected_index,
+                tuning_index: selected_index,
+            };
+        }
+        assert!(model.browsing_mode());
+
+        // Step 5: Start playing audio from window 1
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::AudioPlaybackStarted,
+            frequency_hz: frequency,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id,
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Verify candidate is in Playing state
+        let window = model.windows.get(&window_id).unwrap();
+        let candidate_index = window.candidate_lookup.get(&candidate_id).unwrap();
+        let candidate = &window.candidates[*candidate_index];
+        assert_eq!(candidate.status, CandidateStatus::Playing);
+        assert_eq!(candidate.completion, 0.8);
+
+        // Step 6: Simulate scanning having progressed to window 2 (making window 1 an "old window")
+        // This tests the "old window" filtering bug where AudioPlaybackCompleted was rejected
+        // In a real scenario, this could happen if scanning resumed briefly or if there are
+        // multiple tuners scanning while one is listening
+        model.current_window = 2;
+
+        // Verify current_window has advanced to 2
+        assert_eq!(model.current_window, 2);
+
+        // Verify we're still in interactive mode
+        assert!(model.is_interactive());
+
+        // Step 7: Stop listening to the station from window 1 (now an "old window")
+        // Regression test for TWO bugs:
+        // 1. AudioPlaybackCompleted was filtered out in interactive mode by should_process_event()
+        // 2. AudioPlaybackCompleted was filtered out for old windows by update_candidate()
+        model.update(ProgressEvent {
+            event_type: ProgressEventType::AudioPlaybackCompleted,
+            frequency_hz: frequency,
+            metadata: crate::window::WindowMetadata {
+                center_frequency_hz: frequency,
+                window_id, // window 1 is now "old" since current_window is 2
+            },
+            candidate_id: Some(candidate_id.clone()),
+            audio_quality: Some(crate::audio_quality::AudioQuality::Good),
+            signal_strength: Some(50.0),
+            timestamp: Instant::now(),
+            tuner_id: None,
+        });
+
+        // Verify candidate transitioned to Completed state despite being in an old window
+        let window = model.windows.get(&window_id).unwrap();
+        let candidate_index = window.candidate_lookup.get(&candidate_id).unwrap();
+        let candidate = &window.candidates[*candidate_index];
+        assert_eq!(
+            candidate.status,
+            CandidateStatus::Completed,
+            "Candidate should transition to Completed when AudioPlaybackCompleted is sent, \
+             even when in interactive mode (bug #1) and from an old window (bug #2)"
+        );
+        assert_eq!(candidate.completion, 1.0);
+    }
+
+    #[test]
+    fn test_only_used_tuner_shows_scanning_state() {
+        use crate::sdr::TunerId;
+
+        let mut model = Model::default();
+
+        // Discovery service finds RTL-SDR first (alphabetically or by enumeration order)
+        let rtlsdr_tuner = crate::sdr::TunerInfo {
+            id: TunerId::from_serial("rtlsdr", "00000001"),
+            label: "Generic RTL-SDR".to_string(),
+        };
+        model.add_device(rtlsdr_tuner.clone());
+
+        // RTL-SDR should be Available, not Scanning
+        assert_eq!(
+            model.tuner_states.get(&rtlsdr_tuner.id),
+            Some(&TunerState::Available),
+            "First discovered tuner should be Available, not auto-set to Scanning"
+        );
+
+        // Discovery service then finds SDRplay
+        let sdrplay_tuner = crate::sdr::TunerInfo {
+            id: TunerId::from_serial("sdrplay", "2301034E34:ST"),
+            label: "SDRplay RSPduo".to_string(),
+        };
+        model.add_device(sdrplay_tuner.clone());
+
+        // Both should be Available
+        assert_eq!(
+            model.tuner_states.get(&sdrplay_tuner.id),
+            Some(&TunerState::Available)
+        );
+        assert_eq!(
+            model.tuner_states.get(&rtlsdr_tuner.id),
+            Some(&TunerState::Available)
+        );
+
+        // MainThread starts scan with SDRplay - sends ActiveTunersUpdated event
+        model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
+            available: vec![sdrplay_tuner.id.clone()],
+            scanning: vec![sdrplay_tuner.id.clone()],
+            listening: vec![],
+        });
+
+        // SDRplay should now be Scanning
+        assert_eq!(
+            model.tuner_state(&sdrplay_tuner.id),
+            TunerState::Scanning,
+            "SDRplay should be Scanning when MainThread allocated it for scanning"
+        );
+
+        // RTL-SDR should still be Available (regression test for incorrect auto-scanning)
+        assert_eq!(
+            model.tuner_state(&rtlsdr_tuner.id),
+            TunerState::Available,
+            "RTL-SDR should remain Available since it's not in active tuners"
+        );
+
+        // Scan continues - active tuners remain unchanged
+        // Progress events no longer affect tuner state
+
+        // SDRplay should still be Scanning
+        assert_eq!(model.tuner_state(&sdrplay_tuner.id), TunerState::Scanning);
+
+        // RTL-SDR should STILL be Available
+        assert_eq!(
+            model.tuner_state(&rtlsdr_tuner.id),
+            TunerState::Available,
+            "RTL-SDR should never transition to Scanning since it's not in active tuners"
+        );
+    }
+
+    #[test]
+    fn test_only_used_tuner_shows_listening_state() {
+        use crate::sdr::TunerId;
+
+        let mut model = Model::default();
+
+        // Discovery finds both tuners
+        let rtlsdr_tuner = crate::sdr::TunerInfo {
+            id: TunerId::from_serial("rtlsdr", "00000001"),
+            label: "Generic RTL-SDR".to_string(),
+        };
+        model.add_device(rtlsdr_tuner.clone());
+
+        let sdrplay_tuner = crate::sdr::TunerInfo {
+            id: TunerId::from_serial("sdrplay", "2301034E34:ST"),
+            label: "SDRplay RSPduo".to_string(),
+        };
+        model.add_device(sdrplay_tuner.clone());
+
+        // Both should be Available initially
+        assert_eq!(model.tuner_state(&rtlsdr_tuner.id), TunerState::Available);
+        assert_eq!(model.tuner_state(&sdrplay_tuner.id), TunerState::Available);
+
+        // MainThread starts scan with SDRplay
+        model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
+            available: vec![sdrplay_tuner.id.clone()],
+            scanning: vec![sdrplay_tuner.id.clone()],
+            listening: vec![],
+        });
+
+        // SDRplay is now Scanning
+        assert_eq!(model.tuner_state(&sdrplay_tuner.id), TunerState::Scanning);
+
+        // User presses Enter to tune to the candidate - MainThread moves tuner to listening
+        model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
+            available: vec![sdrplay_tuner.id.clone()],
+            scanning: vec![],
+            listening: vec![sdrplay_tuner.id.clone()],
+        });
+
+        // SDRplay should transition to Listening
+        assert_eq!(
+            model.tuner_state(&sdrplay_tuner.id),
+            TunerState::Listening,
+            "SDRplay should be Listening when MainThread allocated it to listening"
+        );
+
+        // RTL-SDR should still be Available (regression test for incorrect listening state)
+        // The bug was: update_candidate() set self.tuners.first() to Listening
+        // instead of using event.tuner_id
+        assert_eq!(
+            model.tuner_state(&rtlsdr_tuner.id),
+            TunerState::Available,
+            "RTL-SDR should remain Available since it's not in active tuners"
+        );
+
+        // Stop listening doesn't change active tuners
+        // (MainThread would send new ActiveTunersUpdated when user presses Escape)
+        // For this test, we're just verifying state stays as-is
+
+        // SDRplay remains in Listening state (still allocated to listening)
+        assert_eq!(
+            model.tuner_state(&sdrplay_tuner.id),
+            TunerState::Listening,
+            "SDRplay remains Listening until MainThread reallocates it"
+        );
+
+        // RTL-SDR should STILL be Available throughout
+        assert_eq!(
+            model.tuner_state(&rtlsdr_tuner.id),
+            TunerState::Available,
+            "RTL-SDR should never transition to Listening since it's not in active tuners"
+        );
+    }
+
+    #[test]
+    fn test_tuner_stays_scanning_during_automatic_audio_playback() {
+        use crate::sdr::TunerId;
+
+        let mut model = Model::default();
+
+        // Discovery finds SDRplay tuner
+        let sdrplay_tuner = crate::sdr::TunerInfo {
+            id: TunerId::from_serial("sdrplay", "2301034E34:ST"),
+            label: "SDRplay RSPduo".to_string(),
+        };
+        model.add_device(sdrplay_tuner.clone());
+
+        // Should be Available initially
+        assert_eq!(model.tuner_state(&sdrplay_tuner.id), TunerState::Available);
+
+        // MainThread allocates SDRplay for scanning
+        model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
+            available: vec![sdrplay_tuner.id.clone()],
+            scanning: vec![sdrplay_tuner.id.clone()],
+            listening: vec![],
+        });
+
+        // SDRplay is now Scanning
+        assert_eq!(
+            model.tuner_state(&sdrplay_tuner.id),
+            TunerState::Scanning,
+            "Tuner should be Scanning when MainThread allocated it for scanning"
+        );
+
+        // Model is still in Idle mode (not AwaitingTune) - user has NOT pressed Enter
+        assert!(matches!(model.ui_mode, UiMode::Idle));
+
+        // During scanning, audio playback starts automatically for quality analysis
+        // Even though audio is playing, MainThread keeps the tuner in scanning list
+        // because user has not pressed Enter (no TuneToCandidate command sent)
+
+        // MainThread continues to report tuner as scanning during automatic playback
+        model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
+            available: vec![sdrplay_tuner.id.clone()],
+            scanning: vec![sdrplay_tuner.id.clone()],
+            listening: vec![],
+        });
+
+        // The tuner should remain in Scanning state during automatic audio playback
+        // Only when user presses Enter (sends TuneToCandidate) should it go to Listening
+        assert_eq!(
+            model.tuner_state(&sdrplay_tuner.id),
+            TunerState::Scanning,
+            "Tuner should remain Scanning during automatic audio playback (user has not pressed Enter)"
+        );
+
+        // Audio playback completes automatically, tuner still scanning
+        model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
+            available: vec![sdrplay_tuner.id.clone()],
+            scanning: vec![sdrplay_tuner.id.clone()],
+            listening: vec![],
+        });
+
+        // Should still be Scanning after automatic playback completes
+        assert_eq!(
+            model.tuner_state(&sdrplay_tuner.id),
+            TunerState::Scanning,
+            "Tuner should remain Scanning after automatic audio playback completes"
+        );
+    }
+
+    #[test]
+    fn test_correct_tuner_shows_scanning_when_returning_from_listening() {
+        use crate::sdr::TunerId;
+
+        let mut model = Model::default();
+
+        // Discovery finds both tuners (RTL-SDR first, SDRplay second)
+        let rtlsdr_tuner = crate::sdr::TunerInfo {
+            id: TunerId::from_serial("rtlsdr", "00000001"),
+            label: "Generic RTL-SDR".to_string(),
+        };
+        model.add_device(rtlsdr_tuner.clone());
+
+        let sdrplay_tuner = crate::sdr::TunerInfo {
+            id: TunerId::from_serial("sdrplay", "2301034E34:ST"),
+            label: "SDRplay RSPduo".to_string(),
+        };
+        model.add_device(sdrplay_tuner.clone());
+
+        // Both should be Available initially
+        assert_eq!(model.tuner_state(&rtlsdr_tuner.id), TunerState::Available);
+        assert_eq!(model.tuner_state(&sdrplay_tuner.id), TunerState::Available);
+
+        // MainThread allocates SDRplay for scanning (not RTL-SDR)
+        model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
+            available: vec![sdrplay_tuner.id.clone()],
+            scanning: vec![sdrplay_tuner.id.clone()],
+            listening: vec![],
+        });
+
+        // SDRplay should be Scanning, RTL-SDR should remain Available
+        assert_eq!(model.tuner_state(&sdrplay_tuner.id), TunerState::Scanning);
+        assert_eq!(model.tuner_state(&rtlsdr_tuner.id), TunerState::Available);
+
+        // User presses Enter to listen - MainThread moves SDRplay to listening list
+        model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
+            available: vec![sdrplay_tuner.id.clone()],
+            scanning: vec![],
+            listening: vec![sdrplay_tuner.id.clone()],
+        });
+
+        // SDRplay should be Listening, RTL-SDR should remain Available
+        assert_eq!(model.tuner_state(&sdrplay_tuner.id), TunerState::Listening);
+        assert_eq!(model.tuner_state(&rtlsdr_tuner.id), TunerState::Available);
+
+        // User presses Escape to go back to scanning
+        // MainThread moves SDRplay back to scanning list
+        model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
+            available: vec![sdrplay_tuner.id.clone()],
+            scanning: vec![sdrplay_tuner.id.clone()],
+            listening: vec![],
+        });
+
+        // After returning from listening to scanning, only SDRplay should be Scanning
+        // RTL-SDR should remain Available (never used)
+        assert_eq!(
+            model.tuner_state(&rtlsdr_tuner.id),
+            TunerState::Available,
+            "RTL-SDR should remain Available since it's not being used"
+        );
+
+        assert_eq!(
+            model.tuner_state(&sdrplay_tuner.id),
+            TunerState::Scanning,
+            "SDRplay should transition back to Scanning when MainThread returns it to scanning list"
+        );
+
+        // Verify that exactly one tuner is in Scanning state by checking active_tuners
+        if let Some(ref active) = model.active_tuners {
+            assert_eq!(
+                active.scanning.len(),
+                1,
+                "Exactly one tuner should be in scanning list"
+            );
+            assert_eq!(
+                active.scanning[0], sdrplay_tuner.id,
+                "Only SDRplay should be in scanning list"
+            );
+        } else {
+            panic!("active_tuners should be set");
         }
     }
 }

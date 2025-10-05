@@ -25,13 +25,16 @@ pub fn render_scan(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, th
     // Get displayable windows for selection tracking
     let displayable_windows = model.get_displayable_windows();
 
+    // Interactive mode means user is navigating/browsing
+    let in_interactive_mode = model.is_interactive();
+
     // Count total displayable candidates for scroll indicators
     let total_candidates: usize = displayable_windows
         .iter()
         .map(|(window_id, window)| {
             let is_current = **window_id == model.current_window;
-            let candidates = window.displayable_candidates(is_current, model.selection_mode);
-            if model.selection_mode {
+            let candidates = window.displayable_candidates(is_current, in_interactive_mode);
+            if in_interactive_mode {
                 candidates
                     .iter()
                     .filter(|c| c.status != CandidateStatus::Rejected)
@@ -46,8 +49,8 @@ pub fn render_scan(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, th
     let available_height = area.height as usize;
     let max_bars = available_height.saturating_sub(5); // RESERVED_TERMINAL_LINES
 
-    // In selection mode, use selectable candidates (no rejected); otherwise use displayable
-    let use_selectable = model.selection_mode;
+    // In interactive mode, use selectable candidates (no rejected); otherwise use displayable
+    let use_selectable = in_interactive_mode;
 
     // Calculate window sizes that fit in available space
     let mut windows_that_fit = Vec::new();
@@ -74,8 +77,8 @@ pub fn render_scan(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, th
     let mut window_sizes = Vec::new();
     let mut running_total = 0;
 
-    // Add "Continue scan" line if in browsing mode and scan is not complete
-    if model.browsing_mode && !model.all_complete() {
+    // Add "Continue scan" line if in interactive mode and scan is not complete
+    if in_interactive_mode && !model.all_complete() {
         running_total += 1;
     }
 
@@ -96,7 +99,7 @@ pub fn render_scan(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, th
         .iter()
         .map(|(_, count)| count + 1)
         .sum::<usize>();
-    if model.browsing_mode && !model.all_complete() {
+    if in_interactive_mode && !model.all_complete() {
         total_lines += 1;
     }
 
@@ -152,7 +155,7 @@ pub fn render_scan(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, th
         };
         let window_candidate_count = displayable_candidates.len();
 
-        let window_has_selection = if let Some(selected_idx) = model.selected_candidate_index {
+        let window_has_selection = if let Some(selected_idx) = model.selected_candidate_index() {
             selected_idx >= candidate_index
                 && selected_idx < candidate_index + window_candidate_count
         } else {
@@ -186,9 +189,9 @@ pub fn render_scan(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, th
                 break;
             }
 
-            let is_selected = model.selection_mode
-                && model.selected_candidate_index == Some(current_candidate_index);
-            let is_playing = model.browsing_mode && is_selected;
+            let is_selected = in_interactive_mode
+                && model.selected_candidate_index() == Some(current_candidate_index);
+            let is_playing = in_interactive_mode && candidate.status == CandidateStatus::Playing;
             render_candidate_progress(
                 f,
                 chunks[chunk_idx],
@@ -202,8 +205,8 @@ pub fn render_scan(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, th
         }
     }
 
-    // Add "Continue scan" option if in browsing mode and scan is not complete
-    if model.browsing_mode && !model.all_complete() && chunk_idx < chunks.len() {
+    // Add "Continue scan" option if in interactive mode and scan is not complete
+    if in_interactive_mode && !model.all_complete() && chunk_idx < chunks.len() {
         let is_continue_selected = model.is_continue_scan_selected();
         render_continue_scan(f, chunks[chunk_idx], is_continue_selected, theme);
         chunk_idx += 1;
