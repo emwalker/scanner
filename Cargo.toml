@@ -41,6 +41,8 @@ harness = false
 [features]
 default = ["soapysdr"]
 soapysdr = []
+seify = []
+rtlsdr = []
 
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }

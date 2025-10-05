@@ -87,27 +87,47 @@ pub struct Udev {
 }
 
 impl Udev {
-    pub fn new(backends: Vec<Box<dyn sdr::Backend>>) -> Result<Self> {
-        Ok(Self {
+    pub fn new(backends: Vec<Box<dyn sdr::Backend>>) -> Self {
+        Self {
             backends,
             known_devices: HashMap::new(),
-        })
+        }
     }
 }
 
 impl Service for Udev {
     fn run(&mut self, event_tx: mpsc::Sender<Event>, cancel: CancellationToken) {
-        let context = Context::new().expect("Failed to create udev context");
+        let context = match Context::new() {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                debug!(error = %e, "udev unavailable, falling back to polling");
+                let mut polling = Polling::new(
+                    std::mem::take(&mut self.backends),
+                    Duration::from_secs(3)
+                );
+                return polling.run(event_tx, cancel);
+            }
+        };
 
-        let mut monitor = MonitorBuilder::new(&context)
-            .expect("Failed to create udev monitor")
-            .match_subsystem("usb")
-            .expect("Failed to match USB subsystem")
-            .listen()
-            .expect("Failed to start udev monitoring");
+        let mut monitor = match MonitorBuilder::new(&context)
+            .and_then(|m| m.match_subsystem("usb"))
+            .and_then(|m| m.listen())
+        {
+            Ok(m) => m,
+            Err(e) => {
+                debug!(error = %e, "failed to create udev monitor, falling back to polling");
+                let mut polling = Polling::new(
+                    std::mem::take(&mut self.backends),
+                    Duration::from_secs(3)
+                );
+                return polling.run(event_tx, cancel);
+            }
+        };
 
         // Initial enumeration to establish baseline
-        self.rescan_devices(&event_tx);
+        if self.rescan_devices(&event_tx).is_err() {
+            return;
+        }
 
         // Event loop
         loop {
@@ -115,26 +135,28 @@ impl Service for Udev {
                 break;
             }
 
-            // Check for udev events (non-blocking poll with timeout)
+            // Check for udev events (blocking with timeout via socket)
             if let Some(event) = monitor.iter().next() {
+                if cancel.is_cancelled() {
+                    break;
+                }
+
                 match event.event_type() {
                     EventType::Add | EventType::Remove => {
-                        // USB event detected, rescan devices
-                        debug!("USB event: {:?}", event.event_type());
-                        self.rescan_devices(&event_tx);
+                        debug!(event_type = ?event.event_type(), "USB event detected");
+                        if self.rescan_devices(&event_tx).is_err() {
+                            break;
+                        }
                     }
                     _ => {}
                 }
             }
-
-            // Short sleep to avoid busy-wait
-            std::thread::sleep(Duration::from_millis(100));
         }
     }
 }
 
 impl Udev {
-    fn rescan_devices(&mut self, event_tx: &mpsc::Sender<Event>) {
+    fn rescan_devices(&mut self, event_tx: &mpsc::Sender<Event>) -> Result<(), ()> {
         // Query all backends for current devices
         let mut current_devices = HashMap::new();
 
@@ -149,21 +171,22 @@ impl Udev {
         // Detect new devices (in current but not in known)
         for (id, device) in &current_devices {
             if !self.known_devices.contains_key(id) {
-                debug!("New device detected: {:?}", device);
-                let _ = event_tx.send(Event::Added(device.clone()));
+                debug!(device_id = ?id, "new device detected");
+                event_tx.send(Event::Added(device.clone())).map_err(|_| ())?;
             }
         }
 
         // Detect removed devices (in known but not in current)
         for id in self.known_devices.keys() {
             if !current_devices.contains_key(id) {
-                debug!("Device removed: {:?}", id);
-                let _ = event_tx.send(Event::Removed(id.clone()));
+                debug!(device_id = ?id, "device removed");
+                event_tx.send(Event::Removed(id.clone())).map_err(|_| ())?;
             }
         }
 
         // Update known devices
         self.known_devices = current_devices;
+        Ok(())
     }
 }
 ```
@@ -191,7 +214,9 @@ impl Polling {
 impl Service for Polling {
     fn run(&mut self, event_tx: mpsc::Sender<Event>, cancel: CancellationToken) {
         // Initial scan
-        self.rescan_devices(&event_tx);
+        if self.rescan_devices(&event_tx).is_err() {
+            return;
+        }
 
         // Polling loop
         loop {
@@ -200,13 +225,20 @@ impl Service for Polling {
             }
 
             std::thread::sleep(self.poll_interval);
-            self.rescan_devices(&event_tx);
+
+            if cancel.is_cancelled() {
+                break;
+            }
+
+            if self.rescan_devices(&event_tx).is_err() {
+                break;
+            }
         }
     }
 }
 
 impl Polling {
-    fn rescan_devices(&mut self, event_tx: &mpsc::Sender<Event>) {
+    fn rescan_devices(&mut self, event_tx: &mpsc::Sender<Event>) -> Result<(), ()> {
         // Same logic as Udev::rescan_devices()
         // (extract to shared helper)
         let mut current_devices = HashMap::new();
@@ -222,17 +254,18 @@ impl Polling {
         // Detect changes
         for (id, device) in &current_devices {
             if !self.known_devices.contains_key(id) {
-                let _ = event_tx.send(Event::Added(device.clone()));
+                event_tx.send(Event::Added(device.clone())).map_err(|_| ())?;
             }
         }
 
         for id in self.known_devices.keys() {
             if !current_devices.contains_key(id) {
-                let _ = event_tx.send(Event::Removed(id.clone()));
+                event_tx.send(Event::Removed(id.clone())).map_err(|_| ())?;
             }
         }
 
         self.known_devices = current_devices;
+        Ok(())
     }
 }
 ```
@@ -240,17 +273,33 @@ impl Polling {
 ### Platform Selection
 
 ```rust
-/// Create appropriate discovery service for current platform
-pub fn create(backends: Vec<Box<dyn sdr::Backend>>) -> Box<dyn Service> {
+pub enum DiscoveryMode {
+    Auto,
+    ForcePolling(Duration),
     #[cfg(target_os = "linux")]
-    {
-        Box::new(Udev::new(backends).unwrap())
-    }
+    ForceUdev,
+}
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        let interval = Duration::from_secs(3);  // Configurable
-        Box::new(Polling::new(backends, interval))
+/// Create appropriate discovery service for current platform
+pub fn create(backends: Vec<Box<dyn sdr::Backend>>, mode: DiscoveryMode) -> Box<dyn Service> {
+    match mode {
+        DiscoveryMode::ForcePolling(interval) => {
+            Box::new(Polling::new(backends, interval))
+        }
+        #[cfg(target_os = "linux")]
+        DiscoveryMode::ForceUdev => {
+            Box::new(Udev::new(backends))
+        }
+        DiscoveryMode::Auto => {
+            #[cfg(target_os = "linux")]
+            {
+                Box::new(Udev::new(backends))
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                Box::new(Polling::new(backends, Duration::from_secs(3)))
+            }
+        }
     }
 }
 ```
@@ -258,7 +307,6 @@ pub fn create(backends: Vec<Box<dyn sdr::Backend>>) -> Box<dyn Service> {
 ## Implementation Steps
 
 ### Step 1: Add Dependencies
-**Time**: 15 minutes
 
 ```toml
 # Cargo.toml
@@ -267,7 +315,6 @@ libudev = "0.3"
 ```
 
 ### Step 2: Create Module Structure
-**Time**: 30 minutes
 
 1. Create `src/discovery/mod.rs`
 2. Create `src/discovery/service.rs` - `Service` trait and `Event` enum
@@ -275,7 +322,6 @@ libudev = "0.3"
 4. Create `src/discovery/polling.rs` - Fallback implementation
 
 ### Step 3: Implement Polling Discovery (Simplest First)
-**Time**: 1 hour
 
 1. Implement `Polling` service
 2. Add configurable poll interval (default 3 seconds)
@@ -283,38 +329,35 @@ libudev = "0.3"
 4. Verify device detection works
 
 ### Step 4: Implement udev Discovery (Linux Only)
-**Time**: 2 hours
 
-1. Implement `Udev` service
+1. Implement `Udev` service with fallback to polling on error
 2. Handle udev context creation errors gracefully
 3. Test with real device plug/unplug
 4. Verify instant detection (no polling delay)
 
 ### Step 5: Extract Common Logic
-**Time**: 30 minutes
 
-Both implementations share device diffing logic:
+Both implementations share device diffing logic. Extract to common helper to avoid duplication:
 ```rust
-fn detect_changes(
-    known: &HashMap<sdr::DeviceId, sdr::DeviceInfo>,
-    current: &HashMap<sdr::DeviceId, sdr::DeviceInfo>,
-) -> (Vec<sdr::DeviceInfo>, Vec<sdr::DeviceId>) {
-    let added: Vec<_> = current.values()
-        .filter(|d| !known.contains_key(&d.id))
-        .cloned()
-        .collect();
+pub(crate) fn detect_changes<'a>(
+    known: &'a HashMap<sdr::DeviceId, sdr::DeviceInfo>,
+    current: &'a HashMap<sdr::DeviceId, sdr::DeviceInfo>,
+) -> (
+    impl Iterator<Item = &'a sdr::DeviceInfo>,
+    impl Iterator<Item = &'a sdr::DeviceId>,
+) {
+    let added = current.iter()
+        .filter(move |(id, _)| !known.contains_key(id))
+        .map(|(_, device)| device);
 
-    let removed: Vec<_> = known.keys()
-        .filter(|id| !current.contains_key(id))
-        .cloned()
-        .collect();
+    let removed = known.keys()
+        .filter(move |id| !current.contains_key(id));
 
     (added, removed)
 }
 ```
 
 ### Step 6: Integration with ShutdownCoordinator
-**Time**: 30 minutes
 
 ```rust
 // In bin/scanner.rs
@@ -325,7 +368,7 @@ let backends: Vec<Box<dyn sdr::Backend>> = vec![
     Box::new(sdr::Soapy),
 ];
 
-let mut service = discovery::create(backends);
+let mut service = discovery::create(backends, discovery::DiscoveryMode::Auto);
 let (event_tx, event_rx) = mpsc::channel();
 
 coordinator.spawn_sdr_thread(move |cancel| {
@@ -349,7 +392,6 @@ std::thread::spawn(move || {
 ```
 
 ### Step 7: Testing
-**Time**: 1 hour
 
 ```rust
 #[test]
@@ -367,13 +409,15 @@ fn test_polling_discovery() {
         service.run(tx, cancel_clone);
     });
 
-    // Wait for initial scan
-    std::thread::sleep(Duration::from_millis(200));
-
-    // Should receive Added events for existing devices
+    // Collect events with timeout
     let mut events = Vec::new();
-    while let Ok(event) = rx.try_recv() {
-        events.push(event);
+    let timeout = Duration::from_millis(300);
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < timeout {
+        if let Ok(event) = rx.recv_timeout(Duration::from_millis(50)) {
+            events.push(event);
+        }
     }
 
     assert!(!events.is_empty(), "Should detect existing devices");
@@ -388,7 +432,7 @@ fn test_udev_discovery() {
     use crate::sdr;
 
     let backends: Vec<Box<dyn sdr::Backend>> = vec![Box::new(sdr::Soapy)];
-    let mut service = Udev::new(backends).unwrap();
+    let mut service = Udev::new(backends);
     let (tx, rx) = mpsc::channel();
     let cancel = CancellationToken::new();
 
@@ -397,13 +441,15 @@ fn test_udev_discovery() {
         service.run(tx, cancel_clone);
     });
 
-    // Wait for initial scan
-    std::thread::sleep(Duration::from_millis(200));
-
-    // Collect initial events
+    // Collect events with timeout
     let mut events = Vec::new();
-    while let Ok(event) = rx.try_recv() {
-        events.push(event);
+    let timeout = Duration::from_millis(300);
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < timeout {
+        if let Ok(event) = rx.recv_timeout(Duration::from_millis(50)) {
+            events.push(event);
+        }
     }
 
     assert!(!events.is_empty(), "Should detect existing devices via udev");
@@ -419,7 +465,7 @@ fn test_manual_hotplug() {
     use crate::sdr;
 
     let backends: Vec<Box<dyn sdr::Backend>> = vec![Box::new(sdr::Soapy)];
-    let mut service = discovery::create(backends);
+    let mut service = discovery::create(backends, discovery::DiscoveryMode::Auto);
     let (tx, rx) = mpsc::channel();
     let cancel = CancellationToken::new();
 
@@ -435,10 +481,10 @@ fn test_manual_hotplug() {
     while let Ok(event) = rx.recv() {
         match event {
             discovery::Event::Added(info) => {
-                println!("✅ Device ADDED: {} ({})", info.model, info.serial);
+                println!("Device ADDED: {} ({})", info.model, info.serial);
             }
             discovery::Event::Removed(id) => {
-                println!("❌ Device REMOVED: {:?}", id);
+                println!("Device REMOVED: {:?}", id);
             }
         }
     }
@@ -453,7 +499,7 @@ use crate::discovery;
 use crate::sdr;
 
 let backends = vec![Box::new(sdr::Soapy)];
-let mut service = discovery::create(backends);
+let mut service = discovery::create(backends, discovery::DiscoveryMode::Auto);
 let (event_tx, event_rx) = mpsc::channel();
 
 coordinator.spawn_sdr_thread(|cancel| {
@@ -476,8 +522,17 @@ let backends: Vec<Box<dyn sdr::Backend>> = vec![
     Box::new(sdr::Seify),  // Future
 ];
 
-let service = discovery::create(backends);
+let service = discovery::create(backends, discovery::DiscoveryMode::Auto);
 // Will detect devices from ALL backends
+```
+
+### Force Polling (Testing)
+```rust
+// Force polling mode even on Linux (useful for testing)
+let service = discovery::create(
+    backends,
+    discovery::DiscoveryMode::ForcePolling(Duration::from_secs(2))
+);
 ```
 
 ## Benefits
@@ -530,37 +585,20 @@ impl Default for Config {
 
 ## Error Handling
 
+Discovery services handle errors gracefully:
+
+1. **Event send failures**: When the receiver is dropped (shutdown), send fails and the loop exits
+2. **udev initialization failures**: Falls back to polling automatically
+3. **Backend enumeration errors**: Logged but don't stop discovery (allows partial device lists)
+4. **Cancellation**: Checked after blocking operations to ensure timely shutdown
+
 ```rust
-impl Udev {
-    pub fn new(backends: Vec<Box<dyn sdr::Backend>>) -> Result<Self> {
-        // Verify udev is available
-        let context = Context::new()
-            .map_err(|e| ScannerError::Custom(
-                format!("udev not available: {}", e)
-            ))?;
-
-        // Fall back to polling if udev fails
-        Ok(Self { backends, known_devices: HashMap::new() })
-    }
-}
-
-impl Service for Udev {
-    fn run(&mut self, event_tx: mpsc::Sender<Event>, cancel: CancellationToken) {
-        // If udev initialization fails, fall back to polling
-        let context = match Context::new() {
-            Ok(ctx) => ctx,
-            Err(e) => {
-                debug!("udev unavailable ({}), falling back to polling", e);
-                let mut polling = Polling::new(
-                    std::mem::take(&mut self.backends),
-                    Duration::from_secs(3)
-                );
-                return polling.run(event_tx, cancel);
-            }
-        };
-
-        // ... rest of udev implementation
-    }
+// Example: rescan_devices returns Result to signal shutdown
+fn rescan_devices(&mut self, event_tx: &mpsc::Sender<Event>) -> Result<(), ()> {
+    // ...
+    event_tx.send(Event::Added(device.clone())).map_err(|_| ())?;
+    // Send failure means receiver dropped = time to shut down
+    Ok(())
 }
 ```
 
@@ -575,18 +613,6 @@ src/
     polling.rs         # Polling fallback
     common.rs          # Shared diffing logic
 ```
-
-## Estimated Time
-
-**Total**: 5-6 hours
-
-- Step 1: Dependencies (15 min)
-- Step 2: Module structure (30 min)
-- Step 3: Polling implementation (1 hr)
-- Step 4: udev implementation (2 hrs)
-- Step 5: Extract common logic (30 min)
-- Step 6: ShutdownCoordinator integration (30 min)
-- Step 7: Testing (1 hr)
 
 ## Success Criteria
 

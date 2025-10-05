@@ -43,6 +43,8 @@ pub enum ScannerError {
     #[error(transparent)]
     Sdr(#[from] soapysdr::Error),
     #[error(transparent)]
+    SdrDevice(#[from] crate::sdr::DeviceError),
+    #[error(transparent)]
     SerdeJson(#[from] serde_json::Error),
     #[error(transparent)]
     SmartCore(#[from] smartcore::error::Failed),
