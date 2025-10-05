@@ -2,9 +2,17 @@
 
 **Date**: October 2025
 **Status**: Not Started
-**Dependencies**: `005-backend-abstraction.md`, `007-device-pool.md`
-**Related Plans**: `004-multi-sdr.md` (parent plan), `003-structured-concurrency-shutdown.md`
+**Dependencies**: ✅ `005-backend-abstraction.md`, `007-device-pool.md`
+**Related Plans**: `004-multi-sdr.md` (parent plan), ✅ `003-structured-concurrency-shutdown.md`
 **Enables**: Plan 010
+
+## Prerequisites Status
+
+- ✅ Plan 005: Backend abstraction complete
+- ⏸️  Plan 007: Device pool not started (but not strictly required)
+- ✅ Plan 003: Structured concurrency complete
+
+Can implement subprocess IPC now if needed, or wait for Plan 007.
 
 ## Executive Summary
 
@@ -284,13 +292,18 @@ impl Device {
         frequency: f64,
         gain: f64,
     ) -> Result<Self> {
-        let ctl_path = PathBuf::from(format!("/tmp/scanner-{}-ctl.sock", device_id.0));
-        let dat_path = PathBuf::from(format!("/tmp/scanner-{}-dat.sock", device_id.0));
+        // Generate unique ID from DeviceId enum
+        let id_str = match &device_id {
+            sdr::DeviceId::Backend { backend, serial } => format!("{}-{}", backend, serial),
+            sdr::DeviceId::Usb { vid, pid, serial, .. } => format!("usb-{:04x}-{:04x}-{}", vid, pid, serial),
+        };
+        let ctl_path = PathBuf::from(format!("/tmp/scanner-{}-ctl.sock", id_str));
+        let dat_path = PathBuf::from(format!("/tmp/scanner-{}-dat.sock", id_str));
 
         // Spawn worker subprocess (works for ANY device type)
         let worker = Command::new(env::current_exe()?)
             .arg("--device-worker")
-            .arg(&device_id.0)
+            .arg(&id_str)
             .arg(&device_args)
             .arg("--sample-rate")
             .arg(sample_rate.to_string())
@@ -503,7 +516,10 @@ serde = { version = "1", features = ["derive"] }
 #[test]
 fn test_subprocess_device_single() {
     let device = ipc::Device::new(
-        sdr::DeviceId::from_serial("test", "001"),
+        sdr::DeviceId::Backend {
+            backend: "test".to_string(),
+            serial: "001".to_string()
+        },
         "driver=rtlsdr".into(),
         2e6,
         88.9e6,
@@ -519,7 +535,10 @@ fn test_subprocess_device_single() {
 fn test_subprocess_device_multiple_same_type() {
     // Test SDRplay isolation (two devices, same type)
     let device1 = ipc::Device::new(
-        sdr::DeviceId::from_serial("sdrplay", "001"),
+        sdr::DeviceId::Backend {
+            backend: "sdrplay".to_string(),
+            serial: "001".to_string()
+        },
         "driver=sdrplay,serial=001".into(),
         2e6,
         88.9e6,
@@ -527,7 +546,10 @@ fn test_subprocess_device_multiple_same_type() {
     ).unwrap();
 
     let device2 = ipc::Device::new(
-        sdr::DeviceId::from_serial("sdrplay", "002"),
+        sdr::DeviceId::Backend {
+            backend: "sdrplay".to_string(),
+            serial: "002".to_string()
+        },
         "driver=sdrplay,serial=002".into(),
         2e6,
         162.5e6,
@@ -545,7 +567,10 @@ fn test_subprocess_device_multiple_same_type() {
 #[test]
 fn test_subprocess_cleanup() {
     let device = ipc::Device::new(
-        sdr::DeviceId::from_serial("test", "001"),
+        sdr::DeviceId::Backend {
+            backend: "test".to_string(),
+            serial: "001".to_string()
+        },
         "driver=rtlsdr".into(),
         2e6,
         88.9e6,
@@ -571,7 +596,10 @@ fn test_subprocess_cleanup() {
 #[test]
 fn test_subprocess_crash_isolation() {
     let device = ipc::Device::new(
-        sdr::DeviceId::from_serial("test", "001"),
+        sdr::DeviceId::Backend {
+            backend: "test".to_string(),
+            serial: "001".to_string()
+        },
         "driver=nonexistent".into(),  // Will fail
         2e6,
         88.9e6,

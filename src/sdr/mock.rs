@@ -20,15 +20,11 @@ impl Backend for Mock {
         Ok(vec![
             DeviceInfo {
                 id: DeviceId::from_serial("mock", "001"),
-                serial: "001".to_string(),
-                model: "Mock RTL-SDR".to_string(),
-                backend: "Mock".to_string(),
+                label: "Mock RTL-SDR (mock:001)".to_string(),
             },
             DeviceInfo {
                 id: DeviceId::from_serial("mock", "002"),
-                serial: "002".to_string(),
-                model: "Mock SDRplay".to_string(),
-                backend: "Mock".to_string(),
+                label: "Mock SDRplay (mock:002)".to_string(),
             },
         ])
     }
@@ -147,9 +143,9 @@ mod tests {
         let devices = backend.enumerate_devices().unwrap();
 
         assert_eq!(devices.len(), 2, "Mock backend should return 2 devices");
-        assert_eq!(devices[0].serial, "001");
-        assert_eq!(devices[1].serial, "002");
-        assert_eq!(devices[0].backend, "Mock");
+        assert_eq!(devices[0].id, DeviceId::from_serial("mock", "001"));
+        assert_eq!(devices[1].id, DeviceId::from_serial("mock", "002"));
+        assert!(devices[0].label.contains("Mock"));
     }
 
     #[test]
@@ -158,7 +154,7 @@ mod tests {
         let devices = backend.enumerate_devices().unwrap();
         let device = backend.open_device(&devices[0].id).unwrap();
 
-        assert_eq!(device.id().serial(), "001");
+        assert_eq!(device.id(), &DeviceId::from_serial("mock", "001"));
     }
 
     #[test]
@@ -214,6 +210,6 @@ mod tests {
 
         let raw = device.into_inner();
         let device_id = raw.downcast::<DeviceId>().unwrap();
-        assert_eq!(device_id.serial(), "001");
+        assert_eq!(*device_id, DeviceId::from_serial("mock", "001"));
     }
 }

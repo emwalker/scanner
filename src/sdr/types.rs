@@ -8,40 +8,50 @@ use std::fmt;
 pub struct DeviceInfo {
     /// Stable device identifier
     pub id: DeviceId,
-    /// Device serial number
-    pub serial: String,
-    /// Device model name
-    pub model: String,
-    /// Backend that provides this device
-    pub backend: String,
+    /// Human-readable label
+    pub label: String,
 }
 
 /// Stable device identifier
-///
-/// Format: `{backend}:{serial}` (e.g., "soapy:12345")
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
-pub struct DeviceId(String);
+#[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord)]
+pub enum DeviceId {
+    /// Backend-based identification (SoapySDR, etc.)
+    Backend { backend: String, serial: String },
+    /// USB-based identification (VID/PID + serial + physical location)
+    Usb {
+        vid: u16,
+        pid: u16,
+        serial: String,
+        bus_port: String,
+    },
+}
 
 impl DeviceId {
     /// Create a device ID from backend name and serial number
     pub fn from_serial(backend: &str, serial: &str) -> Self {
-        Self(format!("{}:{}", backend, serial))
+        Self::Backend {
+            backend: backend.to_string(),
+            serial: serial.to_string(),
+        }
     }
 
-    /// Get the backend name from the device ID
-    pub fn backend(&self) -> &str {
-        self.0.split(':').next().unwrap_or("unknown")
-    }
-
-    /// Get the serial number from the device ID
-    pub fn serial(&self) -> &str {
-        self.0.split(':').nth(1).unwrap_or("unknown")
+    /// Get a string representation suitable for logging
+    pub fn as_str(&self) -> String {
+        match self {
+            DeviceId::Backend { backend, serial } => format!("{}:{}", backend, serial),
+            DeviceId::Usb {
+                vid,
+                pid,
+                serial,
+                bus_port,
+            } => format!("usb:{:04x}:{:04x}:{}:{}", vid, pid, serial, bus_port),
+        }
     }
 }
 
 impl fmt::Display for DeviceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -231,8 +241,13 @@ mod tests {
         let id2 = DeviceId::from_serial("soapy", "12345");
         assert_eq!(id1, id2);
 
-        assert_eq!(id1.backend(), "soapy");
-        assert_eq!(id1.serial(), "12345");
+        match &id1 {
+            DeviceId::Backend { backend, serial } => {
+                assert_eq!(backend, "soapy");
+                assert_eq!(serial, "12345");
+            }
+            _ => panic!("Expected Backend variant"),
+        }
     }
 
     #[test]

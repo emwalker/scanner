@@ -2,9 +2,17 @@
 
 **Date**: October 2025
 **Status**: Not Started
-**Dependencies**: `005-backend-abstraction.md`, `006-device-discovery.md`
+**Dependencies**: ✅ `005-backend-abstraction.md`, ✅ `006-device-discovery.md`
 **Related Plans**: `004-multi-sdr.md` (parent plan)
 **Enables**: Plans 009, 010
+
+## Prerequisites Complete
+
+All dependencies are now complete:
+- ✅ Plan 005: Backend abstraction (`Backend`, `DeviceTrait`) is implemented
+- ✅ Plan 006: Discovery service provides `Event::Added` / `Event::Removed`
+
+This plan is ready to implement.
 
 ## Executive Summary
 
@@ -319,15 +327,22 @@ impl Capabilities {
 
     /// Query from SoapySDR device
     pub fn from_soapy_device(device: &soapysdr::Device) -> Result<Self> {
-        let serial = device.get_hardware_info()
+        let hardware_info = device.get_hardware_info();
+
+        let serial = hardware_info
             .get("serial")
             .cloned()
             .unwrap_or_else(|| "unknown".to_string());
 
-        let model = device.get_hardware_info()
+        let model = hardware_info
             .get("label")
             .cloned()
             .unwrap_or_else(|| "unknown".to_string());
+
+        let driver = hardware_info
+            .get("driver")
+            .cloned()
+            .unwrap_or_else(|| "soapy".to_string());
 
         // Query frequency range
         let freq_ranges = device.get_frequency_range(soapysdr::Direction::Rx, 0)?;
@@ -359,7 +374,10 @@ impl Capabilities {
             .unwrap_or((0.0, 48.0));
 
         Ok(Self {
-            device_id: sdr::DeviceId::from_serial("soapy", &serial),
+            device_id: sdr::DeviceId::Backend {
+                backend: driver.clone(),
+                serial: serial.clone()
+            },
             serial_number: serial,
             model,
             freq_range_hz,
@@ -408,7 +426,12 @@ coordinator.spawn_sdr_thread(|cancel| {
             Ok(discovery::Event::Added(info)) => {
                 // Open device via backend
                 if let Ok(device) = backend.open_device(&info.id) {
-                    pool.add_device(device, info.backend);
+                    // Extract backend name from DeviceId
+                    let backend_name = match &info.id {
+                        sdr::DeviceId::Backend { backend, .. } => backend.clone(),
+                        sdr::DeviceId::Usb { .. } => "USB".to_string(),
+                    };
+                    pool.add_device(device, backend_name);
                 }
             }
             Ok(discovery::Event::Removed(id)) => {
@@ -443,7 +466,10 @@ coordinator.spawn_sdr_thread(|cancel| {
 #[test]
 fn test_capability_matching() {
     let caps = sdr::Capabilities {
-        device_id: sdr::DeviceId::from_serial("test", "001"),
+        device_id: sdr::DeviceId::Backend {
+            backend: "test".to_string(),
+            serial: "001".to_string()
+        },
         serial_number: "001".into(),
         model: "Test SDR".into(),
         freq_range_hz: (1e6, 1e9),
@@ -568,7 +594,12 @@ fn test_pool_with_discovery() {
 
     for device_info in devices {
         let device = backend.open_device(&device_info.id).unwrap();
-        pool.add_device(device, device_info.backend);
+        // Extract backend name from DeviceId
+        let backend_name = match &device_info.id {
+            sdr::DeviceId::Backend { backend, .. } => backend.clone(),
+            sdr::DeviceId::Usb { .. } => "USB".to_string(),
+        };
+        pool.add_device(device, backend_name);
     }
 
     // Should have devices in pool
@@ -678,7 +709,12 @@ for event in event_rx {
     match event {
         discovery::Event::Added(info) => {
             let device = backend.open_device(&info.id)?;
-            pool.add_device(device, info.backend);
+            // Extract backend name from DeviceId
+            let backend_name = match &info.id {
+                sdr::DeviceId::Backend { backend, .. } => backend.clone(),
+                sdr::DeviceId::Usb { .. } => "USB".to_string(),
+            };
+            pool.add_device(device, backend_name);
         }
         discovery::Event::Removed(id) => {
             pool.remove_device(&id);

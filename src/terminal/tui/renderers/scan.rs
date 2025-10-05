@@ -1,4 +1,4 @@
-//! Progress bar rendering for candidates and windows
+//! Scan progress rendering for candidates and windows
 
 use crate::terminal::tui::{
     model::{CandidateProgress, CandidateStatus, Model},
@@ -7,18 +7,13 @@ use crate::terminal::tui::{
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
 
-/// Render all progress bars for windows and candidates
-pub fn render_progress(
-    f: &mut Frame,
-    area: ratatui::layout::Rect,
-    model: &Model,
-    theme: &dyn Theme,
-) {
+/// Render all scan progress for windows and candidates
+pub fn render_scan(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, theme: &dyn Theme) {
     if model.windows.is_empty() {
         let waiting =
             Paragraph::new("  Establishing connection…\n  Preparing to monitor frequencies")
@@ -79,8 +74,8 @@ pub fn render_progress(
     let mut window_sizes = Vec::new();
     let mut running_total = 0;
 
-    // Add "Continue scan" line if in selection mode and scan is not complete
-    if model.selection_mode && !model.all_complete() {
+    // Add "Continue scan" line if in browsing mode and scan is not complete
+    if model.browsing_mode && !model.all_complete() {
         running_total += 1;
     }
 
@@ -101,7 +96,7 @@ pub fn render_progress(
         .iter()
         .map(|(_, count)| count + 1)
         .sum::<usize>();
-    if model.selection_mode && !model.all_complete() {
+    if model.browsing_mode && !model.all_complete() {
         total_lines += 1;
     }
 
@@ -193,14 +188,22 @@ pub fn render_progress(
 
             let is_selected = model.selection_mode
                 && model.selected_candidate_index == Some(current_candidate_index);
-            render_candidate_progress(f, chunks[chunk_idx], candidate, is_selected, theme);
+            let is_playing = model.browsing_mode && is_selected;
+            render_candidate_progress(
+                f,
+                chunks[chunk_idx],
+                candidate,
+                is_selected,
+                is_playing,
+                theme,
+            );
             chunk_idx += 1;
             rendered_candidates += 1;
         }
     }
 
-    // Add "Continue scan" option if in selection mode and scan is not complete
-    if model.selection_mode && !model.all_complete() && chunk_idx < chunks.len() {
+    // Add "Continue scan" option if in browsing mode and scan is not complete
+    if model.browsing_mode && !model.all_complete() && chunk_idx < chunks.len() {
         let is_continue_selected = model.is_continue_scan_selected();
         render_continue_scan(f, chunks[chunk_idx], is_continue_selected, theme);
         chunk_idx += 1;
@@ -248,6 +251,7 @@ fn render_candidate_progress(
     area: ratatui::layout::Rect,
     candidate: &CandidateProgress,
     is_selected: bool,
+    is_playing: bool,
     theme: &dyn Theme,
 ) {
     let freq_mhz = candidate.frequency_hz / 1e6;
@@ -276,6 +280,15 @@ fn render_candidate_progress(
         }
     };
 
+    // Create base style with optional background for playing station
+    let base_style = if is_playing {
+        Style::default()
+            .bg(Color::Rgb(0, 60, 90)) // Bright cyan-blue background
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+
     // Atmospheric amber progress with geometric precision
     let progress_width = 20;
     let filled = (candidate.completion * progress_width as f64) as usize;
@@ -300,63 +313,133 @@ fn render_candidate_progress(
             || candidate.status == CandidateStatus::Rejected
         {
             // Get audio quality text and style
-            let (quality_text, quality_style) = match audio_quality {
-                crate::audio_quality::AudioQuality::Good => (
-                    theme.quality_good_text(),
+            let (quality_text, quality_style) = if is_playing {
+                // Use bright colors for playing station
+                (
+                    match audio_quality {
+                        crate::audio_quality::AudioQuality::Good => theme.quality_good_text(),
+                        crate::audio_quality::AudioQuality::Moderate => {
+                            theme.quality_moderate_text()
+                        }
+                        crate::audio_quality::AudioQuality::Poor => theme.quality_poor_text(),
+                        crate::audio_quality::AudioQuality::NoAudio => {
+                            theme.quality_no_audio_text()
+                        }
+                        crate::audio_quality::AudioQuality::Static => theme.quality_static_text(),
+                        crate::audio_quality::AudioQuality::Unknown => theme.quality_unknown_text(),
+                    },
                     Style::default()
-                        .fg(theme.quality_good())
+                        .fg(Color::Rgb(150, 255, 150))
                         .add_modifier(Modifier::BOLD),
-                ),
-                crate::audio_quality::AudioQuality::Moderate => (
-                    theme.quality_moderate_text(),
-                    Style::default().fg(theme.quality_moderate()),
-                ),
-                crate::audio_quality::AudioQuality::Poor => (
-                    theme.quality_poor_text(),
-                    Style::default().fg(theme.quality_poor()),
-                ),
-                crate::audio_quality::AudioQuality::NoAudio => (
-                    theme.quality_no_audio_text(),
-                    Style::default().fg(theme.quality_no_audio()),
-                ),
-                crate::audio_quality::AudioQuality::Static => (
-                    theme.quality_static_text(),
-                    Style::default().fg(theme.quality_static()),
-                ),
-                crate::audio_quality::AudioQuality::Unknown => (
-                    theme.quality_unknown_text(),
-                    Style::default().fg(theme.quality_unknown()),
-                ),
+                )
+            } else {
+                match audio_quality {
+                    crate::audio_quality::AudioQuality::Good => (
+                        theme.quality_good_text(),
+                        Style::default()
+                            .fg(theme.quality_good())
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    crate::audio_quality::AudioQuality::Moderate => (
+                        theme.quality_moderate_text(),
+                        Style::default().fg(theme.quality_moderate()),
+                    ),
+                    crate::audio_quality::AudioQuality::Poor => (
+                        theme.quality_poor_text(),
+                        Style::default().fg(theme.quality_poor()),
+                    ),
+                    crate::audio_quality::AudioQuality::NoAudio => (
+                        theme.quality_no_audio_text(),
+                        Style::default().fg(theme.quality_no_audio()),
+                    ),
+                    crate::audio_quality::AudioQuality::Static => (
+                        theme.quality_static_text(),
+                        Style::default().fg(theme.quality_static()),
+                    ),
+                    crate::audio_quality::AudioQuality::Unknown => (
+                        theme.quality_unknown_text(),
+                        Style::default().fg(theme.quality_unknown()),
+                    ),
+                }
             };
 
             // Create spans with different colors
-            Line::from(vec![
+            let mut spans = vec![
+                Span::styled(" ", base_style),
                 Span::styled(
                     format!(
-                        "   {} {:>5.1} MHz • {} • {} • ",
+                        "  {} {:>5.1} MHz • {} • {} • ",
                         status_symbol, freq_mhz, progress_bar, status_text
                     ),
-                    Style::default().fg(status_color),
+                    base_style.fg(if is_playing {
+                        Color::White
+                    } else {
+                        status_color
+                    }),
                 ),
-                Span::styled(quality_text, quality_style),
-            ])
+                Span::styled(quality_text, base_style.patch(quality_style)),
+            ];
+
+            // Add padding to extend background to right edge
+            let content_width = 3 + 5 + 4 + 3 + progress_width + 3 + 8 + 3 + quality_text.len();
+            let padding_needed = area.width.saturating_sub(content_width as u16);
+            spans.push(Span::styled(
+                " ".repeat(padding_needed as usize),
+                base_style,
+            ));
+
+            Line::from(spans)
         } else {
-            Line::from(vec![Span::styled(
-                format!(
-                    "   {} {:>5.1} MHz • {} • {}",
-                    status_symbol, freq_mhz, progress_bar, status_text
+            let mut spans = vec![
+                Span::styled(" ", base_style),
+                Span::styled(
+                    format!(
+                        "  {} {:>5.1} MHz • {} • {}",
+                        status_symbol, freq_mhz, progress_bar, status_text
+                    ),
+                    base_style.fg(if is_playing {
+                        Color::White
+                    } else {
+                        status_color
+                    }),
                 ),
-                Style::default().fg(status_color),
-            )])
+            ];
+
+            // Add padding to extend background to right edge
+            let content_width = 3 + 5 + 4 + 3 + progress_width + 3 + 8;
+            let padding_needed = area.width.saturating_sub(content_width as u16);
+            spans.push(Span::styled(
+                " ".repeat(padding_needed as usize),
+                base_style,
+            ));
+
+            Line::from(spans)
         }
     } else {
-        Line::from(vec![Span::styled(
-            format!(
-                "   {} {:>5.1} MHz • {} • {}",
-                status_symbol, freq_mhz, progress_bar, status_text
+        let mut spans = vec![
+            Span::styled(" ", base_style),
+            Span::styled(
+                format!(
+                    "  {} {:>5.1} MHz • {} • {}",
+                    status_symbol, freq_mhz, progress_bar, status_text
+                ),
+                base_style.fg(if is_playing {
+                    Color::White
+                } else {
+                    status_color
+                }),
             ),
-            Style::default().fg(status_color),
-        )])
+        ];
+
+        // Add padding to extend background to right edge
+        let content_width = 3 + 5 + 4 + 3 + progress_width + 3 + 8;
+        let padding_needed = area.width.saturating_sub(content_width as u16);
+        spans.push(Span::styled(
+            " ".repeat(padding_needed as usize),
+            base_style,
+        ));
+
+        Line::from(spans)
     };
 
     let gauge = Paragraph::new(line);

@@ -16,6 +16,7 @@ pub struct MainThread {
     progress_reporter: Arc<dyn ProgressReporter>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
     command_receiver: Option<std::sync::mpsc::Receiver<crate::terminal::ScannerCommand>>,
+    tui_event_sender: Option<std::sync::mpsc::Sender<crate::terminal::TuiEvent>>,
     scanner_state: ScannerState,
     pause_signal: PauseSignal,
 }
@@ -36,6 +37,7 @@ impl MainThread {
             progress_reporter: Arc::new(NoOpProgressReporter),
             shutdown_coordinator,
             command_receiver: None,
+            tui_event_sender: None,
             scanner_state: ScannerState::new(),
             pause_signal: PauseSignal::new(),
         })
@@ -57,6 +59,7 @@ impl MainThread {
             progress_reporter,
             shutdown_coordinator,
             command_receiver: None,
+            tui_event_sender: None,
             scanner_state: ScannerState::new(),
             pause_signal: PauseSignal::new(),
         })
@@ -67,6 +70,14 @@ impl MainThread {
         receiver: std::sync::mpsc::Receiver<crate::terminal::ScannerCommand>,
     ) -> Self {
         self.command_receiver = Some(receiver);
+        self
+    }
+
+    pub fn with_tui_event_sender(
+        mut self,
+        sender: std::sync::mpsc::Sender<crate::terminal::TuiEvent>,
+    ) -> Self {
+        self.tui_event_sender = Some(sender);
         self
     }
 
@@ -162,6 +173,11 @@ impl MainThread {
                     self.shutdown_coordinator.clone(),
                 )?);
                 debug!("AudioSession created for browse mode");
+
+                // Send Paused event to TUI so it knows scanning has stopped and can now tune
+                if let Some(ref sender) = self.tui_event_sender {
+                    let _ = sender.send(crate::terminal::TuiEvent::Paused);
+                }
 
                 Ok(None)
             }

@@ -32,7 +32,7 @@ pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
     // Use selected candidate's center frequency if in selection mode, otherwise current window
     let window_start = if model.selection_mode {
         model
-            .get_selected_candidate_info()
+            .selected_candidate_info()
             .map(|(_, center_freq, _, _, _)| center_freq - window_width / 2.0)
     } else {
         model.windows.get(&model.current_window).map(|w| {

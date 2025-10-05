@@ -5,6 +5,16 @@
 **Dependencies**: All previous plans (005-009)
 **Related Plans**: `004-multi-sdr.md` (parent plan)
 
+## Prerequisites Status
+
+- ✅ Plan 005: Backend abstraction complete
+- ✅ Plan 006: Device discovery complete
+- ⏸️  Plan 007: Device pool not started
+- ⏸️  Plan 008: Subprocess IPC not started
+- ⏸️  Plan 009: Task abstraction not started
+
+Waiting on Plans 007, 008, and 009 before starting integration.
+
 ## Executive Summary
 
 Bring all multi-SDR components together into working system.
@@ -167,12 +177,17 @@ impl Orchestrator {
         while !cancel.is_cancelled() {
             match event_rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(discovery::Event::Added(info)) => {
-                    debug!(device_id = ?info.id, model = info.model, "Device added");
+                    debug!(device_id = ?info.id, label = %info.label, "Device added");
 
                     // Open device via backend
                     match backend.open_device(&info.id) {
                         Ok(device) => {
-                            if let Err(e) = pool.add_device(device, info.backend) {
+                            // Extract backend name from DeviceId
+                            let backend_name = match &info.id {
+                                sdr::DeviceId::Backend { backend, .. } => backend.clone(),
+                                sdr::DeviceId::Usb { .. } => "USB".to_string(),
+                            };
+                            if let Err(e) = pool.add_device(device, backend_name) {
                                 debug!(error = ?e, "Failed to add device to pool");
                             }
                         }

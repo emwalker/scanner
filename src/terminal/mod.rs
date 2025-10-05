@@ -41,6 +41,19 @@ pub enum ProgressEventType {
     ThreadCompleted,
 }
 
+/// Events that can be sent to the TUI for display
+#[derive(Debug, Clone)]
+pub enum TuiEvent {
+    /// Scanning progress event (from ProgressReporter)
+    Progress(ProgressEvent),
+    /// Device discovered and added (from discovery service)
+    DeviceAdded(crate::sdr::DeviceInfo),
+    /// Device removed/disconnected (from discovery service)
+    DeviceRemoved(crate::sdr::DeviceId),
+    /// Scanner has been paused and is ready for browsing
+    Paused,
+}
+
 /// Commands sent from TUI to scanner for interactive control
 #[derive(Debug, Clone)]
 pub enum ScannerCommand {

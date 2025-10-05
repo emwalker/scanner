@@ -28,7 +28,7 @@ pub fn render_spectrum(
     // Calculate current window position if we have scanning data
     // Use selected candidate's center frequency if in selection mode, otherwise current window
     let current_freq = if model.selection_mode {
-        if let Some((_, center_freq, _, _, _)) = model.get_selected_candidate_info() {
+        if let Some((_, center_freq, _, _, _)) = model.selected_candidate_info() {
             center_freq / 1e6
         } else {
             fm_start + window_width_mhz / 2.0

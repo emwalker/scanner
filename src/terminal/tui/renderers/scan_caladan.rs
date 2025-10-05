@@ -1,4 +1,4 @@
-//! Caladan organic progress display with inline mini-graphs
+//! Caladan organic scan display with inline mini-graphs
 
 use crate::terminal::tui::{
     model::{CandidateStatus, FocusState, Model},
@@ -12,7 +12,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph},
 };
 
-pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) {
+pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) {
     if area.height < 4 {
         return;
     }
@@ -61,7 +61,7 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
         .split(area)[0];
 
     let bracket_color = Color::Rgb(160, 200, 220);
-    let has_focus = matches!(model.focus_state, FocusState::Progress);
+    let has_focus = matches!(model.focus_state, FocusState::Scan);
 
     let border_style = if has_focus {
         Style::default()
@@ -139,99 +139,17 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
                 && candidate.status != CandidateStatus::Rejected
                 && model.selected_candidate_index == Some(current_candidate_index);
 
+            let is_playing = model.browsing_mode && is_selected;
+
             rendered_candidates += 1;
 
-            let status_symbol = match candidate.status {
-                CandidateStatus::Detected => "○",
-                CandidateStatus::Analyzing => "◐",
-                CandidateStatus::Rejected => "·",
-                CandidateStatus::Signal => "◉",
-                CandidateStatus::Playing => "◉",
-                CandidateStatus::Completed => "◯",
-            };
-
-            let status_color = if is_selected {
-                theme.selection_highlight()
-            } else {
-                match candidate.status {
-                    CandidateStatus::Detected => theme.status_detected(),
-                    CandidateStatus::Analyzing => theme.status_analyzing(),
-                    CandidateStatus::Rejected => theme.status_rejected(),
-                    CandidateStatus::Signal => theme.status_signal(),
-                    CandidateStatus::Playing => theme.status_playing(),
-                    CandidateStatus::Completed => theme.status_completed(),
-                }
-            };
-
-            let status_text = match candidate.status {
-                CandidateStatus::Detected => theme.status_detected_text(),
-                CandidateStatus::Analyzing => theme.status_analyzing_text(),
-                CandidateStatus::Rejected => theme.status_rejected_text(),
-                CandidateStatus::Signal => theme.status_signal_text(),
-                CandidateStatus::Playing => theme.status_playing_text(),
-                CandidateStatus::Completed => theme.status_completed_text(),
-            };
-
-            let freq_mhz = candidate.frequency_hz / 1e6;
-            let progress_pct = (candidate.completion * 100.0) as u8;
-            let mini_graph = create_mini_graph(progress_pct);
-
-            let selection_prefix = if is_selected {
-                theme.selection_indicator()
-            } else {
-                " "
-            };
-
-            let mut spans = vec![
-                Span::styled(
-                    format!("{} {} ", selection_prefix, status_symbol),
-                    Style::default().fg(status_color),
-                ),
-                Span::styled(
-                    format!("{:>5.1} MHz  ", freq_mhz),
-                    Style::default()
-                        .fg(if is_selected {
-                            theme.selection_highlight()
-                        } else {
-                            theme.primary()
-                        })
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{:<8}", status_text),
-                    Style::default().fg(theme.foreground()),
-                ),
-                Span::raw("  "),
-                Span::styled(mini_graph, Style::default().fg(status_color)),
-            ];
-
-            if let Some(quality) = &candidate.audio_quality {
-                use crate::audio_quality::AudioQuality;
-                let (quality_text, quality_color) = match quality {
-                    AudioQuality::Good => (theme.quality_good_text(), theme.quality_good()),
-                    AudioQuality::Moderate => {
-                        (theme.quality_moderate_text(), theme.quality_moderate())
-                    }
-                    AudioQuality::Poor => (theme.quality_poor_text(), theme.quality_poor()),
-                    AudioQuality::NoAudio => {
-                        (theme.quality_no_audio_text(), theme.quality_no_audio())
-                    }
-                    AudioQuality::Static => (theme.quality_static_text(), theme.quality_static()),
-                    AudioQuality::Unknown => {
-                        (theme.quality_unknown_text(), theme.quality_unknown())
-                    }
-                };
-                spans.push(Span::raw("  "));
-                spans.push(Span::styled(
-                    format!("·{:<8}", quality_text), // Right-pad quality text to 9 chars (8 + ·)
-                    Style::default().fg(quality_color),
-                ));
-            } else {
-                // Add padding when no quality to maintain alignment
-                spans.push(Span::raw("           ")); // 11 spaces (2 + 9)
-            }
-
-            lines.push(Line::from(spans));
+            lines.push(render_candidate_line(
+                candidate,
+                is_selected,
+                is_playing,
+                theme,
+                inner.width,
+            ));
             line_count += 1;
         }
 
@@ -240,8 +158,8 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
         }
     }
 
-    // Add "Continue scan" option if in selection mode and scan is not complete
-    if model.selection_mode && !model.all_complete() && line_count < max_lines {
+    // Add "Continue scan" option if in browsing mode and scan is not complete
+    if model.browsing_mode && !model.all_complete() && line_count < max_lines {
         let is_continue_selected = model.is_continue_scan_selected();
 
         let color = if is_continue_selected {
@@ -284,6 +202,135 @@ pub fn render_progress(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
 
     f.render_widget(block, constrained_area);
     f.render_widget(paragraph, inner);
+}
+
+fn render_candidate_line(
+    candidate: &crate::terminal::tui::model::CandidateProgress,
+    is_selected: bool,
+    is_playing: bool,
+    theme: &dyn Theme,
+    inner_width: u16,
+) -> Line<'static> {
+    let status_symbol = match candidate.status {
+        CandidateStatus::Detected => "○",
+        CandidateStatus::Analyzing => "◐",
+        CandidateStatus::Rejected => "·",
+        CandidateStatus::Signal => "◉",
+        CandidateStatus::Playing => "◉",
+        CandidateStatus::Completed => "◯",
+    };
+
+    let status_color = if is_selected {
+        theme.selection_highlight()
+    } else {
+        match candidate.status {
+            CandidateStatus::Detected => theme.status_detected(),
+            CandidateStatus::Analyzing => theme.status_analyzing(),
+            CandidateStatus::Rejected => theme.status_rejected(),
+            CandidateStatus::Signal => theme.status_signal(),
+            CandidateStatus::Playing => theme.status_playing(),
+            CandidateStatus::Completed => theme.status_completed(),
+        }
+    };
+
+    let status_text = match candidate.status {
+        CandidateStatus::Detected => theme.status_detected_text(),
+        CandidateStatus::Analyzing => theme.status_analyzing_text(),
+        CandidateStatus::Rejected => theme.status_rejected_text(),
+        CandidateStatus::Signal => theme.status_signal_text(),
+        CandidateStatus::Playing => theme.status_playing_text(),
+        CandidateStatus::Completed => theme.status_completed_text(),
+    };
+
+    let freq_mhz = candidate.frequency_hz / 1e6;
+    let progress_pct = (candidate.completion * 100.0) as u8;
+    let mini_graph = create_mini_graph(progress_pct);
+
+    let selection_prefix = if is_selected {
+        theme.selection_indicator()
+    } else {
+        " "
+    };
+
+    let base_style = if is_playing {
+        Style::default()
+            .bg(Color::Rgb(0, 60, 90))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+
+    let mut spans = vec![Span::styled(" ", base_style)];
+
+    spans.push(Span::styled(
+        format!("{} {} ", selection_prefix, status_symbol),
+        base_style.fg(if is_playing {
+            Color::White
+        } else {
+            status_color
+        }),
+    ));
+    spans.push(Span::styled(
+        format!("{:>5.1} MHz  ", freq_mhz),
+        base_style
+            .fg(if is_playing {
+                Color::White
+            } else if is_selected {
+                theme.selection_highlight()
+            } else {
+                theme.primary()
+            })
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(
+        format!("{:<8}", status_text),
+        base_style.fg(if is_playing {
+            Color::Rgb(200, 220, 255)
+        } else {
+            theme.foreground()
+        }),
+    ));
+    spans.push(Span::styled("  ", base_style));
+    spans.push(Span::styled(
+        mini_graph,
+        base_style.fg(if is_playing {
+            Color::White
+        } else {
+            status_color
+        }),
+    ));
+
+    if let Some(quality) = &candidate.audio_quality {
+        use crate::audio_quality::AudioQuality;
+        let (quality_text, quality_color) = match quality {
+            AudioQuality::Good => (theme.quality_good_text(), theme.quality_good()),
+            AudioQuality::Moderate => (theme.quality_moderate_text(), theme.quality_moderate()),
+            AudioQuality::Poor => (theme.quality_poor_text(), theme.quality_poor()),
+            AudioQuality::NoAudio => (theme.quality_no_audio_text(), theme.quality_no_audio()),
+            AudioQuality::Static => (theme.quality_static_text(), theme.quality_static()),
+            AudioQuality::Unknown => (theme.quality_unknown_text(), theme.quality_unknown()),
+        };
+        spans.push(Span::styled("  ", base_style));
+        spans.push(Span::styled(
+            format!("·{:<8}", quality_text),
+            base_style.fg(if is_playing {
+                Color::Rgb(150, 255, 150)
+            } else {
+                quality_color
+            }),
+        ));
+    } else {
+        spans.push(Span::styled("           ", base_style));
+    }
+
+    let content_width = 3 + 5 + 4 + 2 + 8 + 2 + 5 + 2 + 9;
+    let padding_needed = inner_width.saturating_sub(content_width as u16);
+    spans.push(Span::styled(
+        " ".repeat(padding_needed as usize),
+        base_style,
+    ));
+
+    Line::from(spans)
 }
 
 fn create_mini_graph(progress: u8) -> String {

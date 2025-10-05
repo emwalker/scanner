@@ -1,6 +1,9 @@
 //! TUI data model using The Elm Architecture pattern
 
-use crate::terminal::{ProgressEvent, ProgressEventType};
+use crate::{
+    sdr::DeviceInfo,
+    terminal::{ProgressEvent, ProgressEventType, TuiEvent},
+};
 use std::{
     collections::{BTreeMap, HashMap},
     time::Instant,
@@ -121,7 +124,7 @@ impl CandidateStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusState {
     Spectrum,
-    Progress,
+    Scan,
     Tuner(usize), // Index of focused tuner
 }
 
@@ -134,13 +137,14 @@ pub struct Model {
     pub should_quit: bool,
     pub theme_selector_open: bool,
     pub theme_selector_index: usize,
-    pub selection_mode: bool,
+    pub selection_mode: bool, // Whether a candidate is currently selected (can be while scan is running)
+    pub browsing_mode: bool,  // Whether scan is paused for manual browsing/listening
+    pub pending_tune: bool,   // Waiting for Paused event to send TuneToCandidate
     pub selected_candidate_index: Option<usize>, // Index in flattened displayable candidates list
     pub scroll_offset: usize, // Number of candidates to skip when rendering (for scrolling)
-    pub last_selection_change: Option<Instant>,
-    pub frequency_tune_sent: bool, // Tracks if TuneToCandidate command was sent for current selection
-    pub playback_active: bool,     // Tracks if actively listening to a station
-    pub focus_state: FocusState,   // Which component has focus
+    pub playback_active: bool, // Tracks if actively listening to a station
+    pub focus_state: FocusState, // Which component has focus
+    pub devices: Vec<DeviceInfo>, // Discovered SDR devices
 }
 
 impl Default for Model {
@@ -159,19 +163,55 @@ impl Model {
             theme_selector_open: false,
             theme_selector_index: 0,
             selection_mode: false,
+            browsing_mode: false,
+            pending_tune: false,
             selected_candidate_index: None,
             scroll_offset: 0,
-            last_selection_change: None,
-            frequency_tune_sent: false,
             playback_active: false,
             focus_state: FocusState::Spectrum,
+            devices: Vec::new(),
+        }
+    }
+
+    /// Add a newly discovered device
+    pub fn add_device(&mut self, device: DeviceInfo) {
+        // Check if device already exists
+        if !self.devices.iter().any(|d| d.id == device.id) {
+            debug!(device_id = ?device.id, label = %device.label, "Device added to TUI model");
+            self.devices.push(device);
+        }
+    }
+
+    /// Remove a device that was unplugged
+    pub fn remove_device(&mut self, device_id: &crate::sdr::DeviceId) {
+        if let Some(pos) = self.devices.iter().position(|d| &d.id == device_id) {
+            let device = self.devices.remove(pos);
+            debug!(device_id = ?device.id, label = %device.label, "Device removed from TUI model");
+        }
+    }
+
+    /// Get count of discovered devices
+    pub fn device_count(&self) -> usize {
+        self.devices.len()
+    }
+
+    /// Update the model based on a TUI event (progress or discovery)
+    pub fn update_tui_event(&mut self, event: TuiEvent) {
+        match event {
+            TuiEvent::Progress(progress_event) => self.update(progress_event),
+            TuiEvent::DeviceAdded(device) => self.add_device(device),
+            TuiEvent::DeviceRemoved(device_id) => self.remove_device(&device_id),
+            TuiEvent::Paused => {
+                // Scanning has paused, ready for tune command
+                debug!("Received Paused event");
+            }
         }
     }
 
     /// Update the model based on a progress event
     pub fn update(&mut self, event: ProgressEvent) {
-        // Ignore all events when in selection mode - user is focused on selecting
-        if self.selection_mode {
+        // Ignore all events when in browsing mode - user is focused on manually listening
+        if self.browsing_mode {
             return;
         }
 
@@ -374,8 +414,6 @@ impl Model {
         let candidate_count = self.get_selectable_candidate_count();
         if candidate_count > 0 {
             self.selected_candidate_index = Some(candidate_count - 1);
-            self.last_selection_change = Some(Instant::now());
-            self.frequency_tune_sent = false;
         }
     }
 
@@ -383,8 +421,13 @@ impl Model {
     pub fn exit_selection_mode(&mut self) {
         self.selection_mode = false;
         self.selected_candidate_index = None;
-        self.last_selection_change = None;
-        self.frequency_tune_sent = false;
+    }
+
+    /// Exit browsing mode and return to normal scanning (clears both modes)
+    pub fn exit_browsing_mode(&mut self) {
+        self.browsing_mode = false;
+        self.selection_mode = false;
+        self.selected_candidate_index = None;
     }
 
     /// Get ordered list of displayable windows (oldest to newest)
@@ -444,7 +487,7 @@ impl Model {
     }
 
     /// Get the window_id, center frequency, and candidate frequency for the currently selected candidate
-    pub fn get_selected_candidate_info(&self) -> Option<SelectedCandidateInfo> {
+    pub fn selected_candidate_info(&self) -> Option<SelectedCandidateInfo> {
         if !self.selection_mode {
             return None;
         }
@@ -513,7 +556,7 @@ impl Model {
         }
 
         let old_window_id = self
-            .get_selected_candidate_info()
+            .selected_candidate_info()
             .map(|(window_id, _, _, _, _)| window_id);
 
         let current = self.selected_candidate_index.unwrap_or(0);
@@ -522,13 +565,11 @@ impl Model {
 
         if next != current {
             self.selected_candidate_index = Some(next);
-            self.last_selection_change = Some(Instant::now());
-            self.frequency_tune_sent = false;
             self.adjust_scroll_to_selection(viewport_height);
 
             // If we moved to a different window, complete any playing candidates in the old window
             if let Some(new_window_id) = self
-                .get_selected_candidate_info()
+                .selected_candidate_info()
                 .map(|(window_id, _, _, _, _)| window_id)
                 && let Some(old_id) = old_window_id
                 && old_id != new_window_id
@@ -550,19 +591,17 @@ impl Model {
         }
 
         let old_window_id = self
-            .get_selected_candidate_info()
+            .selected_candidate_info()
             .map(|(window_id, _, _, _, _)| window_id);
 
         let current = self.selected_candidate_index.unwrap_or(0);
         if current > 0 {
             self.selected_candidate_index = Some(current - 1);
-            self.last_selection_change = Some(Instant::now());
-            self.frequency_tune_sent = false;
             self.adjust_scroll_to_selection(viewport_height);
 
             // If we moved to a different window, complete any playing candidates in the old window
             if let Some(new_window_id) = self
-                .get_selected_candidate_info()
+                .selected_candidate_info()
                 .map(|(window_id, _, _, _, _)| window_id)
                 && let Some(old_id) = old_window_id
                 && old_id != new_window_id
@@ -614,9 +653,9 @@ impl Model {
     pub fn navigate_down(&mut self) {
         match self.focus_state {
             FocusState::Spectrum => {
-                self.focus_state = FocusState::Progress;
+                self.focus_state = FocusState::Scan;
             }
-            FocusState::Progress => {
+            FocusState::Scan => {
                 if self.selection_mode {
                     self.select_next_candidate();
                 }
@@ -629,12 +668,17 @@ impl Model {
     pub fn navigate_up(&mut self) {
         match self.focus_state {
             FocusState::Spectrum => {}
-            FocusState::Progress => {
+            FocusState::Scan => {
                 if !self.selection_mode {
-                    self.enter_selection_mode();
-                    self.focus_state = FocusState::Progress;
+                    // Start with most recent candidate selected (don't enter browsing mode yet)
+                    let candidate_count = self.get_selectable_candidate_count();
+                    if candidate_count > 0 {
+                        self.selected_candidate_index = Some(candidate_count - 1);
+                        self.selection_mode = true;
+                    }
+                    self.focus_state = FocusState::Scan;
                 } else {
-                    // Try to select previous candidate
+                    // Try to select previous candidate (in browsing mode)
                     let prev_idx = self.selected_candidate_index;
                     self.select_previous_candidate();
 
@@ -654,7 +698,7 @@ impl Model {
     pub fn navigate_right(&mut self, tuner_count: usize) {
         match self.focus_state {
             FocusState::Spectrum => {}
-            FocusState::Progress => {
+            FocusState::Scan => {
                 if self.selection_mode && tuner_count > 0 {
                     self.focus_state = FocusState::Tuner(0);
                 }
@@ -671,10 +715,10 @@ impl Model {
     pub fn navigate_left(&mut self) {
         match self.focus_state {
             FocusState::Spectrum => {}
-            FocusState::Progress => {}
+            FocusState::Scan => {}
             FocusState::Tuner(idx) => {
                 if idx == 0 {
-                    self.focus_state = FocusState::Progress;
+                    self.focus_state = FocusState::Scan;
                 } else {
                     self.focus_state = FocusState::Tuner(idx - 1);
                 }

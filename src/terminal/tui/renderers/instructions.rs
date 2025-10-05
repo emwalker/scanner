@@ -20,18 +20,20 @@ pub fn render_instructions(
     if model.theme_selector_open {
         render_theme_selector(f, area, theme, model, all_themes);
     } else {
-        let left_instructions = if model.selection_mode && !model.all_complete() {
+        let left_instructions = if model.browsing_mode && !model.all_complete() {
             "  ⌃C Exit  ↑↓ Browse  ↵ Continue scan"
+        } else if model.selection_mode {
+            "  ⌃C Exit  ↑↓ Navigate  ↵ Listen"
         } else {
-            "  ⌃C Exit  ↑↓ Browse"
+            "  ⌃C Exit  ↑↓ Navigate"
         };
 
         let instruction =
             Paragraph::new(left_instructions).style(Style::default().fg(theme.instructions_dim()));
         f.render_widget(instruction, area);
 
-        let right_text = if model.selection_mode {
-            if let Some((_, _, candidate_freq, _, _)) = model.get_selected_candidate_info() {
+        let right_text = if model.browsing_mode {
+            if let Some((_, _, candidate_freq, _, _)) = model.selected_candidate_info() {
                 format!("[Listening: {:.1} MHz]  ", candidate_freq / 1e6)
             } else {
                 format!("{}  ", theme_name)

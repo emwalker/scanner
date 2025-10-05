@@ -1,6 +1,6 @@
 //! TUI module using The Elm Architecture pattern
 
-use crate::terminal::ProgressEvent;
+use crate::terminal::TuiEvent;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -22,14 +22,14 @@ pub mod themes;
 use layout::{CaladanLayout, TuiLayout};
 use model::Model;
 use renderers::{
-    console::ConsoleRenderer, header, instructions, progress, progress_caladan, spectrum,
-    spectrum_caladan, tuners_caladan,
+    console::ConsoleRenderer, header, instructions, scan, scan_caladan, spectrum, spectrum_caladan,
+    tuners_caladan,
 };
 use themes::{Theme, ThemeName, UiVariant, create_theme};
 
 /// TUI-based progress display for multiple candidates using The Elm Architecture
 pub struct TuiProgressDisplay {
-    receiver: mpsc::Receiver<ProgressEvent>,
+    receiver: mpsc::Receiver<TuiEvent>,
     command_sender: Option<mpsc::Sender<crate::terminal::ScannerCommand>>,
     model: Model,
     _last_update: Instant,
@@ -40,7 +40,7 @@ pub struct TuiProgressDisplay {
 
 impl TuiProgressDisplay {
     /// Create new TUI progress display with default theme
-    pub fn new(receiver: mpsc::Receiver<ProgressEvent>, shutdown_token: CancellationToken) -> Self {
+    pub fn new(receiver: mpsc::Receiver<TuiEvent>, shutdown_token: CancellationToken) -> Self {
         let current_theme = ThemeName::CaladanDark;
         let theme = create_theme(&current_theme);
         Self {
@@ -56,7 +56,7 @@ impl TuiProgressDisplay {
 
     /// Create new TUI progress display with specified theme and command channel
     pub fn new_with_theme(
-        receiver: mpsc::Receiver<ProgressEvent>,
+        receiver: mpsc::Receiver<TuiEvent>,
         shutdown_token: CancellationToken,
         theme: Box<dyn Theme>,
         current_theme: ThemeName,
@@ -196,120 +196,92 @@ impl TuiProgressDisplay {
                         self.model.toggle_theme_selector();
                     }
                     KeyCode::Up if !self.model.theme_selector_open => {
-                        use crate::terminal::tui::model::FocusState;
-
-                        // Handle pause when entering selection mode from Progress focus
-                        if matches!(self.model.focus_state, FocusState::Progress)
-                            && !self.model.selection_mode
-                            && let Some(sender) = &self.command_sender
-                        {
-                            let _ = sender.send(crate::terminal::ScannerCommand::Pause);
-                        }
-
-                        // If playback is active, stop it before navigating
-                        if self.model.playback_active {
-                            if let Some(sender) = &self.command_sender {
-                                let _ = sender.send(crate::terminal::ScannerCommand::StopListening);
-                            }
-                            self.model.playback_active = false;
-                            self.model.frequency_tune_sent = false;
-                        }
-
-                        // Handle navigation - may exit selection mode if returning to Spectrum
-                        let was_in_selection = self.model.selection_mode;
+                        // Just navigate without pausing scan or stopping playback
                         self.model.navigate_up();
-
-                        // If we exited selection mode by returning to Spectrum, resume scan
-                        if was_in_selection
-                            && !self.model.selection_mode
-                            && let Some(sender) = &self.command_sender
-                        {
-                            let _ = sender.send(crate::terminal::ScannerCommand::ResumeScan);
-                        }
                     }
                     KeyCode::Down if !self.model.theme_selector_open => {
-                        // If playback is active, stop it before navigating
-                        if self.model.playback_active {
-                            if let Some(sender) = &self.command_sender {
-                                let _ = sender.send(crate::terminal::ScannerCommand::StopListening);
-                            }
-                            self.model.playback_active = false;
-                            self.model.frequency_tune_sent = false;
-                        }
-
+                        // Just navigate without stopping playback
                         self.model.navigate_down();
                     }
                     KeyCode::Left if !self.model.theme_selector_open => {
-                        // If playback is active, stop it before navigating
-                        if self.model.playback_active {
-                            if let Some(sender) = &self.command_sender {
-                                let _ = sender.send(crate::terminal::ScannerCommand::StopListening);
-                            }
-                            self.model.playback_active = false;
-                            self.model.frequency_tune_sent = false;
-                        }
-
+                        // Just navigate without stopping playback
                         self.model.navigate_left();
                     }
                     KeyCode::Right if !self.model.theme_selector_open => {
-                        // If playback is active, stop it before navigating
-                        if self.model.playback_active {
-                            if let Some(sender) = &self.command_sender {
-                                let _ = sender.send(crate::terminal::ScannerCommand::StopListening);
-                            }
-                            self.model.playback_active = false;
-                            self.model.frequency_tune_sent = false;
-                        }
-
+                        // Just navigate without stopping playback
                         // Hardcode tuner count to 2 for now (will be dynamic later)
                         self.model.navigate_right(2);
                     }
                     KeyCode::Enter
                         if !self.model.theme_selector_open
+                            && matches!(
+                                self.model.focus_state,
+                                crate::terminal::tui::model::FocusState::Scan
+                            )
                             && self.model.selection_mode
+                            && !self.model.browsing_mode
+                            && self.model.selected_candidate_index.is_some() =>
+                    {
+                        // Enter browsing mode: pause scan, then tune when Paused event arrives
+                        self.model.browsing_mode = true;
+                        self.model.pending_tune = true;
+
+                        // Send Pause - we'll tune when we receive Paused event
+                        if let Some(sender) = &self.command_sender {
+                            let _ = sender.send(crate::terminal::ScannerCommand::Pause);
+                        }
+                    }
+                    KeyCode::Enter
+                        if !self.model.theme_selector_open
+                            && self.model.browsing_mode
                             && self.model.is_continue_scan_selected() =>
                     {
-                        self.model.exit_selection_mode();
+                        // Exit browsing mode and resume scan
+                        self.model.exit_browsing_mode();
                         if let Some(sender) = &self.command_sender {
                             let _ = sender.send(crate::terminal::ScannerCommand::ResumeScan);
+                        }
+
+                        // Stop listening when exiting browsing mode
+                        if self.model.playback_active {
+                            if let Some(sender) = &self.command_sender {
+                                let _ = sender.send(crate::terminal::ScannerCommand::StopListening);
+                            }
+                            self.model.playback_active = false;
                         }
                     }
                     _ => {}
                 }
             }
 
-            // Check debounce timer for frequency tuning
-            if self.model.selection_mode
-                && !self.model.frequency_tune_sent
-                && let Some(last_change) = self.model.last_selection_change
-                && last_change.elapsed() >= Duration::from_millis(300)
-            {
-                // Debounce period elapsed, send tune command
-                if let Some((
-                    window_id,
-                    center_freq,
-                    candidate_freq,
-                    signal_strength,
-                    audio_quality,
-                )) = self.model.get_selected_candidate_info()
-                    && let Some(sender) = &self.command_sender
-                {
-                    let _ = sender.send(crate::terminal::ScannerCommand::TuneToCandidate {
+            // Process TUI events (progress and discovery)
+            while let Ok(event) = self.receiver.try_recv() {
+                let is_paused_event = matches!(event, crate::terminal::TuiEvent::Paused);
+                self.model.update_tui_event(event);
+                iterations = 0; // Reset iteration counter when we get events
+
+                // If we received Paused event and have a pending tune, send it now
+                if is_paused_event && self.model.pending_tune {
+                    self.model.pending_tune = false;
+                    if let Some((
                         window_id,
-                        center_frequency: center_freq,
-                        candidate_frequency: candidate_freq,
+                        center_freq,
+                        candidate_freq,
                         signal_strength,
                         audio_quality,
-                    });
-                    self.model.frequency_tune_sent = true;
-                    self.model.playback_active = true;
+                    )) = self.model.selected_candidate_info()
+                        && let Some(sender) = &self.command_sender
+                    {
+                        let _ = sender.send(crate::terminal::ScannerCommand::TuneToCandidate {
+                            window_id,
+                            center_frequency: center_freq,
+                            candidate_frequency: candidate_freq,
+                            signal_strength,
+                            audio_quality,
+                        });
+                        self.model.playback_active = true;
+                    }
                 }
-            }
-
-            // Process progress events
-            while let Ok(event) = self.receiver.try_recv() {
-                self.model.update(event);
-                iterations = 0; // Reset iteration counter when we get events
             }
         }
 
@@ -327,7 +299,7 @@ impl TuiProgressDisplay {
 
                 header::render_header(f, layout.header, &self.model, theme);
                 spectrum_caladan::render_spectrum(f, layout.spectrum, &self.model, theme);
-                progress_caladan::render_progress(f, layout.progress, &self.model, theme);
+                scan_caladan::render_scan(f, layout.progress, &self.model, theme);
                 tuners_caladan::render_tuners(f, layout.tuners, &self.model, theme);
 
                 let all_themes: Vec<String> = themes::ThemeName::all()
@@ -348,7 +320,7 @@ impl TuiProgressDisplay {
 
                 header::render_header(f, layout.header, &self.model, theme);
                 spectrum::render_spectrum(f, layout.spectrum, &self.model, theme);
-                progress::render_progress(f, layout.progress, &self.model, theme);
+                scan::render_scan(f, layout.progress, &self.model, theme);
 
                 let all_themes: Vec<String> = themes::ThemeName::all()
                     .iter()
@@ -409,7 +381,7 @@ impl TuiProgressDisplay {
 
             // Process progress events
             while let Ok(event) = self.receiver.try_recv() {
-                self.model.update(event);
+                self.model.update_tui_event(event);
             }
 
             // Update display periodically
@@ -458,7 +430,7 @@ impl TuiProgressDisplay {
 
             // Process progress events
             while let Ok(event) = self.receiver.try_recv() {
-                self.model.update(event);
+                self.model.update_tui_event(event);
             }
 
             // Update display periodically or when candidates change

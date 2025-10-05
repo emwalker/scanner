@@ -417,14 +417,31 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
 
     // Handle TUI display mode (default unless --headless)
     if !args.headless {
-        use scanner::terminal::ChannelProgressReporter;
+        use scanner::discovery::{self, DiscoveryMode};
         use scanner::terminal::tui::TuiProgressDisplay;
+        use scanner::terminal::{ChannelProgressReporter, TuiEvent};
         use std::sync::mpsc;
         use std::thread;
 
-        // Create progress channel
+        // Create TUI event channel (for both progress and discovery events)
+        let (tui_event_sender, tui_event_receiver) = mpsc::channel();
+
+        // Create progress channel that will be wrapped into TuiEvent
         let (progress_sender, progress_receiver) = mpsc::channel();
         let progress_reporter = Arc::new(ChannelProgressReporter::new(progress_sender));
+
+        // Spawn thread to forward progress events as TuiEvent::Progress
+        let tui_event_sender_clone = tui_event_sender.clone();
+        let progress_forwarder = thread::spawn(move || {
+            while let Ok(event) = progress_receiver.recv() {
+                if tui_event_sender_clone
+                    .send(TuiEvent::Progress(event))
+                    .is_err()
+                {
+                    break; // TUI closed
+                }
+            }
+        });
 
         // Create command channel for TUI to control scanner
         let (command_sender, command_receiver) = mpsc::channel();
@@ -440,10 +457,37 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
             .map_err(|e| scanner::types::ScannerError::Custom(format!("Invalid theme: {}", e)))?;
         let theme = create_theme(&theme_name);
 
+        // Start discovery service to detect SDR devices
+        let backends: Vec<Box<dyn scanner::sdr::Backend>> = vec![Box::new(scanner::sdr::Soapy)];
+        let mut discovery_service = discovery::create(backends, DiscoveryMode::Auto);
+        let discovery_coordinator = shutdown_coordinator.clone();
+
+        // Create discovery event channel
+        let (discovery_sender, discovery_receiver) = mpsc::channel();
+
+        // Spawn thread to forward discovery events as TuiEvent
+        let tui_event_sender_clone2 = tui_event_sender.clone();
+        let discovery_forwarder = thread::spawn(move || {
+            while let Ok(event) = discovery_receiver.recv() {
+                let tui_event = match event {
+                    discovery::Event::Added(device) => TuiEvent::DeviceAdded(device),
+                    discovery::Event::Removed(device_id) => TuiEvent::DeviceRemoved(device_id),
+                };
+                if tui_event_sender_clone2.send(tui_event).is_err() {
+                    break; // TUI closed
+                }
+            }
+        });
+
+        // Start discovery service
+        let discovery_handle = thread::spawn(move || {
+            discovery_service.run(discovery_sender, discovery_coordinator.token());
+        });
+
         // Spawn TUI in separate thread - TUI will write directly to TTY to bypass suppression
         let tui_handle = thread::spawn(move || {
             let mut tui_display = TuiProgressDisplay::new_with_theme(
-                progress_receiver,
+                tui_event_receiver,
                 tui_coordinator.token(),
                 theme,
                 theme_name,
@@ -473,7 +517,8 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
             progress_reporter,
             main_coordinator,
         )?
-        .with_command_receiver(command_receiver);
+        .with_command_receiver(command_receiver)
+        .with_tui_event_sender(tui_event_sender.clone());
 
         // Spawn main thread
         let main_handle = thread::spawn(move || main_thread.run(args.stations));
@@ -481,8 +526,13 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         // Wait for TUI to finish (CTRL-C or 'q' pressed)
         let _ = tui_handle.join();
 
-        // TUI finished, trigger shutdown for main thread
+        // TUI finished, trigger shutdown for all threads
         shutdown_coordinator.shutdown();
+
+        // Wait for discovery and forwarder threads
+        let _ = discovery_handle.join();
+        let _ = discovery_forwarder.join();
+        let _ = progress_forwarder.join();
 
         // Wait for main thread to complete cleanup
         // This ensures SoapySdrManager::drop() completes before process exits

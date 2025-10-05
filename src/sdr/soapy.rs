@@ -5,6 +5,37 @@ use crate::types::Result;
 use rustradio::Complex;
 use rustradio::graph::GraphRunner;
 use std::any::Any;
+use std::os::unix::io::AsRawFd;
+
+/// Temporarily redirect stderr to /dev/null to suppress RtAudio spam
+fn suppress_stderr<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    use std::fs::OpenOptions;
+
+    unsafe {
+        let stderr_fd = libc::STDERR_FILENO;
+        let saved_stderr = libc::dup(stderr_fd);
+
+        if saved_stderr == -1 {
+            return f();
+        }
+
+        let dev_null = OpenOptions::new().write(true).open("/dev/null").ok();
+
+        if let Some(null_file) = dev_null {
+            libc::dup2(null_file.as_raw_fd(), stderr_fd);
+            let result = f();
+            libc::dup2(saved_stderr, stderr_fd);
+            libc::close(saved_stderr);
+            result
+        } else {
+            libc::close(saved_stderr);
+            f()
+        }
+    }
+}
 
 /// SoapySDR backend
 ///
@@ -14,29 +45,47 @@ pub struct Soapy;
 
 impl Backend for Soapy {
     fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
-        let devices = soapysdr::enumerate("")?;
+        // Suppress stderr during enumeration to prevent RtAudio spam
+        let devices = suppress_stderr(|| soapysdr::enumerate(""))?;
 
         Ok(devices
             .into_iter()
-            .map(|d| {
-                let serial = d.get("serial").unwrap_or("unknown").to_string();
-                let model = d.get("label").unwrap_or("Unknown").to_string();
-                let driver = d.get("driver").unwrap_or("soapy").to_string();
+            .filter_map(|d| {
+                let driver = d.get("driver").unwrap_or("soapy");
 
-                DeviceInfo {
-                    id: DeviceId::from_serial(&driver, &serial),
-                    serial,
-                    model,
-                    backend: "SoapySDR".to_string(),
+                // Skip audio devices - we only want SDR hardware
+                if driver == "audio" {
+                    return None;
                 }
+
+                let serial = d.get("serial").unwrap_or("unknown").to_string();
+                let mode = d.get("mode").unwrap_or("");
+                let model = d.get("label").unwrap_or("Unknown").to_string();
+
+                // Include mode in serial for devices like RSPduo that have multiple modes
+                let unique_serial = if mode.is_empty() {
+                    serial.clone()
+                } else {
+                    format!("{}:{}", serial, mode)
+                };
+
+                Some(DeviceInfo {
+                    id: DeviceId::from_serial(driver, &unique_serial),
+                    label: format!("{} ({}:{})", model, driver, serial),
+                })
             })
             .collect())
     }
 
     fn open_device(&self, id: &DeviceId) -> Result<Box<dyn DeviceTrait>> {
-        // Build device args from ID
-        let backend = id.backend();
-        let serial = id.serial();
+        let (backend, serial) = match id {
+            DeviceId::Backend { backend, serial } => (backend.as_str(), serial.as_str()),
+            DeviceId::Usb { .. } => {
+                return Err(crate::types::ScannerError::Custom(
+                    "USB device IDs not supported for opening via SoapySDR backend".to_string(),
+                ));
+            }
+        };
         let args = format!("driver={},serial={}", backend, serial);
 
         Ok(Box::new(SoapyDevice::new(args)?))
@@ -156,8 +205,8 @@ mod tests {
         assert!(!devices.is_empty(), "Should find connected devices");
 
         for device in devices {
-            assert!(!device.serial.is_empty());
-            assert_eq!(device.backend, "SoapySDR");
+            assert!(!device.label.is_empty());
+            assert!(device.label.contains(':'));
         }
     }
 
@@ -174,5 +223,108 @@ mod tests {
         assert!(!caps.rx_frequency_ranges.is_empty());
         assert!(!caps.rx_sample_rate_ranges.is_empty());
         assert!(caps.channels > 0);
+    }
+
+    #[test]
+    fn test_rspduo_multi_mode_enumeration() {
+        use std::collections::HashMap;
+
+        let mock_devices = vec![
+            {
+                let mut d = HashMap::new();
+                d.insert("driver".to_string(), "sdrplay".to_string());
+                d.insert("serial".to_string(), "2301034E34".to_string());
+                d.insert("mode".to_string(), "ST".to_string());
+                d.insert(
+                    "label".to_string(),
+                    "SDRplay Dev0 RSPduo 2301034E34 - Single Tuner".to_string(),
+                );
+                d
+            },
+            {
+                let mut d = HashMap::new();
+                d.insert("driver".to_string(), "sdrplay".to_string());
+                d.insert("serial".to_string(), "2301034E34".to_string());
+                d.insert("mode".to_string(), "DT".to_string());
+                d.insert(
+                    "label".to_string(),
+                    "SDRplay Dev1 RSPduo 2301034E34 - Dual Tuner".to_string(),
+                );
+                d
+            },
+            {
+                let mut d = HashMap::new();
+                d.insert("driver".to_string(), "sdrplay".to_string());
+                d.insert("serial".to_string(), "2301034E34".to_string());
+                d.insert("mode".to_string(), "MA".to_string());
+                d.insert(
+                    "label".to_string(),
+                    "SDRplay Dev2 RSPduo 2301034E34 - Master".to_string(),
+                );
+                d
+            },
+            {
+                let mut d = HashMap::new();
+                d.insert("driver".to_string(), "sdrplay".to_string());
+                d.insert("serial".to_string(), "2301034E34".to_string());
+                d.insert("mode".to_string(), "MA8".to_string());
+                d.insert(
+                    "label".to_string(),
+                    "SDRplay Dev3 RSPduo 2301034E34 - Master (RSPduo sample rate=8Mhz)".to_string(),
+                );
+                d
+            },
+        ];
+
+        let mut processed_devices = Vec::new();
+        for d in &mock_devices {
+            let driver = d.get("driver").unwrap();
+            let serial = d.get("serial").unwrap();
+            let mode = d.get("mode").map(|s| s.as_str()).unwrap_or("");
+            let model = d.get("label").unwrap();
+
+            let unique_serial = if mode.is_empty() {
+                serial.clone()
+            } else {
+                format!("{}:{}", serial, mode)
+            };
+
+            processed_devices.push(DeviceInfo {
+                id: DeviceId::from_serial(driver, &unique_serial),
+                label: format!("{} ({}:{})", model, driver, serial),
+            });
+        }
+
+        assert_eq!(
+            processed_devices.len(),
+            4,
+            "Should enumerate all 4 RSPduo modes"
+        );
+
+        let ids: std::collections::HashSet<_> = processed_devices.iter().map(|d| &d.id).collect();
+        assert_eq!(
+            ids.len(),
+            4,
+            "All 4 RSPduo modes should have unique DeviceIds (regression test for duplicate serial issue)"
+        );
+
+        let expected_ids = vec![
+            "sdrplay:2301034E34:ST",
+            "sdrplay:2301034E34:DT",
+            "sdrplay:2301034E34:MA",
+            "sdrplay:2301034E34:MA8",
+        ];
+
+        for expected_id in expected_ids {
+            assert!(
+                processed_devices.iter().any(|d| match &d.id {
+                    DeviceId::Backend { backend, serial } =>
+                        format!("{}:{}", backend, serial) == expected_id,
+                    _ => false,
+                }),
+                "Should find device with ID: {}",
+                expected_id
+            );
+        }
     }
 }

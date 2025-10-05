@@ -325,8 +325,9 @@ pub fn set_soapysdr_log_level(suppress_info: bool) {
 
     unsafe {
         if suppress_info {
-            // Suppress INFO messages, only show WARNING and above
-            SoapySDR_setLogLevel(SoapySDRLogLevel_SOAPY_SDR_WARNING);
+            // Suppress all but critical errors (includes INFO, WARNING, ERROR)
+            // This prevents RtAudio "deviceId argument not found" spam during enumeration
+            SoapySDR_setLogLevel(SoapySDRLogLevel_SOAPY_SDR_CRITICAL);
         } else {
             // Default level - show INFO and above
             SoapySDR_setLogLevel(SoapySDRLogLevel_SOAPY_SDR_INFO);
