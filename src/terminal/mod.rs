@@ -25,7 +25,7 @@ pub struct ProgressEvent {
     pub audio_quality: Option<crate::audio_quality::AudioQuality>,
     pub signal_strength: Option<f64>,
     pub timestamp: std::time::Instant,
-    pub tuner_id: Option<crate::sdr::TunerId>,
+    pub tuner_id: Option<crate::sdr::DeviceId>,
 }
 
 /// Types of progress events that can be reported
@@ -48,16 +48,16 @@ pub enum TuiEvent {
     /// Scanning progress event (from ProgressReporter)
     Progress(ProgressEvent),
     /// Tuner discovered and added (from discovery service)
-    TunerAdded(crate::sdr::TunerInfo),
+    TunerAdded(crate::sdr::DeviceInfo),
     /// Tuner removed/disconnected (from discovery service)
-    TunerRemoved(crate::sdr::TunerId),
+    TunerRemoved(crate::sdr::DeviceId),
     /// Scanner has been paused and is ready for browsing
-    Paused { tuner_id: crate::sdr::TunerId },
+    Paused { tuner_id: crate::sdr::DeviceId },
     /// Active tuners state has been updated
     ActiveTunersUpdated {
-        available: Vec<crate::sdr::TunerId>,
-        scanning: Vec<crate::sdr::TunerId>,
-        listening: Vec<crate::sdr::TunerId>,
+        available: Vec<crate::sdr::DeviceId>,
+        scanning: Vec<crate::sdr::DeviceId>,
+        listening: Vec<crate::sdr::DeviceId>,
     },
 }
 

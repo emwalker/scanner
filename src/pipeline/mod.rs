@@ -23,7 +23,7 @@ pub struct SquelchMonitoringParams {
     pub original_frequency_hz: f64,
     pub candidate_id: String,
     pub metadata: crate::window::WindowMetadata,
-    pub tuner_id: Option<crate::sdr::TunerId>,
+    pub tuner_id: Option<crate::sdr::DeviceId>,
 }
 
 /// Process a single peak through the complete pipeline to generate a signal
@@ -339,7 +339,7 @@ fn wait_for_threads_completion(
     progress_reporter: &dyn ProgressReporter,
     rejection_rx: std::sync::mpsc::Receiver<crate::terminal::ProgressEvent>,
     candidate_id: &str,
-    tuner_id: Option<crate::sdr::TunerId>,
+    tuner_id: Option<crate::sdr::DeviceId>,
 ) -> Result<()> {
     tracing::debug!(
         "Waiting for detection graph and timer threads to complete for {:.1} MHz",

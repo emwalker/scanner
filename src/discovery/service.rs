@@ -8,6 +8,6 @@ pub trait Service: Send {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    Added(sdr::TunerInfo),
-    Removed(sdr::TunerId),
+    Added(sdr::DeviceInfo),
+    Removed(sdr::DeviceId),
 }

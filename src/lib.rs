@@ -12,6 +12,7 @@ pub mod main_thread;
 pub mod mpsc;
 pub mod peaks;
 pub mod pipeline;
+pub mod pool;
 pub mod scanner_state;
 pub mod sdr;
 pub mod shutdown;

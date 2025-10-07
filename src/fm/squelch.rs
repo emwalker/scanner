@@ -68,7 +68,7 @@ pub struct SquelchBlock {
     // Progress reporting
     progress_reporter: Option<std::sync::Arc<dyn crate::terminal::ProgressReporter + Send + Sync>>,
     metadata: crate::window::WindowMetadata,
-    tuner_id: Option<crate::sdr::TunerId>,
+    tuner_id: Option<crate::sdr::DeviceId>,
 }
 
 /// Configuration for squelch block creation
@@ -86,7 +86,7 @@ pub struct SquelchConfig {
     pub progress_reporter:
         Option<std::sync::Arc<dyn crate::terminal::ProgressReporter + Send + Sync>>,
     pub window_id: usize,
-    pub tuner_id: Option<crate::sdr::TunerId>,
+    pub tuner_id: Option<crate::sdr::DeviceId>,
 }
 
 impl SquelchBlock {

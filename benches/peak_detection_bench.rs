@@ -230,6 +230,7 @@ fn create_test_config() -> ScanningConfig {
         spectral_threshold: 0.2,
         agc_settling_time: 0.45,
         window_overlap: 0.75,
+        packet_size: 16384,
         disable_squelch: false,
         squelch_threshold: scanner::audio_quality::AudioQuality::Moderate,
         disable_if_agc: false,

@@ -30,6 +30,17 @@ pub struct WindowConfig {
     pub pause_signal: Option<crate::scanner_state::PauseSignal>,
 }
 
+pub struct PoolWindowConfig {
+    pub center_freq: f64,
+    pub window_num: usize,
+    pub total_windows: usize,
+    pub pool: Arc<crate::pool::Pool>,
+    pub config: ScanningConfig,
+    pub progress_reporter: Arc<dyn ProgressReporter>,
+    pub shutdown_coordinator: Arc<ShutdownCoordinator>,
+    pub pause_signal: Option<crate::scanner_state::PauseSignal>,
+}
+
 /// Represents a frequency window for band scanning with complete lifecycle management
 pub struct Window {
     center_freq: f64,
@@ -37,6 +48,7 @@ pub struct Window {
     total_windows: usize,
     station_mode: bool, // True if this is a specific station frequency, not band scanning
     device: crate::soapy::Device,
+    pool: Option<Arc<crate::pool::Pool>>, // Pool-based device management (replaces device)
     config: ScanningConfig,
     progress_reporter: Arc<dyn ProgressReporter>,
     shutdown_token: CancellationToken,
@@ -52,6 +64,7 @@ impl Window {
             total_windows: window_config.total_windows,
             station_mode: false,
             device: window_config.device,
+            pool: None,
             config: window_config.config,
             progress_reporter: window_config.progress_reporter,
             shutdown_token: window_config.shutdown_coordinator.token(),
@@ -78,6 +91,7 @@ impl Window {
             total_windows,
             station_mode: true,
             device,
+            pool: None,
             config,
             progress_reporter,
             shutdown_token: shutdown_coordinator.token(),
@@ -89,7 +103,63 @@ impl Window {
         }
     }
 
-    fn tuner_id(&self) -> Option<crate::sdr::TunerId> {
+    /// Create a Window for band scanning using pool-based device management
+    pub fn new_with_pool(pool_config: PoolWindowConfig) -> Self {
+        let dummy_device = crate::soapy::Device("".to_string());
+
+        Self {
+            center_freq: pool_config.center_freq,
+            window_num: pool_config.window_num,
+            total_windows: pool_config.total_windows,
+            station_mode: false,
+            device: dummy_device,
+            pool: Some(pool_config.pool),
+            config: pool_config.config,
+            progress_reporter: pool_config.progress_reporter,
+            shutdown_token: pool_config.shutdown_coordinator.token(),
+            metadata: WindowMetadata {
+                center_frequency_hz: pool_config.center_freq,
+                window_id: pool_config.window_num,
+            },
+            pause_signal: pool_config.pause_signal,
+        }
+    }
+
+    /// Create a Window for station scanning using pool-based device management
+    ///
+    /// This constructor takes a pool reference instead of a device, allowing
+    /// the Window to acquire and release tuners dynamically using RAII.
+    pub fn for_station_with_pool(
+        center_freq: f64,
+        window_num: usize,
+        total_windows: usize,
+        pool: Arc<crate::pool::Pool>,
+        config: ScanningConfig,
+        progress_reporter: Arc<dyn ProgressReporter>,
+        shutdown_coordinator: Arc<ShutdownCoordinator>,
+    ) -> Self {
+        // Create a dummy device for now (will be removed once fully migrated)
+        let dummy_device = crate::soapy::Device("".to_string());
+
+        Self {
+            center_freq,
+            window_num,
+            total_windows,
+            station_mode: true,
+            device: dummy_device,
+            pool: Some(pool),
+            config,
+            progress_reporter,
+            shutdown_token: shutdown_coordinator.token(),
+            metadata: WindowMetadata {
+                center_frequency_hz: center_freq,
+                window_id: window_num,
+            },
+            pause_signal: None,
+        }
+    }
+
+    fn tuner_id(&self) -> Option<crate::sdr::DeviceId> {
         self.device.tuner_id().ok()
     }
 
@@ -748,6 +818,64 @@ impl Window {
         }
 
         Ok(())
+    }
+
+    /// Process window using pool-based device management
+    ///
+    /// Acquires tuner from pool, processes using existing Window::process() logic,
+    /// and automatically returns tuner to pool when done (RAII).
+    ///
+    /// # Shutdown Safety
+    /// - Checks shutdown before acquiring from pool
+    /// - PoolSegment passes shutdown token to graph
+    /// - Tuner automatically returned to pool even if shutdown occurs mid-processing
+    pub fn process_with_pool(&self) -> Result<()> {
+        // Pool must be available
+        let pool = self.pool.as_ref().ok_or_else(|| {
+            crate::types::ScannerError::Custom(
+                "Window not configured for pool-based operation".to_string(),
+            )
+        })?;
+
+        debug!(
+            "Scanning window {} of {} at {:.1} MHz (pool-based)",
+            self.window_num,
+            self.total_windows,
+            self.center_freq / 1e6
+        );
+
+        // Check shutdown before acquiring from pool
+        if self.shutdown_token.is_cancelled() {
+            debug!("Shutdown requested before pool acquisition, aborting");
+            return Ok(());
+        }
+
+        // Acquire tuner from pool
+        let requirements = crate::pool::TaskRequirements {
+            frequency_hz: self.center_freq,
+            bandwidth_hz: self.config.samp_rate,
+            required_sample_rate: self.config.samp_rate,
+            priority: crate::pool::TaskPriority::Normal,
+        };
+
+        let pooled_tuner = pool.acquire(&requirements, crate::pool::TunerActivity::Scanning)?;
+        debug!(tuner_id = ?pooled_tuner.id(), "Acquired tuner from pool");
+
+        // Create PoolSegment (implements Segment trait, provides samples via broadcast channel)
+        let segment = crate::pool::PoolSegment::from_pooled_tuner(
+            pooled_tuner,
+            self.center_freq,
+            &self.config,
+            self.shutdown_token.clone(),
+        )?;
+
+        // Use existing process() logic - all peak detection, candidate analysis, audio playback
+        let result = self.process(&segment);
+
+        // Tuner automatically returned to pool when PoolSegment is dropped (RAII)
+        debug!("Processing complete, PoolSegment will drop and return tuner to pool");
+
+        result
     }
 
     pub fn process(&self, segment: &dyn Segment) -> Result<()> {

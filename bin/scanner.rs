@@ -3,6 +3,7 @@ use scanner::audio_quality::AudioAnalyzer;
 use scanner::audio_quality::AudioQuality;
 use scanner::logging::DefaultLogger;
 use scanner::main_thread::{DefaultConsoleWriter, MainThread};
+use scanner::sdr::Backend;
 use scanner::soapy;
 use scanner::terminal::tui::themes::{ThemeName, create_theme};
 use scanner::types::{Band, Format, Logger, Result, ScanningConfig};
@@ -472,16 +473,83 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         // Create discovery event channel
         let (discovery_sender, discovery_receiver) = mpsc::channel();
 
-        // Spawn thread to forward discovery events as TuiEvent
+        // Create shared pool for hot-plug support
+        let filter = scanner::pool::PoolFilter::new()
+            .with_driver("sdrplay")
+            .with_mode(scanner::pool::TuningMode::SingleTuner);
+        let shared_pool = Arc::new(scanner::pool::Pool::new(filter));
+
+        // Open and add initial device to pool
+        let backend = scanner::sdr::Soapy;
+        let device_trait = backend.open_device(&selected_tuner_id)?;
+        match shared_pool.add_device(device_trait, backend.name().to_string()) {
+            scanner::pool::AddDeviceResult::Added {
+                device_id,
+                tuner_count,
+            } => {
+                tracing::debug!(
+                    device_id = ?device_id,
+                    tuner_count = tuner_count,
+                    "Initial device added to pool"
+                );
+            }
+            scanner::pool::AddDeviceResult::FilteredOut { device_id, reason } => {
+                return Err(scanner::types::ScannerError::Custom(format!(
+                    "Selected device {:?} was filtered out: {}",
+                    device_id, reason
+                )));
+            }
+            scanner::pool::AddDeviceResult::ShutdownMode => {
+                return Err(scanner::types::ScannerError::Custom(
+                    "Pool in shutdown mode during initialization".to_string(),
+                ));
+            }
+            scanner::pool::AddDeviceResult::PoolBusy => {
+                return Err(scanner::types::ScannerError::Custom(
+                    "Pool busy during initialization".to_string(),
+                ));
+            }
+        }
+
+        // Spawn thread to handle discovery events - forward to TUI
         let tui_event_sender_clone2 = tui_event_sender.clone();
+        let discovery_shutdown = shutdown_coordinator.clone();
         let discovery_forwarder = thread::spawn(move || {
             while let Ok(event) = discovery_receiver.recv() {
-                let tui_event = match event {
-                    discovery::Event::Added(device) => TuiEvent::TunerAdded(device),
-                    discovery::Event::Removed(tuner_id) => TuiEvent::TunerRemoved(tuner_id),
-                };
-                if tui_event_sender_clone2.send(tui_event).is_err() {
-                    break; // TUI closed
+                // Check shutdown first - stop processing events during shutdown
+                if discovery_shutdown.is_shutdown() {
+                    return;
+                }
+
+                match &event {
+                    discovery::Event::Added(device_info) => {
+                        // TODO (Phase 3): Add hot-plug support
+                        // For now, just forward to TUI without adding to pool
+                        // The initial device is already in the pool from startup
+                        tracing::debug!(
+                            device_id = ?device_info.id,
+                            "Discovery event: device detected (not added to pool - hot-plug not yet implemented)"
+                        );
+
+                        // Forward to TUI to show all available devices
+                        let tui_event = TuiEvent::TunerAdded(device_info.clone());
+                        if tui_event_sender_clone2.send(tui_event).is_err() {
+                            return; // TUI closed
+                        }
+                    }
+                    discovery::Event::Removed(device_id) => {
+                        // TODO (Phase 3): Add hot-unplug support
+                        tracing::debug!(
+                            device_id = ?device_id,
+                            "Discovery event: device removed (hot-unplug not yet implemented)"
+                        );
+
+                        // Forward to TUI
+                        let tui_event = TuiEvent::TunerRemoved(device_id.clone());
+                        if tui_event_sender_clone2.send(tui_event).is_err() {
+                            return; // TUI closed
+                        }
+                    }
                 }
             }
         });
@@ -521,10 +589,10 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
             config,
             console_writer,
             logger,
-            selected_tuner_id.clone(),
             backend,
             progress_reporter,
             main_coordinator,
+            shared_pool.clone(),
         )?
         .with_command_receiver(command_receiver)
         .with_tui_event_sender(tui_event_sender.clone());
@@ -537,6 +605,9 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
 
         // TUI finished, trigger shutdown for all threads
         shutdown_coordinator.shutdown();
+
+        // Shutdown the pool to prevent new device operations during teardown
+        shared_pool.shutdown();
 
         // Wait for discovery and forwarder threads
         let _ = discovery_handle.join();
@@ -562,13 +633,12 @@ fn handle_scan_command(args: ScanArgs) -> Result<()> {
         // Initialize logging before SDR operations to suppress library messages
         scanner::logging::init(logger.as_ref(), args.verbose)?;
 
-        // Create and setup MainThread with selected tuner
+        // Create and setup MainThread
         let backend = Arc::new(scanner::sdr::Soapy);
         let main_thread = MainThread::new(
             config,
             console_writer,
             logger,
-            selected_tuner_id,
             backend,
             shutdown_coordinator.clone(),
         )?;

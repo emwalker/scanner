@@ -43,7 +43,7 @@ impl Device {
     ///
     /// Parses strings like "driver=sdrplay,serial=1234" or "driver=rtlsdr,serial=5678"
     /// Returns TunerId::Backend { backend, serial }
-    pub fn tuner_id(&self) -> Result<crate::sdr::TunerId> {
+    pub fn tuner_id(&self) -> Result<crate::sdr::DeviceId> {
         let mut driver = None;
         let mut serial = None;
         let mut mode = None;
@@ -69,7 +69,7 @@ impl Device {
                 } else {
                     ser
                 };
-                Ok(crate::sdr::TunerId::Backend {
+                Ok(crate::sdr::DeviceId::Backend {
                     backend,
                     serial: unique_serial,
                 })

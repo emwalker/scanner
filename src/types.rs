@@ -44,6 +44,14 @@ pub enum ScannerError {
     Sdr(#[from] soapysdr::Error),
     #[error(transparent)]
     SdrDevice(#[from] crate::sdr::DeviceError),
+    #[error("Device in use: {0:?}")]
+    DeviceInUse(crate::sdr::DeviceId),
+    #[error("Device not found: {0:?}")]
+    DeviceNotFound(crate::sdr::DeviceId),
+    #[error("No available tuner matching requirements: {0:?}")]
+    NoAvailableTuner(crate::pool::TaskRequirements),
+    #[error("Pool lock timeout - operation would block")]
+    PoolLockTimeout,
     #[error(transparent)]
     SerdeJson(#[from] serde_json::Error),
     #[error(transparent)]

@@ -109,7 +109,7 @@ pub fn create_for_testing(
 pub fn enumerate_once(
     backends: &[Box<dyn sdr::Backend>],
     filter: Option<&str>,
-) -> Result<Vec<sdr::TunerInfo>> {
+) -> Result<Vec<sdr::DeviceInfo>> {
     let mut all_devices = Vec::new();
 
     for backend in backends {
@@ -124,7 +124,7 @@ pub fn enumerate_once(
             Ok(all_devices
                 .into_iter()
                 .filter(|device| match (&device.id, key) {
-                    (sdr::TunerId::Backend { backend, .. }, "driver") => backend == value,
+                    (sdr::DeviceId::Backend { backend, .. }, "driver") => backend == value,
                     _ => false,
                 })
                 .collect())

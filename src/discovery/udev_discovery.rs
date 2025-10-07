@@ -17,7 +17,7 @@ const DEBOUNCE_DURATION: Duration = Duration::from_millis(150);
 
 pub struct Udev {
     enumerator: MultiEnumerator,
-    known_devices: HashMap<sdr::TunerId, sdr::TunerInfo>,
+    known_devices: HashMap<sdr::DeviceId, sdr::DeviceInfo>,
     pending_rescan: bool,
 }
 

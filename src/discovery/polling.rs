@@ -12,7 +12,7 @@ use tracing::debug;
 
 pub struct Polling {
     enumerator: MultiEnumerator,
-    known_devices: HashMap<sdr::TunerId, sdr::TunerInfo>,
+    known_devices: HashMap<sdr::DeviceId, sdr::DeviceInfo>,
     poll_interval: Duration,
 }
 

@@ -8,7 +8,7 @@
 //!
 //! This stub will be implemented in Phase 2 (2025-2026) when Seify v1.0 is released.
 
-use super::{Backend, DeviceError, DeviceErrorKind, DeviceTrait, TunerId, TunerInfo};
+use super::{Backend, DeviceError, DeviceErrorKind, DeviceId, DeviceInfo, DeviceTrait};
 use crate::types::Result;
 
 /// Seify backend (native Rust)
@@ -17,13 +17,13 @@ use crate::types::Result;
 pub struct Seify;
 
 impl Backend for Seify {
-    fn enumerate_devices(&self) -> Result<Vec<TunerInfo>> {
+    fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
         // When Seify is ready (v1.0):
         // let devices = seify::enumerate()?;
         Ok(vec![]) // Stub for now
     }
 
-    fn open_device(&self, _id: &TunerId) -> Result<Box<dyn DeviceTrait>> {
+    fn open_device(&self, _id: &DeviceId) -> Result<Box<dyn DeviceTrait>> {
         // TODO: Implement when Seify reaches v1.0
         // Will require SeifyBridgeBlock to connect to rustradio
         //

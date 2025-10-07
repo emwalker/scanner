@@ -105,7 +105,7 @@ fn render_no_devices(
 fn render_tuner_block(
     f: &mut Frame,
     area: Rect,
-    tuner: &crate::sdr::TunerInfo,
+    tuner: &crate::sdr::DeviceInfo,
     theme: &dyn Theme,
     bracket_color: ratatui::style::Color,
     has_focus: bool,
@@ -141,10 +141,10 @@ fn render_tuner_block(
 
     // Extract tuner info from label and ID
     let tuner_id_str = match &tuner.id {
-        crate::sdr::TunerId::Backend { backend, serial } => {
+        crate::sdr::DeviceId::Backend { backend, serial } => {
             format!("{}:{}", backend, serial)
         }
-        crate::sdr::TunerId::Usb {
+        crate::sdr::DeviceId::Usb {
             vid, pid, serial, ..
         } => {
             format!("USB {:04x}:{:04x} ({})", vid, pid, serial)

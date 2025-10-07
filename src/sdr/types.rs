@@ -3,18 +3,21 @@
 use crate::types::Result;
 use std::fmt;
 
-/// Tuner information returned by enumeration
+/// Device information returned by enumeration
 #[derive(Clone, Debug)]
-pub struct TunerInfo {
-    /// Stable tuner identifier
-    pub id: TunerId,
+pub struct DeviceInfo {
+    /// Stable device identifier
+    pub id: DeviceId,
     /// Human-readable label
     pub label: String,
 }
 
-/// Stable tuner identifier
+/// Stable device identifier
+///
+/// Identifies a physical SDR device. Multi-tuner devices (like SDRplay RSPduo)
+/// have a single DeviceId but multiple tuners (channels) within that device.
 #[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord)]
-pub enum TunerId {
+pub enum DeviceId {
     /// Backend-based identification (SoapySDR, etc.)
     Backend { backend: String, serial: String },
     /// USB-based identification (VID/PID + serial + physical location)
@@ -26,8 +29,8 @@ pub enum TunerId {
     },
 }
 
-impl TunerId {
-    /// Create a tuner ID from backend name and serial number
+impl DeviceId {
+    /// Create a device ID from backend name and serial number
     pub fn from_serial(backend: &str, serial: &str) -> Self {
         Self::Backend {
             backend: backend.to_string(),
@@ -38,8 +41,8 @@ impl TunerId {
     /// Get a string representation suitable for logging
     pub fn as_str(&self) -> String {
         match self {
-            TunerId::Backend { backend, serial } => format!("{}:{}", backend, serial),
-            TunerId::Usb {
+            DeviceId::Backend { backend, serial } => format!("{}:{}", backend, serial),
+            DeviceId::Usb {
                 vid,
                 pid,
                 serial,
@@ -49,7 +52,7 @@ impl TunerId {
     }
 }
 
-impl fmt::Display for TunerId {
+impl fmt::Display for DeviceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
     }
@@ -58,8 +61,8 @@ impl fmt::Display for TunerId {
 /// Comprehensive device capabilities
 #[derive(Clone, Debug)]
 pub struct Capabilities {
-    /// Tuner identifier
-    pub tuner_id: TunerId,
+    /// Device identifier
+    pub device_id: DeviceId,
 
     /// Frequency ranges (min, max) in Hz
     pub rx_frequency_ranges: Vec<(f64, f64)>,
@@ -122,7 +125,7 @@ impl Capabilities {
         };
 
         Ok(Self {
-            tuner_id: TunerId::from_serial(&driver, &hardware_info_str),
+            device_id: DeviceId::from_serial(&driver, &hardware_info_str),
             rx_frequency_ranges: rx_freq_ranges,
             rx_sample_rate_ranges,
             gain_range,
@@ -150,6 +153,19 @@ impl Capabilities {
         self.rx_sample_rate_ranges
             .iter()
             .any(|(min, max)| rate >= *min && rate <= *max)
+    }
+
+    /// Check if this device can handle a specific task
+    pub fn can_handle_task(&self, task: &crate::pool::TaskRequirements) -> bool {
+        if !self.supports_frequency(task.frequency_hz) {
+            return false;
+        }
+
+        if !self.supports_sample_rate(task.required_sample_rate) {
+            return false;
+        }
+
+        true
     }
 }
 
@@ -236,13 +252,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tuner_id_creation() {
-        let id1 = TunerId::from_serial("soapy", "12345");
-        let id2 = TunerId::from_serial("soapy", "12345");
+    fn test_device_id_creation() {
+        let id1 = DeviceId::from_serial("soapy", "12345");
+        let id2 = DeviceId::from_serial("soapy", "12345");
         assert_eq!(id1, id2);
 
         match &id1 {
-            TunerId::Backend { backend, serial } => {
+            DeviceId::Backend { backend, serial } => {
                 assert_eq!(backend, "soapy");
                 assert_eq!(serial, "12345");
             }
@@ -251,22 +267,22 @@ mod tests {
     }
 
     #[test]
-    fn test_tuner_id_display() {
-        let id = TunerId::from_serial("test", "001");
+    fn test_device_id_display() {
+        let id = DeviceId::from_serial("test", "001");
         assert_eq!(format!("{}", id), "test:001");
     }
 
     #[test]
-    fn test_tuner_id_different_serials() {
-        let id1 = TunerId::from_serial("soapy", "12345");
-        let id2 = TunerId::from_serial("soapy", "67890");
+    fn test_device_id_different_serials() {
+        let id1 = DeviceId::from_serial("soapy", "12345");
+        let id2 = DeviceId::from_serial("soapy", "67890");
         assert_ne!(id1, id2);
     }
 
     #[test]
     fn test_capabilities_frequency_check() {
         let caps = Capabilities {
-            tuner_id: TunerId::from_serial("test", "001"),
+            device_id: DeviceId::from_serial("test", "001"),
             rx_frequency_ranges: vec![(24e6, 1766e6)],
             rx_sample_rate_ranges: vec![(225_000.0, 2_400_000.0)],
             gain_range: (0.0, 48.0),
@@ -285,7 +301,7 @@ mod tests {
     #[test]
     fn test_capabilities_sample_rate_check() {
         let caps = Capabilities {
-            tuner_id: TunerId::from_serial("test", "001"),
+            device_id: DeviceId::from_serial("test", "001"),
             rx_frequency_ranges: vec![(24e6, 1766e6)],
             rx_sample_rate_ranges: vec![(225_000.0, 2_400_000.0)],
             gain_range: (0.0, 48.0),

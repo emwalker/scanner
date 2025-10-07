@@ -38,6 +38,43 @@ This ensures we avoid any licensing concerns while still learning from the broad
   - Avoid long qualified paths like `foo::bar::baz::Thing` - instead import intermediate modules if needed
   - Exception: For enum variants, prefer keeping the enum name (e.g., `Status::Success` not `Success`)
 
+### Shutdown Safety
+**CRITICAL**: All code changes must be cognizant of and prioritize shutdown safety to prevent deadlocks and hangs.
+
+Key principles:
+- **Never block during shutdown** - Use `try_lock()` instead of `lock()` for mutexes that might be held during teardown
+- **Use atomic flags for shutdown state** - Check shutdown mode with lock-free atomics before acquiring locks
+- **Make Drop implementations non-blocking** - Drop should use `try_lock()` and gracefully handle lock contention
+- **Return early on shutdown** - Operations should check shutdown state and fail fast rather than waiting
+- **Test shutdown scenarios** - Add tests for concurrent shutdown, locked resources, and drop-during-shutdown cases
+
+Example patterns:
+```rust
+// Good: Non-blocking shutdown check
+if self.shutdown_mode.load(Ordering::SeqCst) {
+    return Err("Shutting down");
+}
+
+// Good: Try-lock in Drop
+impl Drop for Resource {
+    fn drop(&mut self) {
+        if let Ok(mut pool) = self.pool.try_lock() {
+            pool.return_resource(self.id.clone());
+        }
+    }
+}
+
+// Bad: Blocking lock during shutdown (can deadlock!)
+impl Drop for Resource {
+    fn drop(&mut self) {
+        let mut pool = self.pool.lock().unwrap();  // ❌ Can hang forever
+        pool.return_resource(self.id.clone());
+    }
+}
+```
+
+See `src/pool/mod.rs` for reference implementation of shutdown-safe patterns.
+
 ### Building and Checking
 - `cargo check` - Check for syntax errors and basic correctness (feel free to use anytime)
 - `cargo build` - Build the project

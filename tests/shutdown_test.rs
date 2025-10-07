@@ -22,7 +22,7 @@ fn test_shutdown_while_paused() {
     let coordinator = Arc::new(ShutdownCoordinator::new());
 
     coordinator
-        .spawn_sdr_thread(move |cancel_token| simulate_paused_scanner(cancel_token))
+        .spawn_sdr_thread(simulate_paused_scanner)
         .unwrap();
 
     std::thread::sleep(Duration::from_millis(100));
@@ -50,7 +50,7 @@ fn test_shutdown_while_scanning() {
     let coordinator = Arc::new(ShutdownCoordinator::new());
 
     coordinator
-        .spawn_sdr_thread(|cancel_token| simulate_scanning_loop(cancel_token))
+        .spawn_sdr_thread(simulate_scanning_loop)
         .unwrap();
 
     std::thread::sleep(Duration::from_millis(50));
@@ -78,7 +78,7 @@ fn test_shutdown_during_window_processing() {
     let coordinator = Arc::new(ShutdownCoordinator::new());
 
     coordinator
-        .spawn_sdr_thread(|cancel_token| simulate_window_processing(cancel_token))
+        .spawn_sdr_thread(simulate_window_processing)
         .unwrap();
 
     std::thread::sleep(Duration::from_millis(100));
@@ -108,7 +108,7 @@ fn test_immediate_shutdown() {
     coordinator.shutdown();
 
     coordinator
-        .spawn_sdr_thread(|cancel_token| simulate_scanning_loop(cancel_token))
+        .spawn_sdr_thread(simulate_scanning_loop)
         .unwrap();
 
     Arc::try_unwrap(coordinator).unwrap().wait().unwrap();
@@ -346,7 +346,7 @@ fn test_shutdown_with_state_machine() {
     assert!(state.is_paused());
 
     if token.is_cancelled() {
-        assert!(false, "Should not be triggered yet");
+        panic!("Should not be triggered yet");
     }
 
     coordinator.shutdown();

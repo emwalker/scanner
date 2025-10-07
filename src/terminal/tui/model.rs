@@ -1,7 +1,7 @@
 //! TUI data model using The Elm Architecture pattern
 
 use crate::{
-    sdr::TunerInfo,
+    sdr::DeviceInfo,
     terminal::{ProgressEvent, ProgressEventType, TuiEvent},
 };
 use std::{
@@ -191,8 +191,8 @@ pub struct Model {
     pub scroll_offset: usize, // Number of candidates to skip when rendering (for scrolling)
     pub playback_active: bool, // Tracks if actively listening to a station
     pub focus_state: FocusState, // Which component has focus
-    pub tuners: Vec<TunerInfo>, // Discovered SDR tuners
-    pub tuner_states: HashMap<crate::sdr::TunerId, TunerState>, // State of each tuner
+    pub tuners: Vec<DeviceInfo>, // Discovered SDR devices
+    pub tuner_states: HashMap<crate::sdr::DeviceId, TunerState>, // State of each tuner
     pub active_tuners: Option<crate::main_thread::ActiveTuners>, // Source of truth for tuner allocation
 }
 
@@ -222,7 +222,7 @@ impl Model {
     }
 
     /// Add a newly discovered tuner
-    pub fn add_device(&mut self, tuner: TunerInfo) {
+    pub fn add_device(&mut self, tuner: DeviceInfo) {
         // Check if tuner already exists
         if !self.tuners.iter().any(|d| d.id == tuner.id) {
             debug!(tuner_id = ?tuner.id, label = %tuner.label, "Tuner added to TUI model");
@@ -236,7 +236,7 @@ impl Model {
     }
 
     /// Remove a tuner that was unplugged
-    pub fn remove_device(&mut self, tuner_id: &crate::sdr::TunerId) {
+    pub fn remove_device(&mut self, tuner_id: &crate::sdr::DeviceId) {
         if let Some(pos) = self.tuners.iter().position(|d| &d.id == tuner_id) {
             let tuner = self.tuners.remove(pos);
             self.tuner_states.remove(&tuner.id);
@@ -245,7 +245,7 @@ impl Model {
     }
 
     /// Get the state of a specific tuner based on active tuners allocation
-    pub fn tuner_state(&self, tuner_id: &crate::sdr::TunerId) -> TunerState {
+    pub fn tuner_state(&self, tuner_id: &crate::sdr::DeviceId) -> TunerState {
         if let Some(ref active) = self.active_tuners {
             if active.scanning.contains(tuner_id) {
                 return TunerState::Scanning;
@@ -3272,13 +3272,13 @@ mod tests {
 
     #[test]
     fn test_only_used_tuner_shows_scanning_state() {
-        use crate::sdr::TunerId;
+        use crate::sdr::DeviceId;
 
         let mut model = Model::default();
 
         // Discovery service finds RTL-SDR first (alphabetically or by enumeration order)
-        let rtlsdr_tuner = crate::sdr::TunerInfo {
-            id: TunerId::from_serial("rtlsdr", "00000001"),
+        let rtlsdr_tuner = crate::sdr::DeviceInfo {
+            id: DeviceId::from_serial("rtlsdr", "00000001"),
             label: "Generic RTL-SDR".to_string(),
         };
         model.add_device(rtlsdr_tuner.clone());
@@ -3291,8 +3291,8 @@ mod tests {
         );
 
         // Discovery service then finds SDRplay
-        let sdrplay_tuner = crate::sdr::TunerInfo {
-            id: TunerId::from_serial("sdrplay", "2301034E34:ST"),
+        let sdrplay_tuner = crate::sdr::DeviceInfo {
+            id: DeviceId::from_serial("sdrplay", "2301034E34:ST"),
             label: "SDRplay RSPduo".to_string(),
         };
         model.add_device(sdrplay_tuner.clone());
@@ -3344,19 +3344,19 @@ mod tests {
 
     #[test]
     fn test_only_used_tuner_shows_listening_state() {
-        use crate::sdr::TunerId;
+        use crate::sdr::DeviceId;
 
         let mut model = Model::default();
 
         // Discovery finds both tuners
-        let rtlsdr_tuner = crate::sdr::TunerInfo {
-            id: TunerId::from_serial("rtlsdr", "00000001"),
+        let rtlsdr_tuner = crate::sdr::DeviceInfo {
+            id: DeviceId::from_serial("rtlsdr", "00000001"),
             label: "Generic RTL-SDR".to_string(),
         };
         model.add_device(rtlsdr_tuner.clone());
 
-        let sdrplay_tuner = crate::sdr::TunerInfo {
-            id: TunerId::from_serial("sdrplay", "2301034E34:ST"),
+        let sdrplay_tuner = crate::sdr::DeviceInfo {
+            id: DeviceId::from_serial("sdrplay", "2301034E34:ST"),
             label: "SDRplay RSPduo".to_string(),
         };
         model.add_device(sdrplay_tuner.clone());
@@ -3419,13 +3419,13 @@ mod tests {
 
     #[test]
     fn test_tuner_stays_scanning_during_automatic_audio_playback() {
-        use crate::sdr::TunerId;
+        use crate::sdr::DeviceId;
 
         let mut model = Model::default();
 
         // Discovery finds SDRplay tuner
-        let sdrplay_tuner = crate::sdr::TunerInfo {
-            id: TunerId::from_serial("sdrplay", "2301034E34:ST"),
+        let sdrplay_tuner = crate::sdr::DeviceInfo {
+            id: DeviceId::from_serial("sdrplay", "2301034E34:ST"),
             label: "SDRplay RSPduo".to_string(),
         };
         model.add_device(sdrplay_tuner.clone());
@@ -3486,19 +3486,19 @@ mod tests {
 
     #[test]
     fn test_correct_tuner_shows_scanning_when_returning_from_listening() {
-        use crate::sdr::TunerId;
+        use crate::sdr::DeviceId;
 
         let mut model = Model::default();
 
         // Discovery finds both tuners (RTL-SDR first, SDRplay second)
-        let rtlsdr_tuner = crate::sdr::TunerInfo {
-            id: TunerId::from_serial("rtlsdr", "00000001"),
+        let rtlsdr_tuner = crate::sdr::DeviceInfo {
+            id: DeviceId::from_serial("rtlsdr", "00000001"),
             label: "Generic RTL-SDR".to_string(),
         };
         model.add_device(rtlsdr_tuner.clone());
 
-        let sdrplay_tuner = crate::sdr::TunerInfo {
-            id: TunerId::from_serial("sdrplay", "2301034E34:ST"),
+        let sdrplay_tuner = crate::sdr::DeviceInfo {
+            id: DeviceId::from_serial("sdrplay", "2301034E34:ST"),
             label: "SDRplay RSPduo".to_string(),
         };
         model.add_device(sdrplay_tuner.clone());
