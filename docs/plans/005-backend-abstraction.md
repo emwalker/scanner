@@ -67,9 +67,16 @@ pub trait Device: Send {
     ///
     /// Unlike returning Box<dyn Any>, this maintains type safety by always
     /// returning a concrete ReadStream<Complex> that works with rustradio
+    ///
+    /// # Multi-tuner Support
+    ///
+    /// The `channel` parameter specifies which tuner/RX channel to use for
+    /// devices with multiple independent receivers (e.g., SDRplay RSPduo has 2).
+    /// For single-tuner devices, this should always be 0.
     fn add_source_to_graph(
         &self,
         graph: &mut rustradio::graph::Graph,
+        channel: usize,
         freq: f64,
         samp_rate: f64,
         gain_db: f64,
@@ -77,10 +84,14 @@ pub trait Device: Send {
 
     /// Tune to frequency (for devices that support runtime retuning)
     /// Not all devices support this - some require rebuilding the graph
-    fn tune(&mut self, freq: f64) -> Result<()>;
+    ///
+    /// For multi-tuner devices, this tunes the specified channel.
+    fn tune(&mut self, channel: usize, freq: f64) -> Result<()>;
 
     /// Set gain (for devices that support runtime gain adjustment)
-    fn set_gain(&mut self, gain: f64) -> Result<()>;
+    ///
+    /// For multi-tuner devices, this sets gain for the specified channel.
+    fn set_gain(&mut self, channel: usize, gain: f64) -> Result<()>;
 
     /// Consume device and return backend-specific representation
     /// Provides escape hatch for advanced users who need direct backend access
@@ -157,6 +168,9 @@ pub struct Capabilities {
     // Optional features
     pub has_agc: bool,
     pub antenna_options: Vec<String>,
+
+    // Number of independent RX tuners/channels
+    // Examples: RTL-SDR = 1, SDRplay RSPduo = 2
     pub channels: usize,
 
     // Performance characteristics (for device pool allocation)
@@ -384,6 +398,7 @@ impl Device for SoapyDevice {
     fn add_source_to_graph(
         &self,
         graph: &mut rustradio::graph::Graph,
+        channel: usize,
         freq: f64,
         samp_rate: f64,
         gain_db: f64,
@@ -391,15 +406,27 @@ impl Device for SoapyDevice {
         // Create fresh device for this graph
         let device = soapysdr::Device::new(&self.device_args)?;
 
+        // Validate channel index
+        let num_channels = device.num_channels(soapysdr::Direction::Rx)?;
+        if channel >= num_channels {
+            return Err(DeviceError::new(
+                DeviceErrorKind::InvalidParameter,
+                "SoapySDR",
+                format!("channel {} out of range (device has {} channels)", channel, num_channels)
+            ).into());
+        }
+
         // Configure device
-        if device.has_gain_mode(soapysdr::Direction::Rx, 0)? {
-            device.set_gain_mode(soapysdr::Direction::Rx, 0, false)?;
+        if device.has_gain_mode(soapysdr::Direction::Rx, channel)? {
+            device.set_gain_mode(soapysdr::Direction::Rx, channel, false)?;
         }
 
         // Normalize gain to 0.0-1.0 range (SDRplay uses 0-48 dB)
         let normalized_gain = (gain_db.clamp(0.0, 48.0)) / 48.0;
 
         // Build source and add to graph
+        // Note: rustradio's SoapySdrSource currently only supports channel 0
+        // For multi-channel devices, multiple SoapySdrSource instances would be needed
         let (source_block, output_stream) =
             rustradio::blocks::SoapySdrSource::builder(&device, freq, samp_rate)
                 .igain(normalized_gain)
@@ -409,17 +436,17 @@ impl Device for SoapyDevice {
         Ok(output_stream)
     }
 
-    fn tune(&mut self, freq: f64) -> Result<()> {
+    fn tune(&mut self, channel: usize, freq: f64) -> Result<()> {
         // Note: This requires recreating the device
         // Most efficient to rebuild the graph instead
         let device = soapysdr::Device::new(&self.device_args)?;
-        device.set_frequency(soapysdr::Direction::Rx, 0, freq, "")?;
+        device.set_frequency(soapysdr::Direction::Rx, channel, freq, "")?;
         Ok(())
     }
 
-    fn set_gain(&mut self, gain: f64) -> Result<()> {
+    fn set_gain(&mut self, channel: usize, gain: f64) -> Result<()> {
         let device = soapysdr::Device::new(&self.device_args)?;
-        device.set_gain(soapysdr::Direction::Rx, 0, gain)?;
+        device.set_gain(soapysdr::Direction::Rx, channel, gain)?;
         Ok(())
     }
 
@@ -509,10 +536,20 @@ impl Device for MockDevice {
     fn add_source_to_graph(
         &self,
         graph: &mut rustradio::graph::Graph,
+        channel: usize,
         freq: f64,
         samp_rate: f64,
         _gain_db: f64,
     ) -> Result<rustradio::stream::ReadStream<Complex>> {
+        // Validate channel index
+        if channel >= self.capabilities.channels {
+            return Err(DeviceError::new(
+                DeviceErrorKind::InvalidParameter,
+                "Mock",
+                format!("channel {} out of range (device has {} channels)", channel, self.capabilities.channels)
+            ).into());
+        }
+
         // Generate test signal: 100 kHz tone at center frequency
         let tone_freq = 100_000.0;
         let samples_per_period = (samp_rate / tone_freq) as usize;
@@ -530,7 +567,15 @@ impl Device for MockDevice {
         Ok(stream)
     }
 
-    fn tune(&mut self, _freq: f64) -> Result<()> {
+    fn tune(&mut self, channel: usize, _freq: f64) -> Result<()> {
+        if channel >= self.capabilities.channels {
+            return Err(DeviceError::new(
+                DeviceErrorKind::InvalidParameter,
+                "Mock",
+                format!("channel {} out of range", channel)
+            ).into());
+        }
+
         if self.fail_on_tune {
             Err(DeviceError::new(
                 DeviceErrorKind::HardwareError,
@@ -542,7 +587,14 @@ impl Device for MockDevice {
         }
     }
 
-    fn set_gain(&mut self, _gain: f64) -> Result<()> {
+    fn set_gain(&mut self, channel: usize, _gain: f64) -> Result<()> {
+        if channel >= self.capabilities.channels {
+            return Err(DeviceError::new(
+                DeviceErrorKind::InvalidParameter,
+                "Mock",
+                format!("channel {} out of range", channel)
+            ).into());
+        }
         Ok(())
     }
 
@@ -693,8 +745,10 @@ graph.run()?;
 let mut graph = Graph::new();
 
 // Device abstraction hides backend-specific details
+// channel = 0 for single-tuner devices, or specific tuner index for multi-tuner
 let output_stream = self.device.add_source_to_graph(
     &mut graph,
+    0,              // channel/tuner index
     freq,
     self.samp_rate,
     self.sdr_gain,
@@ -786,6 +840,7 @@ let (sdr_source_block, sdr_output_stream) = self
 // After
 let sdr_output_stream = self.device.add_source_to_graph(
     &mut graph,
+    0,  // channel/tuner index
     freq,
     self.samp_rate,
     self.sdr_gain,
@@ -840,11 +895,29 @@ fn test_mock_device_graph_integration() {
 
     let mut graph = Graph::new();
     let stream = device
-        .add_source_to_graph(&mut graph, 88.9e6, 2.4e6, 20.0)
+        .add_source_to_graph(&mut graph, 0, 88.9e6, 2.4e6, 20.0)
         .unwrap();
 
     // Verify stream is valid
     assert!(stream.len() > 0);
+}
+
+#[test]
+fn test_multi_channel_device() {
+    // Test that multi-channel validation works
+    let mut mock = MockDevice::new(TunerId::from_serial("mock", "duo"), false);
+    mock.capabilities.channels = 2;  // Simulate RSPduo with 2 tuners
+
+    let mut graph = Graph::new();
+
+    // Channel 0 should work
+    assert!(mock.add_source_to_graph(&mut graph, 0, 88.9e6, 2.4e6, 20.0).is_ok());
+
+    // Channel 1 should work
+    assert!(mock.add_source_to_graph(&mut graph, 1, 88.9e6, 2.4e6, 20.0).is_ok());
+
+    // Channel 2 should fail (out of range)
+    assert!(mock.add_source_to_graph(&mut graph, 2, 88.9e6, 2.4e6, 20.0).is_err());
 }
 
 #[test]

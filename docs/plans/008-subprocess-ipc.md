@@ -33,6 +33,8 @@ Run **every** SDR device in isolated subprocess with custom Unix socket IPC.
 2. **BladeRF**: API-level locking - process isolation required
 3. **LimeSDR**: Stability issues documented - isolation helps
 4. **All devices**: Driver bugs can crash main process
+5. **RTL-SDR**: Prints "Reattached kernel driver" to terminal, corrupting TUI during hotplug
+6. **Device enumeration**: Opening devices to query capabilities prints messages to terminal
 
 ### Why NOT per-device branching
 ```rust
@@ -59,6 +61,7 @@ Universal subprocess architecture with minimal overhead:
 - **~25μs latency** per I/Q packet (Unix sockets)
 - **100% crash isolation** (driver bug doesn't kill main process)
 - **Automatic cleanup** (kill subprocess = guaranteed resource release)
+- **Terminal isolation** (device messages don't corrupt TUI)
 - **No new dependencies** (we own the IPC code)
 
 ## Design
@@ -93,10 +96,16 @@ pub enum ControlMessage {
     Stop,
     Shutdown,
 
+    // Enumeration commands
+    EnumerateDevices,
+    OpenDevice { device_id: DeviceId, device_args: String },
+
     // Worker → Main responses
     Ready,
     Tuned { actual_freq: f64 },
     GainSet { actual_gain: f64 },
+    DeviceList { devices: Vec<DeviceInfo> },
+    DeviceOpened { capabilities: Capabilities },
     Error { msg: String },
 }
 
@@ -111,13 +120,22 @@ pub struct IQPacket {
 
 ### Worker Subprocess
 
+Worker subprocesses come in two types:
+
+1. **Enumeration worker**: Short-lived, just enumerates devices
+2. **Device worker**: Long-lived, streams I/Q data from a specific device
+
 ```rust
 // In bin/scanner.rs
 #[derive(Parser)]
 struct Args {
     // Normal scanner args...
 
-    /// Worker mode: run as device subprocess
+    /// Enumeration worker mode: enumerate devices and exit
+    #[arg(long)]
+    enumerate_worker: bool,
+
+    /// Device worker mode: run as streaming subprocess
     #[arg(long)]
     device_worker: Option<WorkerArgs>,
 }
@@ -146,12 +164,32 @@ struct WorkerArgs {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Worker mode for device subprocess
+    // Enumeration worker mode: enumerate devices and exit
+    if args.enumerate_worker {
+        return enumeration_worker_main();
+    }
+
+    // Device worker mode: stream I/Q from specific device
     if let Some(worker_args) = args.device_worker {
         return device_worker_main(worker_args);
     }
 
     // ... normal main process
+}
+
+/// Enumeration worker: runs in subprocess to isolate terminal output
+fn enumeration_worker_main() -> Result<()> {
+    // All device enumeration output (e.g., "Reattached kernel driver")
+    // goes to this subprocess's stdout/stderr, which parent can discard
+
+    let backend = scanner::sdr::Soapy;
+    let devices = backend.enumerate_devices()?;
+
+    // Serialize device list to stdout for parent to read
+    let output = serde_json::to_string(&devices)?;
+    println!("{}", output);
+
+    Ok(())
 }
 
 /// Worker subprocess main loop (works for ANY SoapySDR device)
@@ -432,6 +470,49 @@ impl Drop for Device {
 }
 ```
 
+### Integration with Discovery Service
+
+```rust
+// Device enumeration in subprocess (avoids terminal corruption)
+pub fn enumerate_devices_subprocess() -> Result<Vec<DeviceInfo>> {
+    let output = Command::new(env::current_exe()?)
+        .arg("--enumerate-worker")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())  // Discard "Reattached kernel driver" messages
+        .output()?;
+
+    if !output.status.success() {
+        return Err(ScannerError::Custom("Enumeration worker failed".into()));
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let devices: Vec<DeviceInfo> = serde_json::from_str(&stdout)?;
+    Ok(devices)
+}
+
+// In discovery service
+impl DiscoveryService {
+    fn scan_devices(&mut self) -> Result<Vec<TunerInfo>> {
+        // Run enumeration in subprocess to isolate terminal output
+        let devices = enumerate_devices_subprocess()?;
+
+        // Convert DeviceInfo → TunerInfo (no device opening needed)
+        let tuners = devices
+            .into_iter()
+            .flat_map(|dev| {
+                (0..dev.num_tuners).map(move |ch| TunerInfo {
+                    id: TunerId::new(dev.id.clone(), ch),
+                    label: format!("{} Ch{}", dev.label, ch),
+                })
+            })
+            .collect();
+
+        Ok(tuners)
+    }
+}
+```
+
 ### Integration with Pool
 
 ```rust
@@ -482,16 +563,18 @@ serde = { version = "1", features = ["derive"] }
 3. Define `ControlMessage` enum
 4. Define `IQPacket` struct
 5. Add serialization helpers
+6. Add `enumerate_devices_subprocess()` helper
 
-### Step 3: Implement Worker Subprocess
-**Time**: 3 hours
+### Step 3: Implement Worker Subprocesses
+**Time**: 4 hours
 
-1. Add `--device-worker` arg parsing to `bin/scanner.rs`
-2. Implement `device_worker_main()`
-3. Socket creation and cleanup
-4. Control message handling
-5. I/Q streaming loop
-6. Error handling and logging
+1. Add `--enumerate-worker` and `--device-worker` arg parsing to `bin/scanner.rs`
+2. Implement `enumeration_worker_main()` (enumerate and exit)
+3. Implement `device_worker_main()` (long-lived streaming)
+4. Socket creation and cleanup
+5. Control message handling
+6. I/Q streaming loop
+7. Error handling and logging
 
 ### Step 4: Implement Main Process Wrapper
 **Time**: 2 hours
@@ -502,17 +585,27 @@ serde = { version = "1", features = ["derive"] }
 4. Implement `read_samples()` data method
 5. Implement `Drop` for cleanup
 
-### Step 5: Integration with Pool
-**Time**: 1 hour
+### Step 5: Integration with Discovery and Pool
+**Time**: 1.5 hours
 
-1. Update `pool::Pool::acquire()` to spawn subprocess
-2. Remove any device-type branching (use subprocess for all)
-3. Verify RAII cleanup works with subprocess
+1. Update discovery service to use `enumerate_devices_subprocess()`
+2. Verify enumeration messages don't corrupt TUI
+3. Update `pool::Pool::acquire()` to spawn device subprocess
+4. Remove any device-type branching (use subprocess for all)
+5. Verify RAII cleanup works with subprocess
 
 ### Step 6: Testing
-**Time**: 2 hours
+**Time**: 2.5 hours
 
 ```rust
+#[test]
+fn test_enumeration_subprocess() {
+    let devices = enumerate_devices_subprocess().unwrap();
+    assert!(!devices.is_empty());
+
+    // Verify terminal not corrupted (manual test in TUI mode)
+}
+
 #[test]
 fn test_subprocess_device_single() {
     let device = ipc::Device::new(
@@ -653,6 +746,7 @@ fn is_process_dead(pid: u32) -> bool {
 ### Reliability
 ✅ **Crash isolation**: Driver bug doesn't kill main process
 ✅ **Memory isolation**: Leaks contained to subprocess
+✅ **Terminal isolation**: Device messages don't corrupt TUI
 ✅ **Easy debugging**: Attach to specific device's process
 
 ### Performance
@@ -735,17 +829,19 @@ bin/
 
 ## Estimated Time
 
-**Total**: 9-10 hours
+**Total**: 10-11 hours
 
 - Step 1: Dependencies (15 min)
 - Step 2: IPC protocol module (1 hr)
-- Step 3: Worker subprocess (3 hrs)
+- Step 3: Worker subprocesses - enumeration + device (4 hrs)
 - Step 4: Main process wrapper (2 hrs)
-- Step 5: Pool integration (1 hr)
-- Step 6: Testing (2 hrs)
+- Step 5: Discovery + Pool integration (1.5 hrs)
+- Step 6: Testing (2.5 hrs)
 
 ## Success Criteria
 
+✅ Enumeration subprocess completes successfully
+✅ Device messages isolated (no TUI corruption during hotplug)
 ✅ Worker subprocess spawns successfully
 ✅ Control commands work (tune, gain)
 ✅ I/Q data streaming works

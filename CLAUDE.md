@@ -2,6 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## License Compliance for External Code
+
+**IMPORTANT**: Before examining any external code (libraries, example projects, etc.), always check the license first.
+
+- **If GPL, AGPL, or similar copyleft license**: DO NOT read the code directly
+  - Skip over the project source code entirely
+  - Instead, read about the project from:
+    - Documentation (README, API docs)
+    - Forum discussions (Reddit, forums, Stack Overflow)
+    - Blog posts and tutorials
+    - Issue discussions and release notes
+  - You can understand the architecture and patterns without viewing copyleft code
+
+- **If MIT, Apache, BSD, or permissive license**: Safe to read and learn from the code
+
+- **When in doubt**: Treat as copyleft - stick to documentation and discussions only
+
+This ensures we avoid any licensing concerns while still learning from the broader ecosystem.
+
 ## Common Commands
 
 ### Rust code
@@ -30,6 +49,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - The user will use the `/fix` when they want to run the tests and fix linting issues
 - Do NOT proactively run `cargo test` or `make lint` - wait for the user to run `/fix` at the appropriate time
 - The `/fix` command will handle both testing and linting comprehensively
+- **Dead code warnings are NOT acceptable** - remove all unused functions, constants, fields, and imports
+  - Use `#[allow(dead_code)]` only if the code will be used soon or is intentionally kept for future use
+  - When in doubt, remove the dead code rather than suppressing the warning
 
 # Documentation and Planning
 - When reading or writing plans, design documents, or issue documentation:
