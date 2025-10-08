@@ -101,7 +101,7 @@ impl crate::sdr::Device for Device {
         &self,
         config: &ScanningConfig,
         center_freq: f64,
-    ) -> Result<Box<dyn crate::sdr::Segment>> {
+    ) -> Result<Box<dyn crate::pool::SegmentTrait>> {
         let manager = SoapySdrManager::new(config, center_freq, self.clone())?;
         Ok(Box::new(manager))
     }
@@ -245,7 +245,7 @@ impl SoapySdrManager {
     }
 }
 
-impl crate::sdr::Segment for SoapySdrManager {
+impl crate::pool::SegmentTrait for SoapySdrManager {
     fn audio_subscriber(&self) -> broadcast::Receiver<SamplePacket> {
         let receiver = self.audio_sender.subscribe();
         debug!(

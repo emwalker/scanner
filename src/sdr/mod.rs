@@ -22,9 +22,7 @@ pub mod rtlsdr;
 // Legacy modules (will be removed in future refactoring)
 pub mod sample_source;
 
-use crate::broadcast::SamplePacket;
 use crate::types::{Result, ScanningConfig};
-use tokio::sync::broadcast;
 
 // Re-export commonly used types
 pub use backend::Backend;
@@ -44,12 +42,11 @@ pub use rtlsdr::RtlSdr;
 // Re-export legacy sample source types
 pub use sample_source::SampleSource;
 
-// Legacy traits (TODO: Remove these and migrate to new abstraction)
-pub trait Segment {
-    fn audio_subscriber(&self) -> broadcast::Receiver<SamplePacket>;
-}
-
 // Keep old Device trait name for backward compatibility during migration
 pub trait Device {
-    fn tune(&self, config: &ScanningConfig, center_freq: f64) -> Result<Box<dyn Segment>>;
+    fn tune(
+        &self,
+        config: &ScanningConfig,
+        center_freq: f64,
+    ) -> Result<Box<dyn crate::pool::SegmentTrait>>;
 }

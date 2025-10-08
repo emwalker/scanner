@@ -3,8 +3,7 @@
 //! Provides a Segment implementation that acquires a tuner from the pool,
 //! manages the SDR graph, and automatically returns the tuner on drop (RAII).
 
-use crate::pool::PooledTuner;
-use crate::sdr::Segment;
+use crate::pool::{SegmentTrait, Tuner};
 use crate::shutdown::ShutdownCoordinator;
 use crate::types::{Result, ScanningConfig};
 use rustradio::graph::{Graph, GraphRunner};
@@ -15,22 +14,22 @@ use tracing::debug;
 
 /// Pool-based Segment implementation
 ///
-/// Wraps a PooledTuner and provides the Segment interface. When dropped,
+/// Wraps a pool::Tuner and provides the Segment interface. When dropped,
 /// automatically returns the tuner to the pool (RAII).
 ///
 /// # Shutdown Safety
 /// - Uses CancellationToken for graceful shutdown
 /// - Graph runner stops cleanly when token is cancelled
 /// - Tuner is returned to pool even if shutdown occurs mid-processing
-pub struct PoolSegment {
-    _pooled_tuner: PooledTuner,
+pub struct Segment {
+    _tuner: Tuner,
     audio_sender: tokio::sync::broadcast::Sender<crate::broadcast::SamplePacket>,
     graph_handle: Option<thread::JoinHandle<()>>,
     graph_cancel: rustradio::graph::CancellationToken,
 }
 
-impl PoolSegment {
-    /// Create a new PoolSegment by acquiring a tuner from the pool
+impl Segment {
+    /// Create a new Segment by acquiring a tuner from the pool
     ///
     /// # Arguments
     /// * `pool` - The tuner pool to acquire from
@@ -61,17 +60,17 @@ impl PoolSegment {
             priority: crate::pool::TaskPriority::Normal,
         };
 
-        let pooled_tuner = pool.acquire(&requirements, crate::pool::TunerActivity::Listening)?;
-        debug!(tuner_id = ?pooled_tuner.id(), "Acquired tuner from pool for listening");
+        let tuner = pool.acquire(&requirements, crate::pool::TunerActivity::Listening)?;
+        debug!(tuner_id = ?tuner.id(), "Acquired tuner from pool for listening");
 
-        Self::from_pooled_tuner(pooled_tuner, center_freq, config, shutdown_token)
+        Self::from_tuner(tuner, center_freq, config, shutdown_token)
     }
 
-    /// Create PoolSegment from an already-acquired PooledTuner
+    /// Create Segment from an already-acquired pool::Tuner
     ///
     /// Used internally by Window which manages its own pool acquisition.
-    pub(crate) fn from_pooled_tuner(
-        pooled_tuner: PooledTuner,
+    pub(crate) fn from_tuner(
+        tuner: Tuner,
         center_freq: f64,
         config: &ScanningConfig,
         shutdown_token: CancellationToken,
@@ -82,7 +81,7 @@ impl PoolSegment {
 
         // Create rustradio graph
         let mut graph = Graph::new();
-        let stream = pooled_tuner.add_source_to_graph(
+        let stream = tuner.add_source_to_graph(
             &mut graph,
             center_freq,
             config.samp_rate,
@@ -139,7 +138,7 @@ impl PoolSegment {
         }
 
         Ok(Self {
-            _pooled_tuner: pooled_tuner,
+            _tuner: tuner,
             audio_sender,
             graph_handle,
             graph_cancel,
@@ -147,7 +146,7 @@ impl PoolSegment {
     }
 }
 
-impl Segment for PoolSegment {
+impl SegmentTrait for Segment {
     fn audio_subscriber(&self) -> tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket> {
         let receiver = self.audio_sender.subscribe();
         debug!(
@@ -160,7 +159,7 @@ impl Segment for PoolSegment {
     }
 }
 
-impl Drop for PoolSegment {
+impl Drop for Segment {
     fn drop(&mut self) {
         debug!(
             receiver_count = self.audio_sender.receiver_count(),
@@ -177,7 +176,7 @@ impl Drop for PoolSegment {
             debug!("Pool-based SDR graph thread finished");
         }
 
-        // PooledTuner will be dropped here, automatically returning to pool (RAII)
-        debug!("PoolSegment dropped, tuner will be returned to pool");
+        // pool::Tuner will be dropped here, automatically returning to pool (RAII)
+        debug!("pool::Segment dropped, tuner will be returned to pool");
     }
 }

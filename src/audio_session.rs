@@ -12,7 +12,7 @@ pub struct AudioSession {
     audio_packet_size: usize,
     _stream: cpal::Stream,
     current_graph_cancel: Option<rustradio::graph::CancellationToken>,
-    current_segment: Option<Box<dyn crate::sdr::Segment>>,
+    current_segment: Option<Box<dyn crate::pool::SegmentTrait>>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
 }
 
@@ -59,7 +59,7 @@ impl AudioSession {
     pub fn tune_to_station(
         &mut self,
         signal: &Signal,
-        segment: Box<dyn crate::sdr::Segment>,
+        segment: Box<dyn crate::pool::SegmentTrait>,
         config: &ScanningConfig,
     ) -> Result<()> {
         self.stop_current_station();

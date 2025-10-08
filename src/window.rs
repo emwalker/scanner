@@ -1,4 +1,4 @@
-use crate::sdr::Segment;
+use crate::pool::SegmentTrait;
 use crate::shutdown::ShutdownCoordinator;
 use crate::terminal::{ProgressEvent, ProgressEventType, ProgressReporter};
 use crate::types::{Result, ScanningConfig};
@@ -163,7 +163,7 @@ impl Window {
         self.device.tuner_id().ok()
     }
 
-    fn peaks(&self, device: &dyn Segment) -> Result<Vec<crate::types::Peak>> {
+    fn peaks(&self, device: &dyn SegmentTrait) -> Result<Vec<crate::types::Peak>> {
         if self.station_mode {
             // Station mode: Create a single peak at the exact station frequency
             debug!(
@@ -262,7 +262,7 @@ impl Window {
     fn process_candidates(
         &self,
         candidates: Vec<crate::types::Candidate>,
-        segment: &dyn Segment,
+        segment: &dyn SegmentTrait,
     ) -> Result<Vec<crate::types::Signal>> {
         if candidates.is_empty() {
             return Ok(Vec::new());
@@ -723,7 +723,7 @@ impl Window {
     fn play_signals(
         &self,
         signals: Vec<crate::types::Signal>,
-        segment: &dyn Segment,
+        segment: &dyn SegmentTrait,
     ) -> Result<()> {
         if signals.is_empty() {
             return Ok(());
@@ -827,7 +827,7 @@ impl Window {
     ///
     /// # Shutdown Safety
     /// - Checks shutdown before acquiring from pool
-    /// - PoolSegment passes shutdown token to graph
+    /// - pool::Segment passes shutdown token to graph
     /// - Tuner automatically returned to pool even if shutdown occurs mid-processing
     pub fn process_with_pool(&self) -> Result<()> {
         // Pool must be available
@@ -858,12 +858,12 @@ impl Window {
             priority: crate::pool::TaskPriority::Normal,
         };
 
-        let pooled_tuner = pool.acquire(&requirements, crate::pool::TunerActivity::Scanning)?;
-        debug!(tuner_id = ?pooled_tuner.id(), "Acquired tuner from pool");
+        let tuner = pool.acquire(&requirements, crate::pool::TunerActivity::Scanning)?;
+        debug!(tuner_id = ?tuner.id(), "Acquired tuner from pool");
 
-        // Create PoolSegment (implements Segment trait, provides samples via broadcast channel)
-        let segment = crate::pool::PoolSegment::from_pooled_tuner(
-            pooled_tuner,
+        // Create pool::Segment (implements Segment trait, provides samples via broadcast channel)
+        let segment = crate::pool::Segment::from_tuner(
+            tuner,
             self.center_freq,
             &self.config,
             self.shutdown_token.clone(),
@@ -872,13 +872,13 @@ impl Window {
         // Use existing process() logic - all peak detection, candidate analysis, audio playback
         let result = self.process(&segment);
 
-        // Tuner automatically returned to pool when PoolSegment is dropped (RAII)
-        debug!("Processing complete, PoolSegment will drop and return tuner to pool");
+        // Tuner automatically returned to pool when pool::Segment is dropped (RAII)
+        debug!("Processing complete, pool::Segment will drop and return tuner to pool");
 
         result
     }
 
-    pub fn process(&self, segment: &dyn Segment) -> Result<()> {
+    pub fn process(&self, segment: &dyn SegmentTrait) -> Result<()> {
         debug!(
             "Scanning window {} of {} at {:.1} MHz",
             self.window_num,

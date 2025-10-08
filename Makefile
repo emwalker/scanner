@@ -1,6 +1,6 @@
 lint:
 	cargo fmt
-	cargo clippy --fix --allow-dirty -- -D clippy::print_stdout -D clippy::print_stderr -D clippy::cognitive_complexity
+	cargo clippy --fix --allow-dirty -- -D clippy::print_stdout -D clippy::print_stderr -D clippy::cognitive_complexity -D warnings
 
 test:
 	@echo "Running standard tests..."

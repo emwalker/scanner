@@ -1,4 +1,4 @@
-//! RAII wrapper for pooled tuners
+//! RAII wrapper for tuners acquired from the pool
 
 use super::PoolInner;
 use super::TunerId;
@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 ///
 /// All methods follow this ordering. The Drop implementation only locks the pool,
 /// ensuring safe cleanup even if device lock is held elsewhere.
-pub struct PooledTuner {
+pub struct Tuner {
     /// Tuner identifier
     pub tuner_id: TunerId,
 
@@ -43,7 +43,7 @@ pub struct PooledTuner {
     pub shutdown_mode: Arc<AtomicBool>,
 }
 
-impl PooledTuner {
+impl Tuner {
     /// Get the tuner ID
     pub fn id(&self) -> &TunerId {
         &self.tuner_id
@@ -116,7 +116,7 @@ impl PooledTuner {
     }
 }
 
-impl Drop for PooledTuner {
+impl Drop for Tuner {
     /// Return tuner to pool automatically when dropped
     ///
     /// # Lock ordering

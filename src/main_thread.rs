@@ -190,7 +190,7 @@ impl MainThread {
         );
 
         // Create pool-based segment for listening
-        let segment = crate::pool::PoolSegment::new(
+        let segment = crate::pool::Segment::new(
             &self.pool,
             params.center_frequency,
             &self.config,
@@ -703,7 +703,7 @@ mod tests {
         let config = create_test_config();
         let console_writer = Arc::new(MockConsoleWriter::new());
         let logger = Arc::new(MockLogger::new());
-        let tuner_id = create_test_tuner_id();
+        let _tuner_id = create_test_tuner_id();
         let backend = create_test_backend();
         let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
@@ -722,7 +722,7 @@ mod tests {
         let config = create_test_config();
         let console_writer = Arc::new(MockConsoleWriter::new());
         let logger = Arc::new(MockLogger::new());
-        let tuner_id = create_test_tuner_id();
+        let _tuner_id = create_test_tuner_id();
         let backend = create_test_backend();
         let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
@@ -745,7 +745,7 @@ mod tests {
         let console_writer = Arc::new(MockConsoleWriter::new());
         let console_clone = Arc::clone(&console_writer);
         let logger = Arc::new(MockLogger::new());
-        let tuner_id = create_test_tuner_id();
+        let _tuner_id = create_test_tuner_id();
         let backend = create_test_backend();
         let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
@@ -770,7 +770,7 @@ mod tests {
         let config = create_test_config();
         let console_writer = Arc::new(MockConsoleWriter::new());
         let logger = Arc::new(MockLogger::new());
-        let tuner_id = create_test_tuner_id();
+        let _tuner_id = create_test_tuner_id();
         let backend = create_test_backend();
         let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
@@ -794,7 +794,7 @@ mod tests {
         let config = create_test_config();
         let console_writer = Arc::new(MockConsoleWriter::new());
         let logger = Arc::new(MockLogger::new());
-        let tuner_id = create_test_tuner_id();
+        let _tuner_id = create_test_tuner_id();
         let backend = create_test_backend();
         let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
@@ -816,7 +816,7 @@ mod tests {
         let config = create_test_config();
         let console_writer = Arc::new(MockConsoleWriter::new());
         let logger = Arc::new(MockLogger::new());
-        let tuner_id = create_test_tuner_id();
+        let _tuner_id = create_test_tuner_id();
         let backend = create_test_backend();
         let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
@@ -842,7 +842,7 @@ mod tests {
         let config = create_test_config();
         let console_writer = Arc::new(MockConsoleWriter::new());
         let logger = Arc::new(MockLogger::new());
-        let tuner_id = create_test_tuner_id();
+        let _tuner_id = create_test_tuner_id();
         let backend = create_test_backend();
         let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
@@ -873,7 +873,7 @@ mod tests {
         let filter = crate::pool::PoolFilter::new()
             .with_driver("mock")
             .with_mode(crate::pool::TuningMode::SingleTuner);
-        let mut pool = crate::pool::Pool::new(filter);
+        let pool = crate::pool::Pool::new(filter);
 
         let mock_backend = crate::sdr::Mock;
         let device = mock_backend.open_device(&tuner_id).unwrap();
@@ -892,7 +892,7 @@ mod tests {
         let filter = crate::pool::PoolFilter::new()
             .with_driver("mock")
             .with_mode(crate::pool::TuningMode::SingleTuner);
-        let mut pool = crate::pool::Pool::new(filter);
+        let pool = crate::pool::Pool::new(filter);
 
         let mock_backend = crate::sdr::Mock;
         let device = mock_backend.open_device(&tuner_id).unwrap();

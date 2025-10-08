@@ -42,7 +42,7 @@ pub struct AudioSession {
     audio_tx: std::sync::mpsc::SyncSender<f32>,
     _stream: cpal::Stream,                              // Persistent!
     current_graph: Option<GraphHandle>,
-    current_segment: Option<Box<dyn crate::sdr::Segment>>,
+    current_segment: Option<Box<dyn crate::pool::SegmentTrait>>,
 }
 ```
 

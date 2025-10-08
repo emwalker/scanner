@@ -7,12 +7,23 @@
 //! - Capability matching: allocates best tuner for each task
 //! - Controlled rollout: PoolFilter enables safe transition to multi-tuner operation
 
-mod pooled_tuner;
 mod segment;
+mod tuner;
 mod types;
 
-pub use pooled_tuner::PooledTuner;
-pub use segment::PoolSegment;
+use tokio::sync::broadcast;
+
+/// Trait for sample segment providers
+///
+/// This trait defines the interface for objects that provide audio samples
+/// via a broadcast channel. Both legacy (SoapySdrManager) and pool-based
+/// (pool::Segment) implementations use this trait.
+pub trait SegmentTrait {
+    fn audio_subscriber(&self) -> broadcast::Receiver<crate::broadcast::SamplePacket>;
+}
+
+pub use segment::Segment;
+pub use tuner::Tuner;
 pub use types::{
     AddDeviceResult, AllocationInfo, DeviceEntry, PoolStatus, TaskPriority, TaskRequirements,
     TunerActivity, TunerEntry, TunerId, TunerState, TunerStatus,
@@ -192,7 +203,7 @@ pub struct PoolInner {
 }
 
 impl PoolInner {
-    /// Internal: return tuner to pool (called by PooledTuner::drop)
+    /// Internal: return tuner to pool (called by Tuner::drop)
     pub fn return_tuner(&mut self, tuner_id: TunerId, shutdown_mode: bool) {
         if shutdown_mode {
             debug!(tuner_id = ?tuner_id, "Tuner return ignored (shutdown mode)");
@@ -217,7 +228,7 @@ impl PoolInner {
 
 /// Dynamic inventory of available tuners
 pub struct Pool {
-    /// Internal state (Arc<Mutex<>> for thread-safe sharing with PooledTuner)
+    /// Internal state (Arc<Mutex<>> for thread-safe sharing with Tuner)
     pool_ref: Arc<Mutex<PoolInner>>,
 
     /// Filter controlling which tuners can be allocated
@@ -401,7 +412,7 @@ impl Pool {
         &self,
         requirements: &TaskRequirements,
         activity: TunerActivity,
-    ) -> Result<PooledTuner> {
+    ) -> Result<Tuner> {
         self.try_acquire(requirements, activity)
             .ok_or_else(|| ScannerError::NoAvailableTuner(requirements.clone()))
     }
@@ -415,7 +426,7 @@ impl Pool {
         &self,
         requirements: &TaskRequirements,
         activity: TunerActivity,
-    ) -> Option<PooledTuner> {
+    ) -> Option<Tuner> {
         // Check shutdown mode first (lock-free)
         if self.shutdown_mode.load(Ordering::SeqCst) {
             debug!("Acquire rejected - pool in shutdown mode");
@@ -493,7 +504,7 @@ impl Pool {
 
                 debug!(tuner_id = ?tuner_id, "Tuner acquired from pool");
 
-                Some(PooledTuner {
+                Some(Tuner {
                     tuner_id,
                     device,
                     pool: Arc::clone(&self.pool_ref),
@@ -596,7 +607,7 @@ mod tests {
 
     #[test]
     fn test_pooled_tuner_drop_doesnt_block_when_pool_locked() {
-        let mut pool = Pool::new_unfiltered();
+        let pool = Pool::new_unfiltered();
         let pool_arc = pool.pool_ref.clone();
 
         let device_id = sdr::DeviceId::from_serial("mock", "test001");
@@ -665,7 +676,7 @@ mod tests {
 
     #[test]
     fn test_shutdown_mode() {
-        let mut pool = Pool::new_unfiltered();
+        let pool = Pool::new_unfiltered();
 
         let device_id = sdr::DeviceId::from_serial("mock", "test003");
         let device = Box::new(sdr::mock::MockDevice::new(device_id.clone(), false));
@@ -720,7 +731,7 @@ mod tests {
 
     #[test]
     fn test_status_during_shutdown() {
-        let mut pool = Pool::new_unfiltered();
+        let pool = Pool::new_unfiltered();
 
         let device_id = sdr::DeviceId::from_serial("mock", "test005");
         let device = Box::new(sdr::mock::MockDevice::new(device_id.clone(), false));
@@ -774,7 +785,7 @@ mod tests {
 
     #[test]
     fn test_acquire_rejected_during_shutdown() {
-        let mut pool = Pool::new_unfiltered();
+        let pool = Pool::new_unfiltered();
 
         let device_id = sdr::DeviceId::from_serial("mock", "test007");
         let device = Box::new(sdr::mock::MockDevice::new(device_id.clone(), false));
@@ -865,7 +876,7 @@ mod tests {
 
     #[test]
     fn test_remove_device_rejected_during_shutdown() {
-        let mut pool = Pool::new_unfiltered();
+        let pool = Pool::new_unfiltered();
 
         let device_id = sdr::DeviceId::from_serial("mock", "test010");
         let device = Box::new(sdr::mock::MockDevice::new(device_id.clone(), false));
@@ -892,7 +903,7 @@ mod tests {
 
         // Try to add device from another thread
         let handle = thread::spawn(move || {
-            let mut pool_in_thread = pool;
+            let pool_in_thread = pool;
             let start = Instant::now();
             let device_id = sdr::DeviceId::from_serial("mock", "test011");
             let device = Box::new(sdr::mock::MockDevice::new(device_id.clone(), false));
@@ -915,7 +926,7 @@ mod tests {
     fn test_remove_device_never_blocks_when_pool_locked() {
         use std::time::Duration;
 
-        let mut pool = Pool::new_unfiltered();
+        let pool = Pool::new_unfiltered();
 
         let device_id = sdr::DeviceId::from_serial("mock", "test012");
         let device = Box::new(sdr::mock::MockDevice::new(device_id.clone(), false));
@@ -925,7 +936,7 @@ mod tests {
         let _lock = pool_arc.lock().unwrap();
 
         let handle = thread::spawn(move || {
-            let mut pool_in_thread = pool;
+            let pool_in_thread = pool;
             let start = Instant::now();
             let result = pool_in_thread.remove_device(&device_id);
             let elapsed = start.elapsed();
@@ -944,7 +955,7 @@ mod tests {
 
     #[test]
     fn test_tuner_operations_rejected_during_shutdown() {
-        let mut pool = Pool::new_unfiltered();
+        let pool = Pool::new_unfiltered();
 
         let device_id = sdr::DeviceId::from_serial("mock", "test013");
         let device = Box::new(sdr::mock::MockDevice::new(device_id.clone(), false));
@@ -1018,7 +1029,7 @@ mod tests {
 
     #[test]
     fn test_activity_tracking() {
-        let mut pool = Pool::new_unfiltered();
+        let pool = Pool::new_unfiltered();
 
         let device_id = sdr::DeviceId::from_serial("mock", "test014");
         let device = Box::new(sdr::mock::MockDevice::new(device_id.clone(), false));
@@ -1136,7 +1147,7 @@ mod tests {
 
     #[test]
     fn test_filter_allow_tuners() {
-        let mut pool = Pool::new_unfiltered();
+        let pool = Pool::new_unfiltered();
 
         let device1_id = sdr::DeviceId::from_serial("mock", "test019");
         let device1 = Box::new(sdr::mock::MockDevice::new(device1_id.clone(), false));
@@ -1149,7 +1160,7 @@ mod tests {
         drop(pool);
 
         let tuner1 = TunerId::new(device1_id.clone(), 0);
-        let mut pool_filtered = Pool::new(PoolFilter::new().with_tuners(vec![tuner1.clone()]));
+        let pool_filtered = Pool::new(PoolFilter::new().with_tuners(vec![tuner1.clone()]));
 
         let device1_again = Box::new(sdr::mock::MockDevice::new(device1_id.clone(), false));
         pool_filtered
@@ -1176,7 +1187,7 @@ mod tests {
 
     #[test]
     fn test_filter_single_tuner_mode() {
-        let mut pool = Pool::new(PoolFilter::new().with_mode(TuningMode::SingleTuner));
+        let pool = Pool::new(PoolFilter::new().with_mode(TuningMode::SingleTuner));
 
         let device_id = sdr::DeviceId::from_serial("mock", "test021");
         let device = Box::new(sdr::mock::MockDevice::new(device_id.clone(), false));
