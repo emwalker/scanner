@@ -53,6 +53,16 @@ pub enum ScannerError {
     NoAvailableTuner(crate::hardware::pool::TaskRequirements),
     #[error("Pool lock timeout - operation would block")]
     PoolLockTimeout,
+    #[error("Internal inconsistency: {message}")]
+    InternalInconsistency { message: String },
+    #[error("Tuner not found: {tuner_id:?}")]
+    TunerNotFound {
+        tuner_id: crate::hardware::pool::TunerId,
+    },
+    #[error("Mutex poisoned: {context}")]
+    MutexPoisoned { context: String },
+    #[error("Invalid device arguments")]
+    InvalidDeviceArgs,
     #[error(transparent)]
     SerdeJson(#[from] serde_json::Error),
     #[error(transparent)]

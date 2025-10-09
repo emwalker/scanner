@@ -7,6 +7,7 @@ use crate::hardware::pool::types::TunerId;
 use rustradio::Complex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tracing::error;
 
 /// Smart pointer that auto-returns tuner on drop (RAII)
 ///
@@ -75,7 +76,12 @@ impl Tuner {
             ));
         }
 
-        let device = self.device.lock().unwrap();
+        let device = self.device.lock().map_err(|_e| {
+            error!("Device mutex poisoned - recovering");
+            ScannerError::MutexPoisoned {
+                context: "device lock in add_source_to_graph".to_string(),
+            }
+        })?;
         device.add_source_to_graph(graph, freq, samp_rate, gain_db)
     }
 
@@ -93,7 +99,12 @@ impl Tuner {
             ));
         }
 
-        let mut device = self.device.lock().unwrap();
+        let mut device = self.device.lock().map_err(|_e| {
+            error!("Device mutex poisoned - recovering");
+            ScannerError::MutexPoisoned {
+                context: "device lock in tune".to_string(),
+            }
+        })?;
         device.tune(freq)
     }
 
@@ -111,7 +122,12 @@ impl Tuner {
             ));
         }
 
-        let mut device = self.device.lock().unwrap();
+        let mut device = self.device.lock().map_err(|_e| {
+            error!("Device mutex poisoned - recovering");
+            ScannerError::MutexPoisoned {
+                context: "device lock in set_gain".to_string(),
+            }
+        })?;
         device.set_gain(gain)
     }
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
-use tracing::debug;
+use tracing::{debug, error};
 
 impl Pool {
     /// Add newly discovered device and expose all its tuners
@@ -210,8 +210,19 @@ impl Pool {
         let best_match = inner
             .available_tuners
             .iter()
-            .filter(|(tuner_id, entry)| {
-                let device_entry = inner.devices.get(&entry.device_id).unwrap();
+            .filter_map(|(tuner_id, entry)| {
+                let device_entry = match inner.devices.get(&entry.device_id) {
+                    Some(entry) => entry,
+                    None => {
+                        error!(
+                            device_id = ?entry.device_id,
+                            tuner_id = ?tuner_id,
+                            "Device not found for tuner - skipping"
+                        );
+                        return None;
+                    }
+                };
+
                 let filter_allowed =
                     self.filter
                         .is_allowed(tuner_id, &device_entry.backend_name, allocated_count);
@@ -225,7 +236,11 @@ impl Pool {
                     "Pool acquire: evaluated tuner"
                 );
 
-                filter_allowed && can_handle
+                if filter_allowed && can_handle {
+                    Some((tuner_id, entry))
+                } else {
+                    None
+                }
             })
             .min_by_key(|(_, entry)| {
                 let range_size = entry
@@ -241,8 +256,24 @@ impl Pool {
         match best_match {
             Some((tuner_id, _)) => {
                 let tuner_id = tuner_id.clone();
-                let entry = inner.available_tuners.remove(&tuner_id).unwrap();
-                let device_entry = inner.devices.get(&entry.device_id).unwrap();
+                let entry = match inner.available_tuners.remove(&tuner_id) {
+                    Some(e) => e,
+                    None => {
+                        error!(tuner_id = ?tuner_id, "Tuner disappeared during acquisition");
+                        return None;
+                    }
+                };
+                let device_entry = match inner.devices.get(&entry.device_id) {
+                    Some(d) => d,
+                    None => {
+                        error!(
+                            device_id = ?entry.device_id,
+                            tuner_id = ?tuner_id,
+                            "Device not found for tuner during acquisition"
+                        );
+                        return None;
+                    }
+                };
                 let backend_name = device_entry.backend_name.clone();
                 let model = format!("{:?}", device_entry.capabilities.device_id);
                 let device = Arc::clone(&device_entry.device);
@@ -297,16 +328,16 @@ impl Pool {
                 tuners: inner
                     .available_tuners
                     .iter()
-                    .map(|(id, entry)| {
-                        let device = inner.devices.get(&entry.device_id).unwrap();
-                        TunerStatus {
+                    .filter_map(|(id, entry)| {
+                        let device = inner.devices.get(&entry.device_id)?;
+                        Some(TunerStatus {
                             id: id.clone(),
                             model: format!("{:?}", device.capabilities.device_id),
                             backend: device.backend_name.clone(),
                             channel_index: entry.channel_index,
                             state: TunerState::Available,
                             activity: None,
-                        }
+                        })
                     })
                     .chain(inner.allocated_tuners.iter().map(|(id, info)| TunerStatus {
                         id: id.clone(),

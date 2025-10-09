@@ -6,6 +6,7 @@
 use crate::core::types::{Result, ScanningConfig, Signal};
 use crate::ui::ProgressReporter;
 use rustradio::graph::GraphRunner;
+use tracing::warn;
 
 /// Context struct to group related parameters for analysis functions
 pub struct AnalysisContext<'a> {
@@ -130,7 +131,13 @@ fn refine_frequency(
 fn is_frequency_already_processed(refined_frequency: f64) -> Result<bool> {
     let frequency_khz = (refined_frequency / 1000.0) as u64;
 
-    let processed = crate::signal::PROCESSED_FREQUENCIES.lock().unwrap();
+    let processed = match crate::signal::PROCESSED_FREQUENCIES.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            warn!("PROCESSED_FREQUENCIES mutex poisoned - recovering");
+            poisoned.into_inner()
+        }
+    };
     if processed.contains(&frequency_khz) {
         tracing::debug!(
             refined_freq_mhz = refined_frequency / 1e6,
@@ -324,7 +331,13 @@ fn spawn_squelch_monitoring_thread(
 
 /// Mark a frequency as successfully processed
 fn mark_frequency_as_processed(frequency_khz: u64) {
-    let mut processed = crate::signal::PROCESSED_FREQUENCIES.lock().unwrap();
+    let mut processed = match crate::signal::PROCESSED_FREQUENCIES.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            warn!("PROCESSED_FREQUENCIES mutex poisoned - recovering");
+            poisoned.into_inner()
+        }
+    };
     processed.insert(frequency_khz);
     tracing::debug!(frequency_khz, "Frequency marked as successfully processed");
 }

@@ -24,6 +24,7 @@ This ensures we avoid any licensing concerns while still learning from the broad
 ## Common Commands
 
 ### Rust code
+
 - Add mimimal comments. Infrequent comments are ok, but in general we don't need them.
 - Don't include development-specific comments that wouldn't make sense to people not involved in the development process (e.g., "changed this to that", "increased width of such-and-such", or other references to previous iterations)
 - When adding or modifying a debug! log statement, use the json key value style: `debug!(key1 = value1, key2 = value2, ...)`
@@ -37,8 +38,10 @@ This ensures we avoid any licensing concerns while still learning from the broad
   - Only use namespaces at call sites for disambiguation or when it improves clarity
   - Avoid long qualified paths like `foo::bar::baz::Thing` - instead import intermediate modules if needed
   - Exception: For enum variants, prefer keeping the enum name (e.g., `Status::Success` not `Success`)
+- Return results instead of panicking, even in "impossible" code paths
 
 ### Shutdown Safety
+
 **CRITICAL**: All code changes must be cognizant of and prioritize shutdown safety to prevent deadlocks and hangs.
 
 Key principles:

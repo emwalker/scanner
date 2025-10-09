@@ -10,7 +10,7 @@ use std::{
     collections::HashSet,
     sync::{LazyLock, Mutex, mpsc::SyncSender},
 };
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Global set of processed frequencies (rounded to nearest kHz) to avoid duplicate analysis
 pub static PROCESSED_FREQUENCIES: LazyLock<Mutex<HashSet<u64>>> =
@@ -18,7 +18,13 @@ pub static PROCESSED_FREQUENCIES: LazyLock<Mutex<HashSet<u64>>> =
 
 /// Clear the processed frequencies set for a new scanning session
 pub fn clear_processed_frequencies() {
-    let mut processed = PROCESSED_FREQUENCIES.lock().unwrap();
+    let mut processed = match PROCESSED_FREQUENCIES.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            warn!("PROCESSED_FREQUENCIES mutex poisoned - recovering");
+            poisoned.into_inner()
+        }
+    };
     let count = processed.len();
     processed.clear();
     debug!(
@@ -125,7 +131,7 @@ fn analyze_spectral_characteristics(
 
     // Sort peaks by frequency for width analysis
     let mut sorted_peaks = nearby_peaks.clone();
-    sorted_peaks.sort_by(|a, b| a.frequency_hz.partial_cmp(&b.frequency_hz).unwrap());
+    sorted_peaks.sort_by(|a, b| a.frequency_hz.total_cmp(&b.frequency_hz));
 
     // Calculate spectral width characteristics
     let peak_count = sorted_peaks.len();
@@ -140,7 +146,7 @@ fn analyze_spectral_characteristics(
     let max_magnitude = sorted_peaks
         .iter()
         .map(|p| p.magnitude)
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .max_by(|a, b| a.total_cmp(b))
         .unwrap_or(0.0);
 
     // Calculate average magnitude
@@ -249,7 +255,7 @@ fn create_fm_candidate(
     let max_magnitude = nearby_peaks
         .iter()
         .map(|p| p.magnitude)
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .max_by(|a, b| a.total_cmp(b))
         .unwrap_or(0.0);
     let avg_magnitude = if peak_count > 0 {
         nearby_peaks.iter().map(|p| p.magnitude).sum::<f32>() / peak_count as f32
