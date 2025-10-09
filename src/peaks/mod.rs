@@ -154,7 +154,7 @@ pub fn collect_peaks_from_source(
 
     // Log multi-frame integration statistics if enabled
     if let Some(ref integrator) = multi_frame_integrator {
-        let stats = integrator.get_statistics();
+        let stats = integrator.statistics();
         debug!(
             total_trackers = stats.total_trackers,
             confirmed_trackers = stats.confirmed_trackers,
@@ -283,6 +283,7 @@ pub fn process_samples_for_peaks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_quality::AudioAnalyzer;
     use crate::testing::signal_generation::{PeakTestSignalGenerator, TestSignal};
     use crate::types::ScanningConfig;
 
@@ -295,7 +296,7 @@ mod tests {
             scanning_windows: Some(3),
             fft_size: 1024,
             peak_scan_duration: 0.5,
-            audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+            audio_analyzer: AudioAnalyzer::mock(),
 
             // Baseline: All features disabled
             enable_exponential_smoothing: false,
@@ -319,7 +320,7 @@ mod tests {
             scanning_windows: Some(3),
             fft_size: 1024,
             peak_scan_duration: 0.5,
-            audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+            audio_analyzer: AudioAnalyzer::mock(),
 
             // Test combination: Signal averaging + CFAR enabled, newer features disabled
             enable_exponential_smoothing: true,

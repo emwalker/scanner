@@ -3,7 +3,7 @@
 use super::PoolInner;
 use super::TunerId;
 use crate::sdr;
-use crate::types::Result;
+use crate::types::{Result, ScannerError};
 use rustradio::Complex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -70,7 +70,7 @@ impl Tuner {
     ) -> Result<rustradio::stream::ReadStream<Complex>> {
         // Check shutdown mode first (lock-free)
         if self.shutdown_mode.load(Ordering::SeqCst) {
-            return Err(crate::types::ScannerError::Custom(
+            return Err(ScannerError::Custom(
                 "Operation rejected - pool in shutdown mode".to_string(),
             ));
         }
@@ -88,7 +88,7 @@ impl Tuner {
     pub fn tune(&mut self, freq: f64) -> Result<()> {
         // Check shutdown mode first (lock-free)
         if self.shutdown_mode.load(Ordering::SeqCst) {
-            return Err(crate::types::ScannerError::Custom(
+            return Err(ScannerError::Custom(
                 "Operation rejected - pool in shutdown mode".to_string(),
             ));
         }
@@ -106,7 +106,7 @@ impl Tuner {
     pub fn set_gain(&mut self, gain: f64) -> Result<()> {
         // Check shutdown mode first (lock-free)
         if self.shutdown_mode.load(Ordering::SeqCst) {
-            return Err(crate::types::ScannerError::Custom(
+            return Err(ScannerError::Custom(
                 "Operation rejected - pool in shutdown mode".to_string(),
             ));
         }

@@ -67,6 +67,7 @@ pub fn configure_overlap_processing(overlap_percent: f32) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use crate::audio_quality::AudioAnalyzer;
     use crate::testing::signal_generation::{PeakTestSignalGenerator, TestSignal};
     use crate::types::{ScanningConfig, WindowType};
 
@@ -196,7 +197,7 @@ mod tests {
             scanning_windows: Some(2),
             fft_size: 2048, // Larger FFT for better frequency resolution
             peak_scan_duration: 0.5,
-            audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+            audio_analyzer: AudioAnalyzer::mock(),
 
             // Disable signal averaging and CFAR for windowing tests
             enable_exponential_smoothing: false,

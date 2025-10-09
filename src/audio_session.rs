@@ -1,5 +1,5 @@
 use crate::shutdown::ShutdownCoordinator;
-use crate::types::{Result, ScanningConfig, Signal};
+use crate::types::{Result, ScannerError, ScanningConfig, Signal};
 use crate::window::Window;
 use cpal::traits::StreamTrait;
 use cpal::{BufferSize, SampleFormat, StreamConfig};
@@ -38,9 +38,7 @@ impl AudioSession {
                 Window::create_audio_stream(&audio_device, &stream_config, audio_rx)?
             }
             _ => {
-                return Err(crate::types::ScannerError::Custom(
-                    "Unsupported audio format".to_string(),
-                ));
+                return Err(ScannerError::Custom("Unsupported audio format".to_string()));
             }
         };
 

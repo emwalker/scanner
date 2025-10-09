@@ -21,7 +21,7 @@ pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) 
     let in_interactive_mode = model.is_interactive();
 
     // Count total displayable candidates for scroll indicators
-    let displayable_windows = model.get_displayable_windows();
+    let displayable_windows = model.displayable_windows();
     let total_candidates: usize = displayable_windows
         .iter()
         .map(|(window_id, window)| {

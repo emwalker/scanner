@@ -1,6 +1,7 @@
 //! Detection Regression Tests
 //! Tests to prevent regressions in station detection capabilities
 
+use crate::audio_quality::AudioAnalyzer;
 use crate::testing::signal_generation::{PeakTestSignalGenerator, TestSignal};
 use crate::types::ScanningConfig;
 
@@ -14,7 +15,7 @@ fn test_signal_averaging_does_not_reduce_detection_count() {
         scanning_windows: Some(3),
         fft_size: 1024,
         peak_scan_duration: 0.5,
-        audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+        audio_analyzer: AudioAnalyzer::mock(),
 
         // Baseline: All signal averaging and CFAR features disabled
         enable_exponential_smoothing: false,
@@ -90,7 +91,7 @@ fn test_cfar_does_not_reduce_detection_count() {
         scanning_windows: Some(3),
         fft_size: 1024,
         peak_scan_duration: 0.5,
-        audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+        audio_analyzer: AudioAnalyzer::mock(),
 
         // Baseline: All features disabled
         enable_exponential_smoothing: false,
@@ -152,7 +153,7 @@ fn test_combined_phases_do_not_drastically_reduce_detection() {
         scanning_windows: Some(3),
         fft_size: 1024,
         peak_scan_duration: 0.5,
-        audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+        audio_analyzer: AudioAnalyzer::mock(),
 
         // Baseline: All features disabled
         enable_exponential_smoothing: false,
@@ -177,7 +178,7 @@ fn test_combined_phases_do_not_drastically_reduce_detection() {
         scanning_windows: Some(3),
         fft_size: 1024,
         peak_scan_duration: 0.5,
-        audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+        audio_analyzer: AudioAnalyzer::mock(),
 
         // Test combination: Signal averaging + CFAR enabled, newer features disabled
         enable_exponential_smoothing: true,

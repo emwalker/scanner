@@ -1,4 +1,4 @@
-use crate::types::{ModulationType, Result};
+use crate::types::{ModulationType, Result, ScannerError};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
@@ -126,7 +126,7 @@ impl AudioCaptureSink {
 
             test_num += 1;
             if test_num > 999 {
-                return Err(crate::types::ScannerError::Custom(
+                return Err(ScannerError::Custom(
                     "Maximum test number (999) exceeded for frequency".to_string(),
                 ));
             }

@@ -3,6 +3,7 @@
 //! This module provides rule-based audio quality classification using handcrafted features
 //! and explicit decision rules.
 
+use crate::types::ScannerError;
 use tracing::debug;
 
 /// Rule-based audio quality classifier
@@ -18,9 +19,7 @@ impl Classifier {
     /// Extract comprehensive audio features
     fn extract_features(&self, samples: &[f32]) -> crate::types::Result<super::AudioFeatures> {
         if samples.is_empty() {
-            return Err(crate::types::ScannerError::Custom(
-                "Empty audio samples".to_string(),
-            ));
+            return Err(ScannerError::Custom("Empty audio samples".to_string()));
         }
 
         // 1. Energy-based features

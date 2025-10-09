@@ -7,6 +7,7 @@ use crate::types::Result;
 use rustradio::Complex;
 use rustradio::graph::GraphRunner;
 use std::any::Any;
+use std::f32::consts::PI;
 
 /// Mock backend for testing without hardware
 ///
@@ -99,8 +100,7 @@ impl DeviceTrait for MockDevice {
 
         let samples: Vec<Complex> = (0..total_samples)
             .map(|i| {
-                let phase = 2.0 * std::f32::consts::PI * (tone_freq as f32) * (i as f32)
-                    / (samp_rate as f32);
+                let phase = 2.0 * PI * (tone_freq as f32) * (i as f32) / (samp_rate as f32);
                 Complex::new(phase.cos() * 0.5, phase.sin() * 0.5)
             })
             .collect();

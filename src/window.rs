@@ -1,7 +1,7 @@
 use crate::pool::SegmentTrait;
 use crate::shutdown::ShutdownCoordinator;
 use crate::terminal::{ProgressEvent, ProgressEventType, ProgressReporter};
-use crate::types::{Result, ScanningConfig};
+use crate::types::{Result, ScannerError, ScanningConfig};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, StreamConfig};
 use rustradio::graph::GraphRunner;
@@ -686,9 +686,7 @@ impl Window {
                 Window::create_audio_stream(&audio_device, &stream_config, audio_rx)?
             }
             _ => {
-                return Err(crate::types::ScannerError::Custom(
-                    "Unsupported audio format".to_string(),
-                ));
+                return Err(ScannerError::Custom("Unsupported audio format".to_string()));
             }
         };
 

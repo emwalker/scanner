@@ -124,7 +124,7 @@ impl MockProgressReporter {
     }
 
     /// Get all captured events
-    pub fn get_events(&self) -> Vec<ProgressEvent> {
+    pub fn events(&self) -> Vec<ProgressEvent> {
         self.events.lock().unwrap().clone()
     }
 
@@ -155,7 +155,7 @@ mod tests {
 
         // Verify initial state
         assert_eq!(mock_reporter.event_count(), 0);
-        assert!(mock_reporter.get_events().is_empty());
+        assert!(mock_reporter.events().is_empty());
 
         // Report a test event
         let event = ProgressEvent {
@@ -176,7 +176,7 @@ mod tests {
 
         // Verify event was captured
         assert_eq!(mock_reporter.event_count(), 1);
-        let events = mock_reporter.get_events();
+        let events = mock_reporter.events();
         assert_eq!(events.len(), 1);
 
         let captured_event = &events[0];
@@ -241,7 +241,7 @@ mod tests {
 
         // Verify all events were captured
         assert_eq!(mock_reporter.event_count(), 3);
-        let captured_events = mock_reporter.get_events();
+        let captured_events = mock_reporter.events();
         assert_eq!(captured_events.len(), 3);
 
         // Verify event types in order
@@ -285,7 +285,7 @@ mod tests {
 
         // Verify events are cleared
         assert_eq!(mock_reporter.event_count(), 0);
-        assert!(mock_reporter.get_events().is_empty());
+        assert!(mock_reporter.events().is_empty());
     }
 
     #[test]

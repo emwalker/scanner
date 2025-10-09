@@ -6,7 +6,7 @@
 //! - All threads are properly joined during cleanup
 //! - It's architecturally impossible to forget shutdown checks
 
-use crate::types::Result;
+use crate::types::{Result, ScannerError};
 use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -143,7 +143,7 @@ impl ShutdownCoordinator {
                         error = ?e,
                         "ShutdownCoordinator: Thread panicked"
                     );
-                    return Err(crate::types::ScannerError::Custom(
+                    return Err(ScannerError::Custom(
                         "Thread panicked during shutdown".to_string(),
                     ));
                 }

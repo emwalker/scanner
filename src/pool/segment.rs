@@ -5,7 +5,7 @@
 
 use crate::pool::{SegmentTrait, Tuner};
 use crate::shutdown::ShutdownCoordinator;
-use crate::types::{Result, ScanningConfig};
+use crate::types::{Result, ScannerError, ScanningConfig};
 use rustradio::graph::{Graph, GraphRunner};
 use std::sync::Arc;
 use std::thread;
@@ -47,9 +47,7 @@ impl Segment {
         // Check shutdown before acquiring from pool
         if shutdown_token.is_cancelled() {
             debug!("Shutdown requested before pool acquisition, aborting");
-            return Err(crate::types::ScannerError::Custom(
-                "Shutdown in progress".to_string(),
-            ));
+            return Err(ScannerError::Custom("Shutdown in progress".to_string()));
         }
 
         // Acquire tuner from pool
@@ -131,7 +129,7 @@ impl Segment {
                 debug!("Pool-based SDR graph ready");
             }
             Err(_) => {
-                return Err(crate::types::ScannerError::Custom(
+                return Err(ScannerError::Custom(
                     "Pool-based SDR graph failed to initialize within 5 seconds".to_string(),
                 ));
             }

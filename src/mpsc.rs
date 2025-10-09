@@ -1,6 +1,8 @@
 use rustradio::Float;
 use rustradio::stream::ReadStream;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{SyncSender, TrySendError};
 use tracing::debug;
 
 /// A batch of audio samples transmitted as a single unit
@@ -24,7 +26,7 @@ impl AudioPacket {
 /// Rust Radio sink that pushes sample packets to an MPSC channel
 pub struct MpscSink {
     src: ReadStream<Float>,
-    sender: std::sync::mpsc::SyncSender<AudioPacket>,
+    sender: SyncSender<AudioPacket>,
     channel_name: String,
     packet_size: usize,
     buffer: Vec<f32>,
@@ -33,7 +35,7 @@ pub struct MpscSink {
 impl MpscSink {
     pub fn new(
         src: ReadStream<Float>,
-        sender: std::sync::mpsc::SyncSender<AudioPacket>,
+        sender: SyncSender<AudioPacket>,
         channel_name: String,
         packet_size: usize,
     ) -> Self {
@@ -68,9 +70,8 @@ impl rustradio::block::Block for MpscSink {
             return Ok(rustradio::block::BlockRet::WaitForStream(&self.src, 1));
         }
 
-        static BACKPRESSURE_COUNTER: std::sync::atomic::AtomicUsize =
-            std::sync::atomic::AtomicUsize::new(0);
-        static TOTAL_SAMPLES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        static BACKPRESSURE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        static TOTAL_SAMPLES: AtomicU64 = AtomicU64::new(0);
 
         let mut consumed = 0;
         let mut packets_sent = 0;
@@ -91,10 +92,8 @@ impl rustradio::block::Block for MpscSink {
 
                 match self.sender.try_send(packet) {
                     Ok(_) => packets_sent += 1,
-                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                        let bp_count = BACKPRESSURE_COUNTER
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                            + 1;
+                    Err(TrySendError::Full(_)) => {
+                        let bp_count = BACKPRESSURE_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
                         debug!(
                             backpressure_event = bp_count,
                             channel_name = %self.channel_name,
@@ -104,7 +103,7 @@ impl rustradio::block::Block for MpscSink {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                         break;
                     }
-                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    Err(TrySendError::Disconnected(_)) => {
                         debug!(
                             channel_name = %self.channel_name,
                             "MPSC channel disconnected"
@@ -116,8 +115,7 @@ impl rustradio::block::Block for MpscSink {
             }
         }
 
-        let total = TOTAL_SAMPLES.fetch_add(consumed as u64, std::sync::atomic::Ordering::Relaxed)
-            + consumed as u64;
+        let total = TOTAL_SAMPLES.fetch_add(consumed as u64, Ordering::Relaxed) + consumed as u64;
         if packets_sent > 0 && packets_sent % 100 == 0 {
             debug!(
                 packets_sent = packets_sent,

@@ -2,6 +2,7 @@
 
 use crate::types::Result;
 use rustradio::Complex;
+use std::f32::consts::PI;
 use tracing::debug;
 
 /// Enhanced test signal generator for peak detection validation
@@ -75,11 +76,11 @@ impl PeakTestSignalGenerator {
         }
     }
 
-    pub fn get_expected_peaks(&self) -> Vec<f64> {
+    pub fn expected_peaks(&self) -> Vec<f64> {
         self.signals.iter().map(|s| s.frequency_hz).collect()
     }
 
-    pub fn get_signal_labels(&self) -> Vec<String> {
+    pub fn signal_labels(&self) -> Vec<String> {
         self.signals.iter().map(|s| s.label.clone()).collect()
     }
 }
@@ -101,8 +102,7 @@ impl super::test_helpers::SampleSource for PeakTestSignalGenerator {
             // Add all test signals
             for signal in &self.signals {
                 let freq_offset = signal.frequency_hz - self.center_frequency;
-                let angular_freq =
-                    2.0 * std::f32::consts::PI * freq_offset as f32 / self.sample_rate as f32;
+                let angular_freq = 2.0 * PI * freq_offset as f32 / self.sample_rate as f32;
                 let phase = angular_freq * time + signal.phase_offset;
 
                 real += signal.amplitude * phase.cos();

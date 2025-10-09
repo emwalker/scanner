@@ -5,6 +5,7 @@
 
 use crate::types::Peak;
 use std::collections::HashMap;
+use std::time::Instant;
 use tracing::debug;
 
 /// Configuration for multi-frame peak integration
@@ -51,7 +52,7 @@ impl PeakTracker {
         Self {
             frequency_hz,
             detections: vec![(frame_id, magnitude)],
-            last_seen: std::time::Instant::now(),
+            last_seen: Instant::now(),
             average_magnitude: magnitude,
             confidence: 1.0 / 5.0, // 1 detection out of 5 frames
         }
@@ -59,7 +60,7 @@ impl PeakTracker {
 
     fn add_detection(&mut self, magnitude: f32, frame_id: u64, config: &MultiFrameConfig) {
         self.detections.push((frame_id, magnitude));
-        self.last_seen = std::time::Instant::now();
+        self.last_seen = Instant::now();
 
         // Keep only recent frames
         self.detections
@@ -207,11 +208,11 @@ impl MultiFrameIntegrator {
         }
 
         // Return confirmed peaks with adaptive thresholds
-        self.get_confirmed_peaks()
+        self.confirmed_peaks()
     }
 
     /// Get all confirmed peaks from current trackers
-    fn get_confirmed_peaks(&self) -> Vec<Peak> {
+    fn confirmed_peaks(&self) -> Vec<Peak> {
         self.trackers
             .values()
             .filter(|tracker| tracker.is_confirmed(&self.config))
@@ -229,7 +230,7 @@ impl MultiFrameIntegrator {
     }
 
     /// Get current tracking statistics
-    pub fn get_statistics(&self) -> MultiFrameStatistics {
+    pub fn statistics(&self) -> MultiFrameStatistics {
         let total_trackers = self.trackers.len();
         let confirmed_trackers = self
             .trackers
@@ -374,7 +375,7 @@ mod tests {
         let confirmed5 = integrator.process_frame(frame5);
         assert_eq!(confirmed5.len(), 1, "Should maintain confirmation");
 
-        let stats = integrator.get_statistics();
+        let stats = integrator.statistics();
         assert_eq!(stats.confirmed_trackers, 1);
         assert_eq!(stats.current_frame, 5);
     }
@@ -423,7 +424,7 @@ mod tests {
         );
 
         // Verify the signal was tracked across all frames
-        let stats = integrator.get_statistics();
+        let stats = integrator.statistics();
         assert_eq!(stats.confirmed_trackers, 1);
         assert_eq!(stats.current_frame, 5);
     }
@@ -484,7 +485,7 @@ mod tests {
         assert_eq!(confirmed5.len(), 0);
 
         // Verify no spurious confirmations
-        let stats = integrator.get_statistics();
+        let stats = integrator.statistics();
         assert_eq!(
             stats.confirmed_trackers, 0,
             "Random noise should not be confirmed"

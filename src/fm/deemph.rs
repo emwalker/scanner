@@ -1,6 +1,7 @@
 use rustradio::block::{Block, BlockEOF, BlockName, BlockRet};
 use rustradio::stream::{ReadStream, WriteStream};
 use rustradio::{Float, Result};
+use std::f32::consts::PI;
 
 pub struct Deemphasis {
     input: ReadStream<Float>,
@@ -16,7 +17,7 @@ impl Deemphasis {
         time_constant_us: Float,
     ) -> (Self, ReadStream<Float>) {
         let time_constant_s = time_constant_us * 1e-6;
-        let alpha = 1.0 / (time_constant_s * 2.0 * std::f32::consts::PI * sample_rate + 1.0);
+        let alpha = 1.0 / (time_constant_s * 2.0 * PI * sample_rate + 1.0);
         let (output, output_read_stream) = WriteStream::new();
         (
             Self {

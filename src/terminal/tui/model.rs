@@ -369,7 +369,7 @@ impl Model {
         }
 
         let window_id = event.metadata.window_id;
-        let window = self.get_or_create_window(window_id);
+        let window = self.or_create_window(window_id);
 
         let candidate_index = if let Some(&index) = window.candidate_lookup.get(candidate_id) {
             debug!(index = index, "Found existing candidate");
@@ -493,7 +493,7 @@ impl Model {
         }
     }
 
-    fn get_or_create_window(&mut self, window_id: usize) -> &mut WindowProgress {
+    fn or_create_window(&mut self, window_id: usize) -> &mut WindowProgress {
         self.windows
             .entry(window_id)
             .or_insert_with(|| WindowProgress {
@@ -624,7 +624,7 @@ impl Model {
     /// Enter selection mode - pauses scanning and allows browsing candidates
     pub fn enter_selection_mode(&mut self) {
         // Start with most recent candidate selected
-        let candidate_count = self.get_selectable_candidate_count();
+        let candidate_count = self.selectable_candidate_count();
         if candidate_count > 0 {
             let selected_index = candidate_count - 1;
             self.ui_mode = UiMode::NavigatingScanner { selected_index };
@@ -643,7 +643,7 @@ impl Model {
     }
 
     /// Get ordered list of displayable windows (oldest to newest)
-    pub fn get_displayable_windows(&self) -> Vec<(&usize, &WindowProgress)> {
+    pub fn displayable_windows(&self) -> Vec<(&usize, &WindowProgress)> {
         self.windows
             .iter()
             .filter(|(_, window)| window.should_display())
@@ -651,7 +651,7 @@ impl Model {
     }
 
     /// Get count of displayable windows
-    pub fn get_displayable_window_count(&self) -> usize {
+    pub fn displayable_window_count(&self) -> usize {
         self.windows
             .values()
             .filter(|window| window.should_display())
@@ -661,9 +661,9 @@ impl Model {
     /// Get flattened list of displayable candidates across all windows
     /// This includes rejected candidates for display purposes (during scanning)
     /// In selection mode, rejected candidates are filtered out
-    pub fn get_displayable_candidates(&self) -> Vec<(usize, &CandidateProgress)> {
+    pub fn displayable_candidates(&self) -> Vec<(usize, &CandidateProgress)> {
         let mut candidates = Vec::new();
-        for (window_id, window) in self.get_displayable_windows() {
+        for (window_id, window) in self.displayable_windows() {
             let is_current = *window_id == self.current_window;
             for candidate in window.displayable_candidates(is_current, self.selection_mode()) {
                 candidates.push((*window_id, candidate));
@@ -674,9 +674,9 @@ impl Model {
 
     /// Get flattened list of selectable candidates across all windows
     /// Filters out rejected candidates - users should not be able to select rejected stations
-    pub fn get_selectable_candidates(&self) -> Vec<(usize, &CandidateProgress)> {
+    pub fn selectable_candidates(&self) -> Vec<(usize, &CandidateProgress)> {
         let mut candidates = Vec::new();
-        for (window_id, window) in self.get_displayable_windows() {
+        for (window_id, window) in self.displayable_windows() {
             let is_current = *window_id == self.current_window;
             for candidate in window.displayable_candidates(is_current, self.selection_mode()) {
                 // Skip rejected candidates - they shouldn't be selectable
@@ -689,13 +689,13 @@ impl Model {
     }
 
     /// Get count of displayable candidates (includes rejected for display)
-    pub fn get_displayable_candidate_count(&self) -> usize {
-        self.get_displayable_candidates().len()
+    pub fn displayable_candidate_count(&self) -> usize {
+        self.displayable_candidates().len()
     }
 
     /// Get count of selectable candidates (excludes rejected)
-    pub fn get_selectable_candidate_count(&self) -> usize {
-        self.get_selectable_candidates().len()
+    pub fn selectable_candidate_count(&self) -> usize {
+        self.selectable_candidates().len()
     }
 
     /// Get the window_id, center frequency, and candidate frequency for the currently selected candidate
@@ -705,7 +705,7 @@ impl Model {
         }
 
         let selected_idx = self.selected_candidate_index()?;
-        let candidates = self.get_selectable_candidates();
+        let candidates = self.selectable_candidates();
 
         if selected_idx >= candidates.len() {
             return None;
@@ -741,7 +741,7 @@ impl Model {
             return;
         }
 
-        let candidate_count = self.get_selectable_candidate_count();
+        let candidate_count = self.selectable_candidate_count();
         if candidate_count == 0 {
             return;
         }
@@ -831,7 +831,7 @@ impl Model {
             return false;
         }
 
-        let candidate_count = self.get_selectable_candidate_count();
+        let candidate_count = self.selectable_candidate_count();
         self.selected_candidate_index() == Some(candidate_count)
     }
 
@@ -885,7 +885,7 @@ impl Model {
             FocusState::Scan => {
                 if !self.selection_mode() {
                     // Start with most recent candidate selected (don't enter browsing mode yet)
-                    let candidate_count = self.get_selectable_candidate_count();
+                    let candidate_count = self.selectable_candidate_count();
                     if candidate_count > 0 {
                         let selected_index = candidate_count - 1;
                         // Transition: Idle → NavigatingScanner

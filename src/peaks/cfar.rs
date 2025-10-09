@@ -75,6 +75,7 @@ pub fn extract_peaks_with_cfar(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_quality::AudioAnalyzer;
     use crate::testing::signal_generation::{PeakTestSignalGenerator, TestSignal};
     use crate::types::ScanningConfig;
 
@@ -285,7 +286,7 @@ mod tests {
             scanning_windows: Some(3),
             fft_size: 1024,
             peak_scan_duration: 0.5,
-            audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+            audio_analyzer: AudioAnalyzer::mock(),
 
             // Baseline: All features disabled
             enable_exponential_smoothing: false,
@@ -344,7 +345,7 @@ mod tests {
             scanning_windows: Some(2),
             fft_size: 1024,
             peak_scan_duration: 0.5, // Fast for testing
-            audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+            audio_analyzer: AudioAnalyzer::mock(),
 
             // Signal averaging: Disable to isolate CFAR testing
             enable_exponential_smoothing: false,

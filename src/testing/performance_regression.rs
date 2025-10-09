@@ -80,13 +80,13 @@ fn measure_peak_detection_performance(
     let expected_peaks = dataset.expected_frequencies();
 
     let start_time = std::time::Instant::now();
-    let start_memory = get_memory_usage_mb();
+    let start_memory = memory_usage_mb();
 
     // Perform peak detection
     let peaks = crate::peaks::collect_peaks_from_source(config, &mut generator)?;
 
     let processing_time = start_time.elapsed();
-    let end_memory = get_memory_usage_mb();
+    let end_memory = memory_usage_mb();
     let memory_used = end_memory.saturating_sub(start_memory);
 
     // Calculate throughput
@@ -211,7 +211,7 @@ fn analyze_performance_regression(
 }
 
 /// Get current memory usage in MB (simplified implementation)
-fn get_memory_usage_mb() -> u64 {
+fn memory_usage_mb() -> u64 {
     // This is a simplified implementation. In production, you would use
     // a proper memory profiling library like `memory-stats` or `procfs`
     0 // Placeholder - actual implementation would read from /proc/self/status

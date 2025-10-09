@@ -1,4 +1,4 @@
-use crate::types::{Format, Logger, Result};
+use crate::types::{Format, Logger, Result, ScannerError};
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use tracing::Level;
@@ -14,7 +14,7 @@ pub struct LogBuffer(Arc<Mutex<Vec<u8>>>);
 
 impl LogBuffer {
     /// Consumes the buffer and returns the captured logs as a string.
-    pub fn get_string(&self) -> String {
+    pub fn into_string(&self) -> String {
         let mut buffer = self.0.lock().unwrap();
         let s = String::from_utf8_lossy(&buffer).to_string();
         buffer.clear(); // Clear the buffer after getting the contents.
@@ -235,9 +235,7 @@ impl Logger for DefaultLogger {
                 .write(true)
                 .truncate(true)
                 .open(log_file_path)
-                .map_err(|e| {
-                    crate::types::ScannerError::Custom(format!("Failed to open log file: {}", e))
-                })?;
+                .map_err(|e| ScannerError::Custom(format!("Failed to open log file: {}", e)))?;
             let file_writer = FileWriter::new(file);
 
             match self.format {

@@ -66,7 +66,7 @@ pub trait FrequencyTracker {
     fn process_sample(&mut self, sample: Complex) -> TrackingState;
 
     /// Get confidence in the current estimate (0.0 to 1.0)
-    fn get_confidence(&self) -> f32;
+    fn confidence(&self) -> f32;
 
     /// Reset the tracker to start over
     #[allow(unused)]
@@ -226,7 +226,7 @@ impl FrequencyTracker for PllTracker {
         TrackingState::Converging
     }
 
-    fn get_confidence(&self) -> f32 {
+    fn confidence(&self) -> f32 {
         if self.frequency_history.len() < 10 {
             return 0.0;
         }

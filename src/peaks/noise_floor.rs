@@ -4,6 +4,7 @@
 //! statistical methods to adapt detection thresholds to varying RF environments.
 
 use crate::types::Peak;
+use std::cmp::Ordering;
 use std::collections::VecDeque;
 use tracing::debug;
 
@@ -118,7 +119,7 @@ impl NoiseFloorEstimator {
         }
 
         // Sort for percentile calculation
-        all_magnitudes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        all_magnitudes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
 
         // Calculate percentile index
         let percentile_index =
@@ -175,8 +176,7 @@ impl NoiseFloorEstimator {
 
             // Calculate median of local background
             if !local_background.is_empty() {
-                local_background
-                    .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                local_background.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
                 let median_idx = local_background.len() / 2;
                 let local_median = local_background[median_idx];
 
@@ -225,7 +225,7 @@ impl NoiseFloorEstimator {
     }
 
     /// Get statistics for monitoring and debugging
-    pub fn get_statistics(&self) -> NoiseFloorStatistics {
+    pub fn statistics(&self) -> NoiseFloorStatistics {
         NoiseFloorStatistics {
             current_noise_floor: self.current_noise_floor,
             current_threshold: self.current_threshold,

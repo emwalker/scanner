@@ -450,7 +450,7 @@ fn run_frequency_tracking(
                         TrackingState::Converged(freq) => {
                             tracing::debug!(
                                 refined_freq_mhz = freq / 1e6,
-                                confidence = tracker.get_confidence(),
+                                confidence = tracker.confidence(),
                                 "Frequency tracking converged"
                             );
                             return Some(freq);
@@ -488,6 +488,7 @@ fn run_frequency_tracking(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_quality::AudioAnalyzer;
     use crate::terminal::{MockProgressReporter, NoOpProgressReporter, ProgressEventType};
     use crate::types::{ScanningConfig, Signal, TEST_FREQUENCY_HZ};
     use std::sync::mpsc;
@@ -497,7 +498,7 @@ mod tests {
     fn create_test_config() -> ScanningConfig {
         ScanningConfig {
             disable_frequency_tracking: true, // Disable to avoid complex tracking logic in tests
-            audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+            audio_analyzer: AudioAnalyzer::mock(),
             squelch_learning_duration: 0.1, // Short duration for fast tests
             samp_rate: 1_000_000.0,
             ..Default::default()
@@ -631,7 +632,7 @@ mod tests {
         assert!(result.is_ok(), "Pipeline should complete successfully");
 
         // Verify progress events were emitted
-        let events = progress_reporter.get_events();
+        let events = progress_reporter.events();
         assert!(
             !events.is_empty(),
             "Should emit at least one progress event"
@@ -687,7 +688,7 @@ mod tests {
         );
 
         // Should have emitted at least peak detection event
-        let events = progress_reporter.get_events();
+        let events = progress_reporter.events();
         assert!(!events.is_empty(), "Should have progress events");
 
         // First event should be peak detection

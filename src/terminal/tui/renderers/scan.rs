@@ -23,7 +23,7 @@ pub fn render_scan(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, th
     }
 
     // Get displayable windows for selection tracking
-    let displayable_windows = model.get_displayable_windows();
+    let displayable_windows = model.displayable_windows();
 
     // Interactive mode means user is navigating/browsing
     let in_interactive_mode = model.is_interactive();

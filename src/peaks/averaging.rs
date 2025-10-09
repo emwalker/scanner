@@ -108,6 +108,7 @@ pub fn apply_exponential_smoothing(
 
 #[cfg(test)]
 mod tests {
+    use crate::audio_quality::AudioAnalyzer;
     use crate::testing::signal_generation::{PeakTestSignalGenerator, TestSignal};
     use crate::types::ScanningConfig;
 
@@ -309,7 +310,7 @@ mod tests {
             scanning_windows: Some(3),
             fft_size: 1024,
             peak_scan_duration: 0.5,
-            audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+            audio_analyzer: AudioAnalyzer::mock(),
 
             // Baseline: All signal averaging features disabled
             enable_exponential_smoothing: false,
@@ -384,7 +385,7 @@ mod tests {
             scanning_windows: Some(2),
             fft_size: 1024,
             peak_scan_duration: 1.5,
-            audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+            audio_analyzer: AudioAnalyzer::mock(),
             // For testing, we need to explicitly control signal averaging features
             // These tests compare baseline (disabled) vs improved (enabled)
             enable_exponential_smoothing: false,

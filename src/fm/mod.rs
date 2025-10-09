@@ -8,7 +8,7 @@ use rustradio::blocks::QuadratureDemod;
 use rustradio::graph::{Graph, GraphRunner};
 use std::{
     collections::HashSet,
-    sync::{LazyLock, Mutex},
+    sync::{LazyLock, Mutex, mpsc::SyncSender},
 };
 use tracing::debug;
 
@@ -47,7 +47,7 @@ impl Candidate {
     pub fn analyze(
         &self,
         sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
-        signal_tx: std::sync::mpsc::SyncSender<crate::types::Signal>,
+        signal_tx: SyncSender<crate::types::Signal>,
         context: &crate::pipeline::AnalysisContext,
     ) -> Result<()> {
         // Delegate to the new testable pipeline function
@@ -327,7 +327,7 @@ pub fn create_detection_graph(
     config: &ScanningConfig,
     center_freq: f64,
     tune_freq: f64,
-    signal_tx: Option<std::sync::mpsc::SyncSender<crate::types::Signal>>,
+    signal_tx: Option<SyncSender<crate::types::Signal>>,
     audio_analyzer: crate::audio_quality::AudioAnalyzer,
     progress_reporter: Option<std::sync::Arc<dyn crate::terminal::ProgressReporter + Send + Sync>>,
     window_id: usize,
@@ -428,6 +428,7 @@ pub fn create_detection_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_quality::AudioAnalyzer;
     use crate::testing::*;
 
     #[test]
@@ -475,7 +476,7 @@ mod tests {
             peak_scan_duration: 0.1,        // Short duration for testing
             samp_rate: 1000000.0,
             disable_frequency_tracking: true, // Disable for test to keep existing behavior
-            audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+            audio_analyzer: AudioAnalyzer::mock(),
 
             // Disable signal averaging and CFAR features for baseline test behavior
             enable_exponential_smoothing: false,

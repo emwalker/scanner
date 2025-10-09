@@ -6,8 +6,10 @@
 
 use crate::types::Result;
 use rustradio::Complex;
+use std::f32::consts::PI;
 use std::fs::File;
 use std::io::{BufReader, Read};
+use tokio::sync::broadcast::error::TryRecvError;
 use tracing::debug;
 
 /// Abstraction for sources of I/Q samples
@@ -86,8 +88,7 @@ impl SampleSource for MockSampleSource {
             return Ok(0);
         }
 
-        let angular_freq =
-            2.0 * std::f32::consts::PI * self.frequency_offset / self.sample_rate as f32;
+        let angular_freq = 2.0 * PI * self.frequency_offset / self.sample_rate as f32;
         debug!(
             "MockSampleSource: freq_offset={}, angular_freq={}",
             self.frequency_offset, angular_freq
@@ -107,8 +108,8 @@ impl SampleSource for MockSampleSource {
             self.phase += angular_freq;
 
             // Wrap phase to avoid accumulation errors
-            if self.phase > 2.0 * std::f32::consts::PI {
-                self.phase -= 2.0 * std::f32::consts::PI;
+            if self.phase > 2.0 * PI {
+                self.phase -= 2.0 * PI;
             }
         }
 
@@ -264,7 +265,7 @@ impl SampleSource for SdrStreamSource {
                     *slot = sample;
                     samples_read += 1;
                 }
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                Err(TryRecvError::Empty) => {
                     // If we've read some samples, return what we have
                     if samples_read > 0 {
                         break;
@@ -273,11 +274,11 @@ impl SampleSource for SdrStreamSource {
                     thread::sleep(Duration::from_micros(self.timeout_us));
                     continue;
                 }
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                Err(TryRecvError::Lagged(_)) => {
                     // Continue trying - lagged messages are not fatal
                     continue;
                 }
-                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                Err(TryRecvError::Closed) => {
                     // Channel closed - return what we have
                     break;
                 }

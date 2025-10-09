@@ -127,7 +127,232 @@ impl TuiProgressDisplay {
         Ok(result?)
     }
 
-    #[allow(clippy::cognitive_complexity)]
+    /// Check if the application should quit
+    fn should_quit(&self) -> bool {
+        self.model.should_quit || self.shutdown_token.is_cancelled()
+    }
+
+    /// Check if the application should auto-exit due to inactivity
+    fn should_auto_exit(&self, iterations: u32) -> bool {
+        iterations > 2000 && self.model.is_empty()
+    }
+
+    /// Handle quit keys (Ctrl-C, Ctrl-D, 'q')
+    fn handle_quit_keys(&mut self, key: &event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                self.model.quit();
+                true
+            }
+            KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                self.model.quit();
+                true
+            }
+            KeyCode::Char('q') if !self.model.theme_selector_open => {
+                self.model.quit();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Handle theme selector navigation
+    fn handle_theme_selector(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Up => {
+                let all_themes = themes::ThemeName::all();
+                self.model.theme_selector_prev(all_themes.len());
+                self.current_theme = all_themes[self.model.theme_selector_index].clone();
+                self.theme = create_theme(&self.current_theme);
+            }
+            KeyCode::Down => {
+                let all_themes = themes::ThemeName::all();
+                self.model.theme_selector_next(all_themes.len());
+                self.current_theme = all_themes[self.model.theme_selector_index].clone();
+                self.theme = create_theme(&self.current_theme);
+            }
+            KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') => {
+                self.model.close_theme_selector();
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle navigation keys (arrows)
+    fn handle_navigation_keys(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Up => self.model.navigate_up(),
+            KeyCode::Down => self.model.navigate_down(),
+            KeyCode::Left => self.model.navigate_left(),
+            KeyCode::Right => {
+                // Hardcode tuner count to 2 for now (will be dynamic later)
+                self.model.navigate_right(2);
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle tuning/playback actions (Enter key in various contexts)
+    fn handle_tuning_actions(&mut self, key: &event::KeyEvent) -> bool {
+        let mut needs_redraw = false;
+
+        if key.code != KeyCode::Enter || self.model.theme_selector_open {
+            return false;
+        }
+
+        // Case 1: Enter browsing mode from scan mode
+        if matches!(self.model.focus_state, model::FocusState::Scan)
+            && self.model.selection_mode()
+            && !self.model.browsing_mode()
+            && self.model.selected_candidate_index().is_some()
+        {
+            if let Some(selected_index) = self.model.selected_candidate_index() {
+                self.model.ui_mode = model::UiMode::AwaitingTune {
+                    navigation_index: selected_index,
+                    tuning_index: selected_index,
+                };
+                needs_redraw = true;
+            }
+
+            if let Some(sender) = &self.command_sender {
+                let _ = sender.send(crate::terminal::ScannerCommand::Pause);
+            }
+            return needs_redraw;
+        }
+
+        // Case 2: Switch station while listening
+        if matches!(self.model.ui_mode, model::UiMode::Listening { .. })
+            && !self.model.is_continue_scan_selected()
+            && self.model.selected_candidate_index().is_some()
+        {
+            if let Some(info) = self.model.selected_candidate_info()
+                && let Some(sender) = &self.command_sender
+                && let Some(selected_index) = self.model.selected_candidate_index()
+            {
+                debug!(
+                    candidate_id = ?info.candidate_id,
+                    window_id = info.metadata.window_id,
+                    candidate_frequency_mhz = info.candidate_frequency / 1e6,
+                    "TUI: Sending TuneToCandidate command"
+                );
+
+                self.model.ui_mode = model::UiMode::AwaitingTune {
+                    navigation_index: selected_index,
+                    tuning_index: selected_index,
+                };
+                needs_redraw = true;
+
+                let _ = sender.send(crate::terminal::ScannerCommand::TuneToCandidate {
+                    candidate_id: info.candidate_id,
+                    window_id: info.metadata.window_id,
+                    center_frequency: info.metadata.center_frequency_hz,
+                    candidate_frequency: info.candidate_frequency,
+                    signal_strength: info.signal_strength,
+                    audio_quality: info.audio_quality,
+                });
+                self.model.playback_active = true;
+            }
+            return needs_redraw;
+        }
+
+        // Case 3: Resume scan from browsing mode
+        if matches!(
+            self.model.ui_mode,
+            model::UiMode::Listening { .. } | model::UiMode::AwaitingTune { .. }
+        ) && self.model.is_continue_scan_selected()
+        {
+            self.model.exit_browsing_mode();
+            self.model.ui_mode = model::UiMode::Idle;
+
+            if let Some(sender) = &self.command_sender {
+                let _ = sender.send(crate::terminal::ScannerCommand::ResumeScan);
+            }
+
+            if self.model.playback_active {
+                if let Some(sender) = &self.command_sender {
+                    let _ = sender.send(crate::terminal::ScannerCommand::StopListening);
+                }
+                self.model.playback_active = false;
+            }
+            needs_redraw = true;
+        }
+
+        needs_redraw
+    }
+
+    /// Process TUI events (progress updates and discovery)
+    fn process_tui_events(&mut self, iterations: &mut u32) -> io::Result<()> {
+        while let Ok(event) = self.receiver.try_recv() {
+            let is_paused_event = matches!(event, TuiEvent::Paused { .. });
+            self.model.update_tui_event(event);
+            *iterations = 0; // Reset iteration counter when we get events
+
+            // If we received Paused event and we're awaiting tune, send it now
+            if is_paused_event
+                && matches!(self.model.ui_mode, model::UiMode::AwaitingTune { .. })
+                && let Some(info) = self.model.selected_candidate_info()
+                && let Some(sender) = &self.command_sender
+            {
+                let _ = sender.send(crate::terminal::ScannerCommand::TuneToCandidate {
+                    candidate_id: info.candidate_id,
+                    window_id: info.metadata.window_id,
+                    center_frequency: info.metadata.center_frequency_hz,
+                    candidate_frequency: info.candidate_frequency,
+                    signal_strength: info.signal_strength,
+                    audio_quality: info.audio_quality,
+                });
+                self.model.playback_active = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle keyboard input with timeout, returns true if redraw needed
+    fn handle_keyboard_input(&mut self, animation_interval: Duration) -> io::Result<bool> {
+        if event::poll(animation_interval)?
+            && let Ok(Event::Key(key)) = event::read()
+        {
+            // Check for quit keys first
+            if self.handle_quit_keys(&key) {
+                return Ok(false);
+            }
+
+            // Theme selector takes priority when open
+            if self.model.theme_selector_open {
+                self.handle_theme_selector(key.code);
+                return Ok(false);
+            }
+
+            // Toggle theme selector
+            if matches!(key.code, KeyCode::Char('T')) {
+                let all_themes = themes::ThemeName::all();
+                let current_idx = all_themes
+                    .iter()
+                    .position(|t| t == &self.current_theme)
+                    .unwrap_or(0);
+                self.model.theme_selector_index = current_idx;
+                self.model.toggle_theme_selector();
+                return Ok(false);
+            }
+
+            // Handle navigation
+            if matches!(
+                key.code,
+                KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right
+            ) {
+                self.handle_navigation_keys(key.code);
+                return Ok(false);
+            }
+
+            // Handle tuning actions (Enter key)
+            let needs_redraw = self.handle_tuning_actions(&key);
+            return Ok(needs_redraw);
+        }
+
+        Ok(false)
+    }
+
+    /// Main TUI event loop
     fn run_app<B: ratatui::backend::Backend>(
         &mut self,
         terminal: &mut Terminal<B>,
@@ -140,210 +365,24 @@ impl TuiProgressDisplay {
             terminal.draw(|f| self.ui(f))?;
             iterations += 1;
 
-            if self.model.should_quit || self.shutdown_token.is_cancelled() {
+            if self.should_quit() {
                 break;
             }
 
-            // Auto-exit after some time if no events to prevent hanging
-            if iterations > 2000 && self.model.is_empty() {
-                // ~100 seconds with no candidates
+            if self.should_auto_exit(iterations) {
                 break;
             }
 
-            // Track if we need to redraw after keyboard input
-            let mut needs_redraw = false;
-
-            // Handle events with timeout matching animation interval
-            if event::poll(animation_interval)?
-                && let Ok(Event::Key(key)) = event::read()
-            {
-                match key.code {
-                    KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        self.model.quit();
-                    }
-                    KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                        self.model.quit();
-                    }
-                    KeyCode::Char('q') if !self.model.theme_selector_open => {
-                        self.model.quit();
-                    }
-                    _ if self.model.theme_selector_open => match key.code {
-                        KeyCode::Up => {
-                            let all_themes = themes::ThemeName::all();
-                            self.model.theme_selector_prev(all_themes.len());
-                            self.current_theme =
-                                all_themes[self.model.theme_selector_index].clone();
-                            self.theme = create_theme(&self.current_theme);
-                        }
-                        KeyCode::Down => {
-                            let all_themes = themes::ThemeName::all();
-                            self.model.theme_selector_next(all_themes.len());
-                            self.current_theme =
-                                all_themes[self.model.theme_selector_index].clone();
-                            self.theme = create_theme(&self.current_theme);
-                        }
-                        KeyCode::Enter => {
-                            self.model.close_theme_selector();
-                        }
-                        KeyCode::Esc | KeyCode::Char('q') => {
-                            self.model.close_theme_selector();
-                        }
-                        _ => {}
-                    },
-                    KeyCode::Char('T') if !self.model.theme_selector_open => {
-                        let all_themes = themes::ThemeName::all();
-                        let current_idx = all_themes
-                            .iter()
-                            .position(|t| t == &self.current_theme)
-                            .unwrap_or(0);
-                        self.model.theme_selector_index = current_idx;
-                        self.model.toggle_theme_selector();
-                    }
-                    KeyCode::Up if !self.model.theme_selector_open => {
-                        // Just navigate without pausing scan or stopping playback
-                        self.model.navigate_up();
-                    }
-                    KeyCode::Down if !self.model.theme_selector_open => {
-                        // Just navigate without stopping playback
-                        self.model.navigate_down();
-                    }
-                    KeyCode::Left if !self.model.theme_selector_open => {
-                        // Just navigate without stopping playback
-                        self.model.navigate_left();
-                    }
-                    KeyCode::Right if !self.model.theme_selector_open => {
-                        // Just navigate without stopping playback
-                        // Hardcode tuner count to 2 for now (will be dynamic later)
-                        self.model.navigate_right(2);
-                    }
-                    KeyCode::Enter
-                        if !self.model.theme_selector_open
-                            && matches!(
-                                self.model.focus_state,
-                                crate::terminal::tui::model::FocusState::Scan
-                            )
-                            && self.model.selection_mode()
-                            && !self.model.browsing_mode()
-                            && self.model.selected_candidate_index().is_some() =>
-                    {
-                        // Enter browsing mode: pause scan, then tune when Paused event arrives
-                        // Transition: NavigatingScanner → AwaitingTune
-                        if let Some(selected_index) = self.model.selected_candidate_index() {
-                            self.model.ui_mode =
-                                crate::terminal::tui::model::UiMode::AwaitingTune {
-                                    navigation_index: selected_index,
-                                    tuning_index: selected_index,
-                                };
-                            needs_redraw = true;
-                        }
-
-                        // Send Pause - we'll tune when we receive Paused event
-                        if let Some(sender) = &self.command_sender {
-                            let _ = sender.send(crate::terminal::ScannerCommand::Pause);
-                        }
-                    }
-                    KeyCode::Enter
-                        if !self.model.theme_selector_open
-                            && matches!(
-                                self.model.ui_mode,
-                                crate::terminal::tui::model::UiMode::Listening { .. }
-                            )
-                            && !self.model.is_continue_scan_selected()
-                            && self.model.selected_candidate_index().is_some() =>
-                    {
-                        // Switch to a different station while listening (but not while awaiting tune)
-                        if let Some(info) = self.model.selected_candidate_info()
-                            && let Some(sender) = &self.command_sender
-                            && let Some(selected_index) = self.model.selected_candidate_index()
-                        {
-                            debug!(
-                                candidate_id = ?info.candidate_id,
-                                window_id = info.metadata.window_id,
-                                candidate_frequency_mhz = info.candidate_frequency / 1e6,
-                                "TUI: Sending TuneToCandidate command"
-                            );
-
-                            // Transition to AwaitingTune when switching stations
-                            self.model.ui_mode =
-                                crate::terminal::tui::model::UiMode::AwaitingTune {
-                                    navigation_index: selected_index,
-                                    tuning_index: selected_index,
-                                };
-                            needs_redraw = true;
-
-                            let _ = sender.send(crate::terminal::ScannerCommand::TuneToCandidate {
-                                candidate_id: info.candidate_id,
-                                window_id: info.metadata.window_id,
-                                center_frequency: info.metadata.center_frequency_hz,
-                                candidate_frequency: info.candidate_frequency,
-                                signal_strength: info.signal_strength,
-                                audio_quality: info.audio_quality,
-                            });
-                            self.model.playback_active = true;
-                        }
-                    }
-                    KeyCode::Enter
-                        if !self.model.theme_selector_open
-                            && matches!(
-                                self.model.ui_mode,
-                                crate::terminal::tui::model::UiMode::Listening { .. }
-                                    | crate::terminal::tui::model::UiMode::AwaitingTune { .. }
-                            )
-                            && self.model.is_continue_scan_selected() =>
-                    {
-                        // Exit browsing mode and resume scan
-                        self.model.exit_browsing_mode();
-
-                        // Transition: Listening/AwaitingTune → Idle
-                        self.model.ui_mode = crate::terminal::tui::model::UiMode::Idle;
-
-                        if let Some(sender) = &self.command_sender {
-                            let _ = sender.send(crate::terminal::ScannerCommand::ResumeScan);
-                        }
-
-                        // Stop listening when exiting browsing mode
-                        if self.model.playback_active {
-                            if let Some(sender) = &self.command_sender {
-                                let _ = sender.send(crate::terminal::ScannerCommand::StopListening);
-                            }
-                            self.model.playback_active = false;
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            // Handle keyboard input
+            let needs_redraw = self.handle_keyboard_input(animation_interval)?;
 
             // Redraw immediately if state changed from keyboard input
             if needs_redraw {
                 terminal.draw(|f| self.ui(f))?;
             }
 
-            // Process TUI events (progress and discovery)
-            while let Ok(event) = self.receiver.try_recv() {
-                let is_paused_event = matches!(event, crate::terminal::TuiEvent::Paused { .. });
-                self.model.update_tui_event(event);
-                iterations = 0; // Reset iteration counter when we get events
-
-                // If we received Paused event and we're awaiting tune, send it now
-                if is_paused_event
-                    && matches!(
-                        self.model.ui_mode,
-                        crate::terminal::tui::model::UiMode::AwaitingTune { .. }
-                    )
-                    && let Some(info) = self.model.selected_candidate_info()
-                    && let Some(sender) = &self.command_sender
-                {
-                    let _ = sender.send(crate::terminal::ScannerCommand::TuneToCandidate {
-                        candidate_id: info.candidate_id,
-                        window_id: info.metadata.window_id,
-                        center_frequency: info.metadata.center_frequency_hz,
-                        candidate_frequency: info.candidate_frequency,
-                        signal_strength: info.signal_strength,
-                        audio_quality: info.audio_quality,
-                    });
-                    self.model.playback_active = true;
-                }
-            }
+            // Process TUI events
+            self.process_tui_events(&mut iterations)?;
         }
 
         Ok(())

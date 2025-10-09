@@ -1,10 +1,16 @@
+use crate::audio_session::AudioSession;
 use crate::fm;
+use crate::pool::{Pool, PoolFilter, Segment, TunerActivity, TunerState, TuningMode};
 use crate::scanner_state::{PauseSignal, ScannerState};
+use crate::sdr::DeviceId;
 use crate::shutdown::ShutdownCoordinator;
-use crate::terminal::{NoOpProgressReporter, ProgressReporter};
-use crate::types::{ConsoleWriter, Logger, Result, ScannerError, ScanningConfig};
+use crate::terminal::{
+    NoOpProgressReporter, ProgressEventType, ProgressReporter, ScannerCommand, TuiEvent,
+};
+use crate::types::{ConsoleWriter, Logger, ModulationType, Result, ScannerError, ScanningConfig};
 use crate::window::Window;
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
 use tracing::{debug, info};
 
 #[derive(Clone)]
@@ -24,12 +30,12 @@ pub struct MainThread {
     _backend: Arc<dyn crate::sdr::Backend>,
     progress_reporter: Arc<dyn ProgressReporter>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
-    command_receiver: Option<std::sync::mpsc::Receiver<crate::terminal::ScannerCommand>>,
-    tui_event_sender: Option<std::sync::mpsc::Sender<crate::terminal::TuiEvent>>,
+    command_receiver: Option<Receiver<ScannerCommand>>,
+    tui_event_sender: Option<Sender<TuiEvent>>,
     scanner_state: ScannerState,
     pause_signal: PauseSignal,
     current_playing: Option<TuneParams>,
-    pool: Arc<crate::pool::Pool>,
+    pool: Arc<Pool>,
 }
 
 impl MainThread {
@@ -40,10 +46,10 @@ impl MainThread {
         backend: Arc<dyn crate::sdr::Backend>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
     ) -> Result<Self> {
-        let filter = crate::pool::PoolFilter::new()
+        let filter = PoolFilter::new()
             .with_driver("sdrplay")
-            .with_mode(crate::pool::TuningMode::SingleTuner);
-        let pool = crate::pool::Pool::new(filter);
+            .with_mode(TuningMode::SingleTuner);
+        let pool = Pool::new(filter);
 
         Ok(MainThread {
             config,
@@ -68,7 +74,7 @@ impl MainThread {
         backend: Arc<dyn crate::sdr::Backend>,
         progress_reporter: Arc<dyn ProgressReporter>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
-        pool: Arc<crate::pool::Pool>,
+        pool: Arc<Pool>,
     ) -> Result<Self> {
         Ok(MainThread {
             config,
@@ -86,18 +92,12 @@ impl MainThread {
         })
     }
 
-    pub fn with_command_receiver(
-        mut self,
-        receiver: std::sync::mpsc::Receiver<crate::terminal::ScannerCommand>,
-    ) -> Self {
+    pub fn with_command_receiver(mut self, receiver: Receiver<ScannerCommand>) -> Self {
         self.command_receiver = Some(receiver);
         self
     }
 
-    pub fn with_tui_event_sender(
-        mut self,
-        sender: std::sync::mpsc::Sender<crate::terminal::TuiEvent>,
-    ) -> Self {
+    pub fn with_tui_event_sender(mut self, sender: Sender<TuiEvent>) -> Self {
         self.tui_event_sender = Some(sender);
         self
     }
@@ -105,7 +105,7 @@ impl MainThread {
     fn send_active_tuners_update(&self) {
         if let Some(ref sender) = self.tui_event_sender {
             let status = self.pool.status();
-            let event = crate::terminal::TuiEvent::ActiveTunersUpdated { status };
+            let event = TuiEvent::ActiveTunersUpdated { status };
             let _ = sender.send(event);
         }
     }
@@ -146,7 +146,7 @@ impl MainThread {
 
     fn handle_tune_command(
         &self,
-        audio_session: &mut crate::audio_session::AudioSession,
+        audio_session: &mut AudioSession,
         params: TuneParams,
     ) -> Result<()> {
         debug!(
@@ -163,7 +163,7 @@ impl MainThread {
         audio_session.stop_current_station();
 
         // Create pool-based segment for listening
-        let segment = crate::pool::Segment::new(
+        let segment = Segment::new(
             &self.pool,
             params.center_frequency,
             &self.config,
@@ -176,8 +176,7 @@ impl MainThread {
             .tuners
             .iter()
             .find(|t| {
-                t.state == crate::pool::TunerState::Allocated
-                    && t.activity == Some(crate::pool::TunerActivity::Listening)
+                t.state == TunerState::Allocated && t.activity == Some(TunerActivity::Listening)
             })
             .map(|t| t.id.device_id.clone());
 
@@ -185,7 +184,7 @@ impl MainThread {
             frequency_hz: params.candidate_frequency,
             signal_strength: params.signal_strength.unwrap_or(0.1) as f32,
             bandwidth_hz: 200_000.0,
-            modulation: crate::types::ModulationType::WFM,
+            modulation: ModulationType::WFM,
             audio_sample_rate: self.config.audio_sample_rate,
             detected_at: std::time::SystemTime::now(),
             analysis_duration_ms: 0,
@@ -211,7 +210,7 @@ impl MainThread {
 
         self.progress_reporter
             .report(crate::terminal::ProgressEvent {
-                event_type: crate::terminal::ProgressEventType::AudioPlaybackStarted,
+                event_type: ProgressEventType::AudioPlaybackStarted,
                 frequency_hz: params.candidate_frequency,
                 metadata: crate::window::WindowMetadata {
                     center_frequency_hz: params.center_frequency,
@@ -229,18 +228,18 @@ impl MainThread {
 
     fn handle_command(
         &mut self,
-        command: crate::terminal::ScannerCommand,
+        command: ScannerCommand,
         window_num: usize,
         _total_windows: usize,
-        audio_session: &mut Option<crate::audio_session::AudioSession>,
-    ) -> Result<Option<crate::terminal::ScannerCommand>> {
+        audio_session: &mut Option<AudioSession>,
+    ) -> Result<Option<ScannerCommand>> {
         match command {
-            crate::terminal::ScannerCommand::Pause => {
+            ScannerCommand::Pause => {
                 debug!(window = window_num, "Scanner paused, creating AudioSession");
                 self.pause_signal.pause();
                 self.scanner_state.handle_pause(window_num);
 
-                *audio_session = Some(crate::audio_session::AudioSession::new(
+                *audio_session = Some(AudioSession::new(
                     &self.config,
                     self.shutdown_coordinator.clone(),
                 )?);
@@ -254,13 +253,13 @@ impl MainThread {
                         .tuners
                         .first()
                         .map(|t| t.id.device_id.clone())
-                        .unwrap_or_else(|| crate::sdr::DeviceId::from_serial("unknown", "0"));
-                    let _ = sender.send(crate::terminal::TuiEvent::Paused { tuner_id });
+                        .unwrap_or_else(|| DeviceId::from_serial("unknown", "0"));
+                    let _ = sender.send(TuiEvent::Paused { tuner_id });
                 }
 
                 Ok(None)
             }
-            crate::terminal::ScannerCommand::ResumeScan => {
+            ScannerCommand::ResumeScan => {
                 debug!(
                     window = window_num,
                     "Scanner resuming - exiting selection mode and continuing scan"
@@ -277,7 +276,7 @@ impl MainThread {
 
                 Ok(None)
             }
-            crate::terminal::ScannerCommand::TuneToCandidate {
+            ScannerCommand::TuneToCandidate {
                 candidate_id,
                 window_id,
                 center_frequency,
@@ -314,7 +313,7 @@ impl MainThread {
                     Ok(None)
                 }
             }
-            crate::terminal::ScannerCommand::StopListening => {
+            ScannerCommand::StopListening => {
                 debug!("Stopped listening, returning to browsing mode");
                 self.scanner_state.handle_stop_listening();
 
@@ -330,13 +329,13 @@ impl MainThread {
                         .tuners
                         .iter()
                         .find(|t| {
-                            t.state == crate::pool::TunerState::Allocated
-                                && t.activity == Some(crate::pool::TunerActivity::Listening)
+                            t.state == TunerState::Allocated
+                                && t.activity == Some(TunerActivity::Listening)
                         })
                         .map(|t| t.id.device_id.clone());
                     self.progress_reporter
                         .report(crate::terminal::ProgressEvent {
-                            event_type: crate::terminal::ProgressEventType::AudioPlaybackCompleted,
+                            event_type: ProgressEventType::AudioPlaybackCompleted,
                             frequency_hz: params.candidate_frequency,
                             metadata: crate::window::WindowMetadata {
                                 center_frequency_hz: params.center_frequency,
@@ -394,7 +393,7 @@ impl MainThread {
         &mut self,
         window_num: usize,
         total_windows: usize,
-        audio_session: &mut Option<crate::audio_session::AudioSession>,
+        audio_session: &mut Option<AudioSession>,
     ) -> Result<()> {
         let mut commands = Vec::new();
         if let Some(receiver) = &self.command_receiver {
@@ -417,7 +416,7 @@ impl MainThread {
         &mut self,
         window_num: usize,
         total_windows: usize,
-        audio_session: &mut Option<crate::audio_session::AudioSession>,
+        audio_session: &mut Option<AudioSession>,
     ) -> Result<()> {
         if let Some(receiver) = &self.command_receiver
             && let Ok(command) = receiver.try_recv()
@@ -435,7 +434,7 @@ impl MainThread {
         &mut self,
         windows_to_process: usize,
         total_windows: usize,
-        audio_session: &mut Option<crate::audio_session::AudioSession>,
+        audio_session: &mut Option<AudioSession>,
     ) -> Result<bool> {
         self.check_and_handle_command(windows_to_process, total_windows, audio_session)?;
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -446,7 +445,7 @@ impl MainThread {
         &mut self,
         windows_to_process: usize,
         total_windows: usize,
-        audio_session: &mut Option<crate::audio_session::AudioSession>,
+        audio_session: &mut Option<AudioSession>,
     ) -> Result<bool> {
         self.process_commands(windows_to_process, total_windows, audio_session)?;
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -472,7 +471,7 @@ impl MainThread {
         };
 
         let mut i: usize = 0;
-        let mut audio_session: Option<crate::audio_session::AudioSession> = None;
+        let mut audio_session: Option<AudioSession> = None;
 
         loop {
             // Check for shutdown FIRST - compiler will force us to handle this in all match arms
@@ -610,6 +609,7 @@ impl ConsoleWriter for DefaultConsoleWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_quality::AudioAnalyzer;
     use crate::sdr::Backend;
     use crate::types::ScanningConfig;
     use std::sync::{Arc, Mutex};
@@ -627,7 +627,7 @@ mod tests {
             }
         }
 
-        pub fn get_messages(&self) -> Vec<String> {
+        pub fn messages(&self) -> Vec<String> {
             self.messages.lock().unwrap().clone()
         }
     }
@@ -673,13 +673,13 @@ mod tests {
             scanning_windows: Some(2),
             fft_size: 1024,
             peak_scan_duration: 1.5,
-            audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+            audio_analyzer: AudioAnalyzer::mock(),
             ..Default::default()
         }
     }
 
-    fn create_test_tuner_id() -> crate::sdr::DeviceId {
-        crate::sdr::DeviceId::from_serial("mock", "test123")
+    fn create_test_tuner_id() -> DeviceId {
+        DeviceId::from_serial("mock", "test123")
     }
 
     fn create_test_backend() -> Arc<dyn crate::sdr::Backend> {
@@ -749,7 +749,7 @@ mod tests {
         // This would normally call SoapySDR and process windows, but we can test the console output pattern
         main_thread.console_writer.write_info("Test message");
 
-        let messages = console_clone.get_messages();
+        let messages = console_clone.messages();
         assert_eq!(messages, vec!["INFO: Test message"]);
     }
 
@@ -856,12 +856,12 @@ mod tests {
 
     #[test]
     fn test_pool_device_population() {
-        let tuner_id = crate::sdr::DeviceId::from_serial("mock", "12345");
+        let tuner_id = DeviceId::from_serial("mock", "12345");
 
-        let filter = crate::pool::PoolFilter::new()
+        let filter = PoolFilter::new()
             .with_driver("mock")
-            .with_mode(crate::pool::TuningMode::SingleTuner);
-        let pool = crate::pool::Pool::new(filter);
+            .with_mode(TuningMode::SingleTuner);
+        let pool = Pool::new(filter);
 
         let mock_backend = crate::sdr::Mock;
         let device = mock_backend.open_device(&tuner_id).unwrap();
@@ -875,12 +875,12 @@ mod tests {
 
     #[test]
     fn test_pool_acquire_and_use() {
-        let tuner_id = crate::sdr::DeviceId::from_serial("mock", "12345");
+        let tuner_id = DeviceId::from_serial("mock", "12345");
 
-        let filter = crate::pool::PoolFilter::new()
+        let filter = PoolFilter::new()
             .with_driver("mock")
-            .with_mode(crate::pool::TuningMode::SingleTuner);
-        let pool = crate::pool::Pool::new(filter);
+            .with_mode(TuningMode::SingleTuner);
+        let pool = Pool::new(filter);
 
         let mock_backend = crate::sdr::Mock;
         let device = mock_backend.open_device(&tuner_id).unwrap();
@@ -897,7 +897,7 @@ mod tests {
         };
 
         let pooled_tuner = pool
-            .acquire(&requirements, crate::pool::TunerActivity::Scanning)
+            .acquire(&requirements, TunerActivity::Scanning)
             .unwrap();
 
         // Verify tuner was acquired

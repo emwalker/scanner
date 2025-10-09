@@ -44,6 +44,7 @@ pub fn extract_peaks_from_magnitudes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_quality::AudioAnalyzer;
     use crate::testing::signal_generation::{PeakTestSignalGenerator, TestSignal};
     use crate::types::ScanningConfig;
 
@@ -129,7 +130,7 @@ mod tests {
             fft_size: 1024,
             peak_scan_duration: 0.5,
             peak_detection_threshold: 1.0,
-            audio_analyzer: crate::audio_quality::AudioAnalyzer::mock(),
+            audio_analyzer: AudioAnalyzer::mock(),
 
             // Use basic extraction (no CFAR, no averaging)
             enable_exponential_smoothing: false,

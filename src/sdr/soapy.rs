@@ -1,7 +1,7 @@
 //! SoapySDR backend implementation
 
 use super::{Backend, Capabilities, DeviceId, DeviceInfo, DeviceTrait};
-use crate::types::Result;
+use crate::types::{Result, ScannerError};
 use rustradio::Complex;
 use rustradio::graph::GraphRunner;
 use std::any::Any;
@@ -81,7 +81,7 @@ impl Backend for Soapy {
         let (backend, serial) = match id {
             DeviceId::Backend { backend, serial } => (backend.as_str(), serial.as_str()),
             DeviceId::Usb { .. } => {
-                return Err(crate::types::ScannerError::Custom(
+                return Err(ScannerError::Custom(
                     "USB device IDs not supported for opening via SoapySDR backend".to_string(),
                 ));
             }

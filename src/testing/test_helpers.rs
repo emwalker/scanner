@@ -6,10 +6,12 @@ use tracing::debug;
 
 use crate::{
     file::IqFileMetadata,
-    types::{Format, Result, ScanningConfig},
+    types::{Format, Result, ScannerError, ScanningConfig},
 };
+use std::f32::consts::PI;
 use std::io::Read;
 use std::{fs::File, io::BufReader};
+use tokio::sync::broadcast::error::TryRecvError;
 
 /// Metadata for audio fixture files
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -220,8 +222,7 @@ impl SampleSource for MockSampleSource {
             return Ok(0);
         }
 
-        let angular_freq =
-            2.0 * std::f32::consts::PI * self.frequency_offset / self.sample_rate as f32;
+        let angular_freq = 2.0 * PI * self.frequency_offset / self.sample_rate as f32;
         debug!(
             "MockSampleSource: freq_offset={}, angular_freq={}",
             self.frequency_offset, angular_freq
@@ -241,8 +242,8 @@ impl SampleSource for MockSampleSource {
             self.phase += angular_freq;
 
             // Wrap phase to avoid accumulation errors
-            if self.phase > 2.0 * std::f32::consts::PI {
-                self.phase -= 2.0 * std::f32::consts::PI;
+            if self.phase > 2.0 * PI {
+                self.phase -= 2.0 * PI;
             }
         }
 
@@ -514,7 +515,7 @@ where
 {
     let log_buffer = init_test_logging(verbose, format)?;
     let result = test_fn()?;
-    let logs = log_buffer.get_string();
+    let logs = log_buffer.into_string();
     Ok((result, logs))
 }
 
@@ -652,7 +653,7 @@ pub fn assert_classifies_audio(
         error_message
             .push_str("\nRemove these unnecessary overrides to keep the override list minimal.\n");
 
-        return Err(crate::types::ScannerError::Custom(error_message));
+        return Err(ScannerError::Custom(error_message));
     }
 
     // Assert that all classifications were correct
@@ -674,7 +675,7 @@ pub fn assert_classifies_audio(
             ));
         }
 
-        return Err(crate::types::ScannerError::Custom(error_message));
+        return Err(ScannerError::Custom(error_message));
     }
 
     Ok(())
@@ -722,17 +723,17 @@ impl SampleSource for SdrStreamSource {
                         .copy_from_slice(&samples[..to_copy]);
                     samples_read += to_copy;
                 }
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                Err(TryRecvError::Empty) => {
                     if samples_read > 0 {
                         break;
                     }
                     thread::sleep(Duration::from_micros(self.timeout_us));
                     continue;
                 }
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                Err(TryRecvError::Lagged(_)) => {
                     continue;
                 }
-                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                Err(TryRecvError::Closed) => {
                     break;
                 }
             }

@@ -2,6 +2,7 @@ use rustradio::block::{Block, BlockEOF, BlockName, BlockRet};
 use rustradio::stream::{ReadStream, WriteStream};
 use rustradio::{Complex, Float, Result};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::broadcast;
 use tracing::debug;
 
@@ -162,9 +163,8 @@ impl BlockEOF for BroadcastSource {
 
 impl Drop for BroadcastSource {
     fn drop(&mut self) {
-        static DROP_COUNTER: std::sync::atomic::AtomicUsize =
-            std::sync::atomic::AtomicUsize::new(0);
-        let drop_count = DROP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        static DROP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let drop_count = DROP_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         debug!(
             drop_count = drop_count,
             receiver_lagged = self.receiver.len(),
@@ -175,14 +175,12 @@ impl Drop for BroadcastSource {
 
 impl Block for BroadcastSource {
     fn work(&mut self) -> Result<BlockRet<'_>> {
-        static WORK_CALL_COUNT: std::sync::atomic::AtomicUsize =
-            std::sync::atomic::AtomicUsize::new(0);
-        static INITIAL_BUFFER_LOGGED: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
+        static WORK_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+        static INITIAL_BUFFER_LOGGED: AtomicBool = AtomicBool::new(false);
 
-        let count = WORK_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let count = WORK_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
 
-        if !INITIAL_BUFFER_LOGGED.load(std::sync::atomic::Ordering::Relaxed) {
+        if !INITIAL_BUFFER_LOGGED.load(Ordering::Relaxed) {
             let initial_buffer_len = self.receiver.len();
             if initial_buffer_len > 0 {
                 debug!(
@@ -190,7 +188,7 @@ impl Block for BroadcastSource {
                     "BUFFER DIAGNOSTICS: BroadcastSource starting with buffered packets"
                 );
             }
-            INITIAL_BUFFER_LOGGED.store(true, std::sync::atomic::Ordering::Relaxed);
+            INITIAL_BUFFER_LOGGED.store(true, Ordering::Relaxed);
         }
 
         if count.is_multiple_of(10000) {
@@ -240,15 +238,11 @@ impl Block for BroadcastSource {
                 }
                 Err(broadcast::error::TryRecvError::Empty) => break,
                 Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
-                    static LAG_COUNTER: std::sync::atomic::AtomicUsize =
-                        std::sync::atomic::AtomicUsize::new(0);
-                    static TOTAL_SKIPPED: std::sync::atomic::AtomicU64 =
-                        std::sync::atomic::AtomicU64::new(0);
-                    let lag_count =
-                        LAG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    let total_skipped = TOTAL_SKIPPED
-                        .fetch_add(skipped, std::sync::atomic::Ordering::Relaxed)
-                        + skipped;
+                    static LAG_COUNTER: AtomicUsize = AtomicUsize::new(0);
+                    static TOTAL_SKIPPED: AtomicU64 = AtomicU64::new(0);
+                    let lag_count = LAG_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+                    let total_skipped =
+                        TOTAL_SKIPPED.fetch_add(skipped, Ordering::Relaxed) + skipped;
                     debug!(
                         lagged_packets = skipped,
                         lag_event_number = lag_count,
@@ -327,8 +321,7 @@ impl BlockEOF for AudioDiagnostic {
 
 impl Block for AudioDiagnostic {
     fn work(&mut self) -> Result<BlockRet<'_>> {
-        static SAMPLE_COUNT: std::sync::atomic::AtomicUsize =
-            std::sync::atomic::AtomicUsize::new(0);
+        static SAMPLE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
         let (input_buf, _metadata) = self.input.read_buf()?;
         let samples = input_buf.slice();
@@ -337,7 +330,7 @@ impl Block for AudioDiagnostic {
             return Ok(BlockRet::Again);
         }
 
-        let count = SAMPLE_COUNT.fetch_add(samples.len(), std::sync::atomic::Ordering::Relaxed);
+        let count = SAMPLE_COUNT.fetch_add(samples.len(), Ordering::Relaxed);
 
         if count < 50000 && (count / 5000) != ((count + samples.len()) / 5000) {
             let mut max_val = f32::NEG_INFINITY;

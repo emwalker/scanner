@@ -1,5 +1,6 @@
 use crate::audio_quality::AudioQuality;
 use crate::fm;
+use std::time::SystemTime;
 use thiserror::Error;
 
 // Test constants
@@ -132,7 +133,7 @@ impl Signal {
             bandwidth_hz,
             modulation: ModulationType::WFM,
             audio_sample_rate,
-            detected_at: std::time::SystemTime::now(),
+            detected_at: SystemTime::now(),
             analysis_duration_ms,
             detection_center_freq,
             audio_quality,
