@@ -6,19 +6,40 @@ use crate::terminal::tui::{
 };
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
 
+fn render_empty_state(f: &mut Frame, area: Rect, theme: &dyn Theme) {
+    let waiting = Paragraph::new("  Establishing connection…\n  Preparing to monitor frequencies")
+        .style(Style::default().fg(theme.instructions_dim()));
+    f.render_widget(waiting, area);
+}
+
+fn render_scroll_up_indicator(f: &mut Frame, area: Rect, theme: &dyn Theme) {
+    let indicator = Paragraph::new("        ↑ more above ↑").style(
+        Style::default()
+            .fg(theme.instructions_dim())
+            .add_modifier(Modifier::DIM),
+    );
+    f.render_widget(indicator, area);
+}
+
+fn render_scroll_down_indicator(f: &mut Frame, area: Rect, theme: &dyn Theme) {
+    let indicator = Paragraph::new("        ↓ more below ↓").style(
+        Style::default()
+            .fg(theme.instructions_dim())
+            .add_modifier(Modifier::DIM),
+    );
+    f.render_widget(indicator, area);
+}
+
 /// Render all scan progress for windows and candidates
-pub fn render_scan(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, theme: &dyn Theme) {
+pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) {
     if model.windows.is_empty() {
-        let waiting =
-            Paragraph::new("  Establishing connection…\n  Preparing to monitor frequencies")
-                .style(Style::default().fg(theme.instructions_dim()));
-        f.render_widget(waiting, area);
+        render_empty_state(f, area, theme);
         return;
     }
 
@@ -126,12 +147,7 @@ pub fn render_scan(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, th
 
     // Add scroll-up indicator if needed
     if has_content_above && chunk_idx < chunks.len() {
-        let indicator = Paragraph::new("        ↑ more above ↑").style(
-            Style::default()
-                .fg(theme.instructions_dim())
-                .add_modifier(Modifier::DIM),
-        );
-        f.render_widget(indicator, chunks[chunk_idx]);
+        render_scroll_up_indicator(f, chunks[chunk_idx], theme);
         chunk_idx += 1;
     }
 
@@ -216,12 +232,7 @@ pub fn render_scan(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, th
     let total_rendered_or_skipped = model.scroll_offset + rendered_candidates;
     let has_content_below = total_rendered_or_skipped < total_candidates;
     if has_content_below && chunk_idx < chunks.len() {
-        let indicator = Paragraph::new("        ↓ more below ↓").style(
-            Style::default()
-                .fg(theme.instructions_dim())
-                .add_modifier(Modifier::DIM),
-        );
-        f.render_widget(indicator, chunks[chunk_idx]);
+        render_scroll_down_indicator(f, chunks[chunk_idx], theme);
     }
 }
 

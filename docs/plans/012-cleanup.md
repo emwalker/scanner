@@ -195,29 +195,29 @@ src/pool/
 - 233/233 total lib tests passing
 - Clear separation: filter config, core state, lifecycle operations
 
-#### Task 2.3: Extract renderer sub-functions
+#### Task 2.3: Extract renderer sub-functions ✅ COMPLETE
 **Priority:** MEDIUM
 **Effort:** Medium
 **Risk:** Low
+**Status:** Completed 2025-10-08
 
-**`src/terminal/tui/renderers/scan.rs:16`** - `render_scan` (211 lines, complexity 31)
+Extracted helper functions from both renderers to improve readability:
 
-Extract:
-```rust
-fn render_scan_header(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme)
-fn render_window_list(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme)
-fn render_candidate_section(f: &mut Frame, area: Rect, window: &WindowProgress, theme: &dyn Theme)
-fn render_scan_footer(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme)
+**scan.rs:**
+- `render_empty_state()` - Empty state display
+- `render_scroll_up_indicator()` - Scroll up indicator
+- `render_scroll_down_indicator()` - Scroll down indicator
 
-fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) {
-    let layout = create_scan_layout(area);
-    render_scan_header(f, layout.header, model, theme);
-    render_window_list(f, layout.windows, model, theme);
-    render_scan_footer(f, layout.footer, model, theme);
-}
-```
+**scan_caladan.rs:**
+- `create_scroll_up_indicator()` - Scroll up Line
+- `create_scroll_down_indicator()` - Scroll down Line
+- `create_empty_state_line()` - Empty state Line
 
-Repeat for `src/terminal/tui/renderers/scan_caladan.rs:15` (204 lines)
+**Results:**
+- Removed duplication of scroll indicator styling
+- Improved code readability
+- 233/233 tests passing
+- No behavioral changes
 
 #### Task 2.4: Introduce parameter context structs
 **Priority:** MEDIUM

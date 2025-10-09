@@ -12,6 +12,27 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph},
 };
 
+fn create_scroll_up_indicator(theme: &dyn Theme) -> Line<'static> {
+    Line::from(Span::styled(
+        "↑ more above ↑",
+        Style::default().fg(theme.instructions_dim()),
+    ))
+}
+
+fn create_scroll_down_indicator(theme: &dyn Theme) -> Line<'static> {
+    Line::from(Span::styled(
+        "↓ more below ↓",
+        Style::default().fg(theme.instructions_dim()),
+    ))
+}
+
+fn create_empty_state_line(theme: &dyn Theme) -> Line<'static> {
+    Line::from(Span::styled(
+        "awaiting signals...",
+        Style::default().fg(theme.instructions_dim()),
+    ))
+}
+
 pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) {
     if area.height < 4 {
         return;
@@ -101,10 +122,7 @@ pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) 
     // Add scroll-up indicator if there's content above
     let has_content_above = model.scroll_offset > 0;
     if has_content_above {
-        lines.push(Line::from(Span::styled(
-            "↑ more above ↑",
-            Style::default().fg(theme.instructions_dim()),
-        )));
+        lines.push(create_scroll_up_indicator(theme));
         line_count += 1;
     }
 
@@ -194,21 +212,14 @@ pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) 
     }
 
     // Add scroll-down indicator if there's content below
-    // We've rendered: scroll_offset (skipped) + rendered_candidates (shown) out of total_candidates
     let total_rendered_or_skipped = model.scroll_offset + rendered_candidates;
     let has_content_below = total_rendered_or_skipped < total_candidates;
     if has_content_below && line_count < max_lines {
-        lines.push(Line::from(Span::styled(
-            "↓ more below ↓",
-            Style::default().fg(theme.instructions_dim()),
-        )));
+        lines.push(create_scroll_down_indicator(theme));
     }
 
     if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "awaiting signals...",
-            Style::default().fg(theme.instructions_dim()),
-        )));
+        lines.push(create_empty_state_line(theme));
     }
 
     let paragraph = Paragraph::new(lines);
