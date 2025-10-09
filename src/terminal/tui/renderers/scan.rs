@@ -169,23 +169,15 @@ pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) 
         } else {
             window.displayable_candidates(is_current_window, use_selectable)
         };
-        let window_candidate_count = displayable_candidates.len();
-
-        let window_has_selection = if let Some(selected_idx) = model.selected_candidate_index() {
-            selected_idx >= candidate_index
-                && selected_idx < candidate_index + window_candidate_count
-        } else {
-            false
-        };
 
         // Render window header
         render_window_header(
             f,
             chunks[chunk_idx],
-            **window_id,
-            window_has_selection,
-            model,
-            theme,
+            &WindowHeaderContext {
+                window_id: **window_id,
+                theme,
+            },
         );
         chunk_idx += 1;
 
@@ -211,10 +203,12 @@ pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) 
             render_candidate_progress(
                 f,
                 chunks[chunk_idx],
-                candidate,
-                is_selected,
-                is_playing,
-                theme,
+                &CandidateRenderContext {
+                    candidate,
+                    is_selected,
+                    is_playing,
+                    theme,
+                },
             );
             chunk_idx += 1;
             rendered_candidates += 1;
@@ -236,66 +230,80 @@ pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) 
     }
 }
 
-/// Render a window header
-fn render_window_header(
-    f: &mut Frame,
-    area: ratatui::layout::Rect,
+struct WindowHeaderContext<'a> {
     window_id: usize,
-    _is_selected: bool,
-    _model: &Model,
-    theme: &dyn Theme,
-) {
-    let color = theme.window_header();
+    theme: &'a dyn Theme,
+}
+
+/// Render a window header
+fn render_window_header(f: &mut Frame, area: ratatui::layout::Rect, ctx: &WindowHeaderContext) {
+    let color = ctx.theme.window_header();
 
     // Geometric window indicator with precision framing
     let header = format!(
         " {} Scan {} {}",
-        theme.window_bullet(),
-        window_id,
-        theme.window_bullet()
+        ctx.theme.window_bullet(),
+        ctx.window_id,
+        ctx.theme.window_bullet()
     );
     let header_widget =
         Paragraph::new(header).style(Style::default().fg(color).add_modifier(Modifier::BOLD));
     f.render_widget(header_widget, area);
 }
 
+struct CandidateRenderContext<'a> {
+    candidate: &'a CandidateProgress,
+    is_selected: bool,
+    is_playing: bool,
+    theme: &'a dyn Theme,
+}
+
 /// Render progress for a single candidate
 fn render_candidate_progress(
     f: &mut Frame,
     area: ratatui::layout::Rect,
-    candidate: &CandidateProgress,
-    is_selected: bool,
-    is_playing: bool,
-    theme: &dyn Theme,
+    ctx: &CandidateRenderContext,
 ) {
-    let freq_mhz = candidate.frequency_hz / 1e6;
+    let freq_mhz = ctx.candidate.frequency_hz / 1e6;
 
     // Clean geometric status indicators with refined terminology
-    let (status_text, status_symbol) = match candidate.status {
-        CandidateStatus::Detected => (theme.status_detected_text(), theme.symbol_detected()),
-        CandidateStatus::Analyzing => (theme.status_analyzing_text(), theme.symbol_analyzing()),
-        CandidateStatus::Rejected => (theme.status_rejected_text(), theme.symbol_rejected()),
-        CandidateStatus::Signal => (theme.status_signal_text(), theme.symbol_signal()),
-        CandidateStatus::Playing => (theme.status_playing_text(), theme.symbol_playing()),
-        CandidateStatus::Completed => (theme.status_completed_text(), theme.symbol_completed()),
+    let (status_text, status_symbol) = match ctx.candidate.status {
+        CandidateStatus::Detected => (
+            ctx.theme.status_detected_text(),
+            ctx.theme.symbol_detected(),
+        ),
+        CandidateStatus::Analyzing => (
+            ctx.theme.status_analyzing_text(),
+            ctx.theme.symbol_analyzing(),
+        ),
+        CandidateStatus::Rejected => (
+            ctx.theme.status_rejected_text(),
+            ctx.theme.symbol_rejected(),
+        ),
+        CandidateStatus::Signal => (ctx.theme.status_signal_text(), ctx.theme.symbol_signal()),
+        CandidateStatus::Playing => (ctx.theme.status_playing_text(), ctx.theme.symbol_playing()),
+        CandidateStatus::Completed => (
+            ctx.theme.status_completed_text(),
+            ctx.theme.symbol_completed(),
+        ),
     };
 
     // Status colors from theme
-    let status_color = if is_selected {
-        theme.selection_highlight()
+    let status_color = if ctx.is_selected {
+        ctx.theme.selection_highlight()
     } else {
-        match candidate.status {
-            CandidateStatus::Detected => theme.status_detected(),
-            CandidateStatus::Analyzing => theme.status_analyzing(),
-            CandidateStatus::Rejected => theme.status_rejected(),
-            CandidateStatus::Signal => theme.status_signal(),
-            CandidateStatus::Playing => theme.status_playing(),
-            CandidateStatus::Completed => theme.status_completed(),
+        match ctx.candidate.status {
+            CandidateStatus::Detected => ctx.theme.status_detected(),
+            CandidateStatus::Analyzing => ctx.theme.status_analyzing(),
+            CandidateStatus::Rejected => ctx.theme.status_rejected(),
+            CandidateStatus::Signal => ctx.theme.status_signal(),
+            CandidateStatus::Playing => ctx.theme.status_playing(),
+            CandidateStatus::Completed => ctx.theme.status_completed(),
         }
     };
 
     // Create base style with optional background for playing station
-    let base_style = if is_playing {
+    let base_style = if ctx.is_playing {
         Style::default()
             .bg(Color::Rgb(0, 60, 90)) // Bright cyan-blue background
             .add_modifier(Modifier::BOLD)
@@ -305,42 +313,46 @@ fn render_candidate_progress(
 
     // Atmospheric amber progress with geometric precision
     let progress_width = 20;
-    let filled = (candidate.completion * progress_width as f64) as usize;
+    let filled = (ctx.candidate.completion * progress_width as f64) as usize;
     let progress_bar = if filled == 0 {
-        theme.progress_empty().repeat(progress_width)
+        ctx.theme.progress_empty().repeat(progress_width)
     } else if filled >= progress_width {
-        theme.progress_full().repeat(progress_width)
+        ctx.theme.progress_full().repeat(progress_width)
     } else {
         // Gradient-like progression with theme elements
         let full_blocks = filled;
         let remaining = progress_width - filled;
         format!(
             "{}{}",
-            theme.progress_full().repeat(full_blocks),
-            theme.progress_empty().repeat(remaining)
+            ctx.theme.progress_full().repeat(full_blocks),
+            ctx.theme.progress_empty().repeat(remaining)
         )
     };
 
     // Create line with separate styling for different parts
-    let line = if let Some(audio_quality) = &candidate.audio_quality {
-        if candidate.status == CandidateStatus::Completed
-            || candidate.status == CandidateStatus::Rejected
+    let line = if let Some(audio_quality) = &ctx.candidate.audio_quality {
+        if ctx.candidate.status == CandidateStatus::Completed
+            || ctx.candidate.status == CandidateStatus::Rejected
         {
             // Get audio quality text and style
-            let (quality_text, quality_style) = if is_playing {
+            let (quality_text, quality_style) = if ctx.is_playing {
                 // Use bright colors for playing station
                 (
                     match audio_quality {
-                        crate::audio_quality::AudioQuality::Good => theme.quality_good_text(),
+                        crate::audio_quality::AudioQuality::Good => ctx.theme.quality_good_text(),
                         crate::audio_quality::AudioQuality::Moderate => {
-                            theme.quality_moderate_text()
+                            ctx.theme.quality_moderate_text()
                         }
-                        crate::audio_quality::AudioQuality::Poor => theme.quality_poor_text(),
+                        crate::audio_quality::AudioQuality::Poor => ctx.theme.quality_poor_text(),
                         crate::audio_quality::AudioQuality::NoAudio => {
-                            theme.quality_no_audio_text()
+                            ctx.theme.quality_no_audio_text()
                         }
-                        crate::audio_quality::AudioQuality::Static => theme.quality_static_text(),
-                        crate::audio_quality::AudioQuality::Unknown => theme.quality_unknown_text(),
+                        crate::audio_quality::AudioQuality::Static => {
+                            ctx.theme.quality_static_text()
+                        }
+                        crate::audio_quality::AudioQuality::Unknown => {
+                            ctx.theme.quality_unknown_text()
+                        }
                     },
                     Style::default()
                         .fg(Color::Rgb(150, 255, 150))
@@ -349,30 +361,30 @@ fn render_candidate_progress(
             } else {
                 match audio_quality {
                     crate::audio_quality::AudioQuality::Good => (
-                        theme.quality_good_text(),
+                        ctx.theme.quality_good_text(),
                         Style::default()
-                            .fg(theme.quality_good())
+                            .fg(ctx.theme.quality_good())
                             .add_modifier(Modifier::BOLD),
                     ),
                     crate::audio_quality::AudioQuality::Moderate => (
-                        theme.quality_moderate_text(),
-                        Style::default().fg(theme.quality_moderate()),
+                        ctx.theme.quality_moderate_text(),
+                        Style::default().fg(ctx.theme.quality_moderate()),
                     ),
                     crate::audio_quality::AudioQuality::Poor => (
-                        theme.quality_poor_text(),
-                        Style::default().fg(theme.quality_poor()),
+                        ctx.theme.quality_poor_text(),
+                        Style::default().fg(ctx.theme.quality_poor()),
                     ),
                     crate::audio_quality::AudioQuality::NoAudio => (
-                        theme.quality_no_audio_text(),
-                        Style::default().fg(theme.quality_no_audio()),
+                        ctx.theme.quality_no_audio_text(),
+                        Style::default().fg(ctx.theme.quality_no_audio()),
                     ),
                     crate::audio_quality::AudioQuality::Static => (
-                        theme.quality_static_text(),
-                        Style::default().fg(theme.quality_static()),
+                        ctx.theme.quality_static_text(),
+                        Style::default().fg(ctx.theme.quality_static()),
                     ),
                     crate::audio_quality::AudioQuality::Unknown => (
-                        theme.quality_unknown_text(),
-                        Style::default().fg(theme.quality_unknown()),
+                        ctx.theme.quality_unknown_text(),
+                        Style::default().fg(ctx.theme.quality_unknown()),
                     ),
                 }
             };
@@ -385,7 +397,7 @@ fn render_candidate_progress(
                         "  {} {:>5.1} MHz • {} • {} • ",
                         status_symbol, freq_mhz, progress_bar, status_text
                     ),
-                    base_style.fg(if is_playing {
+                    base_style.fg(if ctx.is_playing {
                         Color::White
                     } else {
                         status_color
@@ -411,7 +423,7 @@ fn render_candidate_progress(
                         "  {} {:>5.1} MHz • {} • {}",
                         status_symbol, freq_mhz, progress_bar, status_text
                     ),
-                    base_style.fg(if is_playing {
+                    base_style.fg(if ctx.is_playing {
                         Color::White
                     } else {
                         status_color
@@ -437,7 +449,7 @@ fn render_candidate_progress(
                     "  {} {:>5.1} MHz • {} • {}",
                     status_symbol, freq_mhz, progress_bar, status_text
                 ),
-                base_style.fg(if is_playing {
+                base_style.fg(if ctx.is_playing {
                     Color::White
                 } else {
                     status_color

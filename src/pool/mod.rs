@@ -9,6 +9,7 @@
 
 mod filter;
 mod lifecycle;
+mod provider;
 mod segment;
 mod state;
 mod tuner;
@@ -26,6 +27,7 @@ pub trait SegmentTrait {
 }
 
 pub use filter::{PoolFilter, TuningMode};
+pub use provider::TunerProvider;
 pub use segment::Segment;
 pub use state::Pool;
 pub use tuner::Tuner;

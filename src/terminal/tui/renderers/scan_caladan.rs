@@ -174,13 +174,13 @@ pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) 
 
             rendered_candidates += 1;
 
-            lines.push(render_candidate_line(
+            lines.push(render_candidate_line(&CandidateLineContext {
                 candidate,
                 is_selected,
                 should_highlight,
                 theme,
-                inner.width,
-            ));
+                inner_width: inner.width,
+            }));
             line_count += 1;
         }
 
@@ -228,14 +228,16 @@ pub fn render_scan(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) 
     f.render_widget(paragraph, inner);
 }
 
-fn render_candidate_line(
-    candidate: &crate::terminal::tui::model::CandidateProgress,
+struct CandidateLineContext<'a> {
+    candidate: &'a crate::terminal::tui::model::CandidateProgress,
     is_selected: bool,
     should_highlight: bool,
-    theme: &dyn Theme,
+    theme: &'a dyn Theme,
     inner_width: u16,
-) -> Line<'static> {
-    let status_symbol = match candidate.status {
+}
+
+fn render_candidate_line(ctx: &CandidateLineContext) -> Line<'static> {
+    let status_symbol = match ctx.candidate.status {
         CandidateStatus::Detected => "○",
         CandidateStatus::Analyzing => "◐",
         CandidateStatus::Rejected => "·",
@@ -244,41 +246,41 @@ fn render_candidate_line(
         CandidateStatus::Completed => "◯",
     };
 
-    let status_color = if is_selected {
-        theme.selection_highlight()
+    let status_color = if ctx.is_selected {
+        ctx.theme.selection_highlight()
     } else {
-        match candidate.status {
-            CandidateStatus::Detected => theme.status_detected(),
-            CandidateStatus::Analyzing => theme.status_analyzing(),
-            CandidateStatus::Rejected => theme.status_rejected(),
-            CandidateStatus::Signal => theme.status_signal(),
-            CandidateStatus::Playing => theme.status_playing(),
-            CandidateStatus::Completed => theme.status_completed(),
+        match ctx.candidate.status {
+            CandidateStatus::Detected => ctx.theme.status_detected(),
+            CandidateStatus::Analyzing => ctx.theme.status_analyzing(),
+            CandidateStatus::Rejected => ctx.theme.status_rejected(),
+            CandidateStatus::Signal => ctx.theme.status_signal(),
+            CandidateStatus::Playing => ctx.theme.status_playing(),
+            CandidateStatus::Completed => ctx.theme.status_completed(),
         }
     };
 
-    let status_text = match candidate.status {
-        CandidateStatus::Detected => theme.status_detected_text(),
-        CandidateStatus::Analyzing => theme.status_analyzing_text(),
-        CandidateStatus::Rejected => theme.status_rejected_text(),
-        CandidateStatus::Signal => theme.status_signal_text(),
-        CandidateStatus::Playing => theme.status_playing_text(),
-        CandidateStatus::Completed => theme.status_completed_text(),
+    let status_text = match ctx.candidate.status {
+        CandidateStatus::Detected => ctx.theme.status_detected_text(),
+        CandidateStatus::Analyzing => ctx.theme.status_analyzing_text(),
+        CandidateStatus::Rejected => ctx.theme.status_rejected_text(),
+        CandidateStatus::Signal => ctx.theme.status_signal_text(),
+        CandidateStatus::Playing => ctx.theme.status_playing_text(),
+        CandidateStatus::Completed => ctx.theme.status_completed_text(),
     };
 
-    let freq_mhz = candidate.frequency_hz / 1e6;
-    let progress_pct = (candidate.completion * 100.0) as u8;
+    let freq_mhz = ctx.candidate.frequency_hz / 1e6;
+    let progress_pct = (ctx.candidate.completion * 100.0) as u8;
     let mini_graph = create_mini_graph(progress_pct);
 
-    let selection_prefix = if should_highlight {
+    let selection_prefix = if ctx.should_highlight {
         "▶"
-    } else if is_selected {
-        theme.selection_indicator()
+    } else if ctx.is_selected {
+        ctx.theme.selection_indicator()
     } else {
         " "
     };
 
-    let base_style = if should_highlight {
+    let base_style = if ctx.should_highlight {
         Style::default()
             .bg(Color::Rgb(0, 60, 90))
             .add_modifier(Modifier::BOLD)
@@ -290,7 +292,7 @@ fn render_candidate_line(
 
     spans.push(Span::styled(
         format!("{} {} ", selection_prefix, status_symbol),
-        base_style.fg(if should_highlight {
+        base_style.fg(if ctx.should_highlight {
             Color::White
         } else {
             status_color
@@ -299,47 +301,56 @@ fn render_candidate_line(
     spans.push(Span::styled(
         format!("{:>5.1} MHz  ", freq_mhz),
         base_style
-            .fg(if should_highlight {
+            .fg(if ctx.should_highlight {
                 Color::White
-            } else if is_selected {
-                theme.selection_highlight()
+            } else if ctx.is_selected {
+                ctx.theme.selection_highlight()
             } else {
-                theme.primary()
+                ctx.theme.primary()
             })
             .add_modifier(Modifier::BOLD),
     ));
     spans.push(Span::styled(
         format!("{:<8}", status_text),
-        base_style.fg(if should_highlight {
+        base_style.fg(if ctx.should_highlight {
             Color::Rgb(200, 220, 255)
         } else {
-            theme.foreground()
+            ctx.theme.foreground()
         }),
     ));
     spans.push(Span::styled("  ", base_style));
     spans.push(Span::styled(
         mini_graph,
-        base_style.fg(if should_highlight {
+        base_style.fg(if ctx.should_highlight {
             Color::White
         } else {
             status_color
         }),
     ));
 
-    if let Some(quality) = &candidate.audio_quality {
+    if let Some(quality) = &ctx.candidate.audio_quality {
         use crate::audio_quality::AudioQuality;
         let (quality_text, quality_color) = match quality {
-            AudioQuality::Good => (theme.quality_good_text(), theme.quality_good()),
-            AudioQuality::Moderate => (theme.quality_moderate_text(), theme.quality_moderate()),
-            AudioQuality::Poor => (theme.quality_poor_text(), theme.quality_poor()),
-            AudioQuality::NoAudio => (theme.quality_no_audio_text(), theme.quality_no_audio()),
-            AudioQuality::Static => (theme.quality_static_text(), theme.quality_static()),
-            AudioQuality::Unknown => (theme.quality_unknown_text(), theme.quality_unknown()),
+            AudioQuality::Good => (ctx.theme.quality_good_text(), ctx.theme.quality_good()),
+            AudioQuality::Moderate => (
+                ctx.theme.quality_moderate_text(),
+                ctx.theme.quality_moderate(),
+            ),
+            AudioQuality::Poor => (ctx.theme.quality_poor_text(), ctx.theme.quality_poor()),
+            AudioQuality::NoAudio => (
+                ctx.theme.quality_no_audio_text(),
+                ctx.theme.quality_no_audio(),
+            ),
+            AudioQuality::Static => (ctx.theme.quality_static_text(), ctx.theme.quality_static()),
+            AudioQuality::Unknown => (
+                ctx.theme.quality_unknown_text(),
+                ctx.theme.quality_unknown(),
+            ),
         };
         spans.push(Span::styled("  ", base_style));
         spans.push(Span::styled(
             format!("·{:<8}", quality_text),
-            base_style.fg(if should_highlight {
+            base_style.fg(if ctx.should_highlight {
                 Color::Rgb(150, 255, 150)
             } else {
                 quality_color
@@ -350,7 +361,7 @@ fn render_candidate_line(
     }
 
     let content_width = 3 + 5 + 4 + 2 + 8 + 2 + 5 + 2 + 9;
-    let padding_needed = inner_width.saturating_sub(content_width as u16);
+    let padding_needed = ctx.inner_width.saturating_sub(content_width as u16);
     spans.push(Span::styled(
         " ".repeat(padding_needed as usize),
         base_style,

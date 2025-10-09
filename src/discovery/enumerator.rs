@@ -117,6 +117,43 @@ impl UsbEnumerator {
         db.insert((0x1d50, 0x6066), "BladeRF 2.0");
         db
     }
+
+    fn try_extract_device_info(&self, device: &udev::Device) -> Option<sdr::DeviceInfo> {
+        let (vid_str, pid_str) = (
+            device.attribute_value("idVendor")?,
+            device.attribute_value("idProduct")?,
+        );
+
+        let vid = u16::from_str_radix(vid_str.to_str()?, 16).ok()?;
+        let pid = u16::from_str_radix(pid_str.to_str()?, 16).ok()?;
+
+        let model = self.known_devices.get(&(vid, pid))?;
+
+        let serial = device
+            .property_value("ID_SERIAL_SHORT")
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+
+        let bus = device
+            .property_value("BUSNUM")
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+
+        let port = device
+            .property_value("DEVNUM")
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+
+        Some(sdr::DeviceInfo {
+            id: sdr::DeviceId::Usb {
+                vid,
+                pid,
+                serial: serial.to_string(),
+                bus_port: format!("{}-{}", bus, port),
+            },
+            label: format!("{} (USB VID={:04x} PID={:04x})", model, vid, pid),
+        })
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -127,40 +164,8 @@ impl DeviceEnumerator for UsbEnumerator {
         enumerator.match_subsystem("usb")?;
 
         for device in enumerator.scan_devices()? {
-            if let (Some(vid), Some(pid)) = (
-                device.attribute_value("idVendor"),
-                device.attribute_value("idProduct"),
-            ) {
-                let vid = u16::from_str_radix(vid.to_str().unwrap_or(""), 16).ok();
-                let pid = u16::from_str_radix(pid.to_str().unwrap_or(""), 16).ok();
-
-                if let (Some(vid), Some(pid)) = (vid, pid)
-                    && let Some(model) = self.known_devices.get(&(vid, pid))
-                {
-                    let serial = device
-                        .property_value("ID_SERIAL_SHORT")
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown");
-
-                    let bus = device
-                        .property_value("BUSNUM")
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown");
-                    let port = device
-                        .property_value("DEVNUM")
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown");
-
-                    devices.push(sdr::DeviceInfo {
-                        id: sdr::DeviceId::Usb {
-                            vid,
-                            pid,
-                            serial: serial.to_string(),
-                            bus_port: format!("{}-{}", bus, port),
-                        },
-                        label: format!("{} (USB VID={:04x} PID={:04x})", model, vid, pid),
-                    });
-                }
+            if let Some(device_info) = self.try_extract_device_info(&device) {
+                devices.push(device_info);
             }
         }
 

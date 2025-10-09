@@ -115,13 +115,13 @@ pub fn collect_peaks_from_source(
                     noise_floor_state: &mut noise_floor_state,
                 };
 
-                let batch_peaks = process_samples_for_peaks(
-                    &read_buffer,
+                let batch_peaks = process_samples_for_peaks(&mut PeakProcessingParams {
+                    read_buffer: &read_buffer,
                     samples_read,
-                    &mut fft_buffer,
-                    &fft,
-                    &mut context,
-                );
+                    fft_buffer: &mut fft_buffer,
+                    fft: &fft,
+                    context: &mut context,
+                });
 
                 // Process peaks through multi-frame integration if enabled
                 let final_peaks = if let Some(ref mut integrator) = multi_frame_integrator {
@@ -169,76 +169,83 @@ pub fn collect_peaks_from_source(
     Ok(peaks)
 }
 
+pub struct PeakProcessingParams<'a> {
+    pub read_buffer: &'a [Complex],
+    pub samples_read: usize,
+    pub fft_buffer: &'a mut [Complex32],
+    pub fft: &'a Arc<dyn rustfft::Fft<f32>>,
+    pub context: &'a mut ProcessingContext<'a>,
+}
+
 /// Process a batch of samples and extract peaks using the configured pipeline
-pub fn process_samples_for_peaks(
-    read_buffer: &[Complex],
-    samples_read: usize,
-    fft_buffer: &mut [Complex32],
-    fft: &Arc<dyn rustfft::Fft<f32>>,
-    context: &mut ProcessingContext,
-) -> Vec<Peak> {
+pub fn process_samples_for_peaks(params: &mut PeakProcessingParams) -> Vec<Peak> {
     // Copy samples to FFT buffer and convert to real samples for windowing
-    let mut real_samples = Vec::with_capacity(context.config.fft_size);
-    for sample in read_buffer
+    let mut real_samples = Vec::with_capacity(params.context.config.fft_size);
+    for sample in params
+        .read_buffer
         .iter()
-        .take(samples_read.min(context.config.fft_size))
+        .take(params.samples_read.min(params.context.config.fft_size))
     {
         // For windowing, we use the magnitude of complex samples
         real_samples.push((sample.re * sample.re + sample.im * sample.im).sqrt());
     }
 
     // Apply windowing if enabled
-    if context.config.enable_windowing {
-        windowing::apply_window(&mut real_samples, &context.config.window_type);
+    if params.context.config.enable_windowing {
+        windowing::apply_window(&mut real_samples, &params.context.config.window_type);
     }
 
     // Apply zero-padding if enabled
-    if context.config.zero_padding_factor > 1 {
-        windowing::apply_zero_padding(&mut real_samples, context.config.zero_padding_factor);
+    if params.context.config.zero_padding_factor > 1 {
+        windowing::apply_zero_padding(&mut real_samples, params.context.config.zero_padding_factor);
     }
 
     // Copy windowed samples to FFT buffer (convert back to complex)
-    fft_buffer.fill(Complex32::new(0.0, 0.0)); // Clear buffer first
-    for (i, &real_sample) in real_samples.iter().enumerate().take(fft_buffer.len()) {
-        fft_buffer[i] = Complex32::new(real_sample, 0.0);
+    params.fft_buffer.fill(Complex32::new(0.0, 0.0)); // Clear buffer first
+    for (i, &real_sample) in real_samples
+        .iter()
+        .enumerate()
+        .take(params.fft_buffer.len())
+    {
+        params.fft_buffer[i] = Complex32::new(real_sample, 0.0);
     }
 
-    fft.process(fft_buffer);
-    let mut magnitudes: Vec<f32> = fft_buffer.iter().map(|c| c.norm_sqr()).collect();
+    params.fft.process(params.fft_buffer);
+    let mut magnitudes: Vec<f32> = params.fft_buffer.iter().map(|c| c.norm_sqr()).collect();
 
     // Dynamic noise floor estimation takes priority over other detection methods
-    if context.config.enable_dynamic_noise_floor
-        && let Some(ref mut estimator) = context.noise_floor_state.estimator
+    if params.context.config.enable_dynamic_noise_floor
+        && let Some(ref mut estimator) = params.context.noise_floor_state.estimator
     {
         return estimator.extract_peaks_with_dynamic_threshold(
             &magnitudes,
-            context.config.fft_size,
-            context.config.samp_rate,
-            context.center_freq,
+            params.context.config.fft_size,
+            params.context.config.samp_rate,
+            params.context.center_freq,
         );
     }
 
     // CFAR detection works best on raw or lightly processed magnitudes
     // Apply it early, before heavy smoothing that changes noise characteristics
-    if context.config.enable_cfar_detection {
+    if params.context.config.enable_cfar_detection {
         return cfar::extract_peaks_with_cfar(
             &magnitudes,
-            context.config.cfar_threshold_factor,
-            context.config.cfar_guard_cells,
-            context.config.cfar_reference_cells,
-            context.config.fft_size,
-            context.config.samp_rate,
-            context.center_freq,
+            params.context.config.cfar_threshold_factor,
+            params.context.config.cfar_guard_cells,
+            params.context.config.cfar_reference_cells,
+            params.context.config.fft_size,
+            params.context.config.samp_rate,
+            params.context.center_freq,
         );
     }
 
     // For non-CFAR detection, apply signal averaging improvements to enhance signal quality
-    if context.config.enable_multi_frame_averaging {
+    if params.context.config.enable_multi_frame_averaging {
         let should_extract_peaks = averaging::apply_multi_frame_averaging(
             &mut magnitudes,
-            &mut context.averaging_state.multi_frame_accumulator,
-            &mut context.averaging_state.frame_count,
-            context.config.averaging_frames,
+            &mut params.context.averaging_state.multi_frame_accumulator,
+            &mut params.context.averaging_state.frame_count,
+            params.context.config.averaging_frames,
         );
 
         // If we haven't accumulated enough frames yet, return empty peaks
@@ -247,36 +254,39 @@ pub fn process_samples_for_peaks(
         }
     }
 
-    if context.config.enable_moving_average_filter {
+    if params.context.config.enable_moving_average_filter {
         averaging::apply_moving_average_filter(
             &mut magnitudes,
-            context.config.moving_average_window_size,
+            params.context.config.moving_average_window_size,
         );
     }
 
-    if context.config.enable_coherent_integration {
+    if params.context.config.enable_coherent_integration {
         averaging::apply_coherent_integration(
             &mut magnitudes,
-            &mut context.averaging_state.coherent_integration_accumulator,
-            &mut context.averaging_state.integration_cycles,
+            &mut params
+                .context
+                .averaging_state
+                .coherent_integration_accumulator,
+            &mut params.context.averaging_state.integration_cycles,
         );
     }
 
-    if context.config.enable_exponential_smoothing {
+    if params.context.config.enable_exponential_smoothing {
         averaging::apply_exponential_smoothing(
             &mut magnitudes,
-            &mut context.averaging_state.smoothed_magnitudes,
-            context.config.smoothing_alpha,
+            &mut params.context.averaging_state.smoothed_magnitudes,
+            params.context.config.smoothing_alpha,
         );
     }
 
     // Use simple threshold detection for averaged magnitudes
     extraction::extract_peaks_from_magnitudes(
         &magnitudes,
-        context.config.peak_detection_threshold,
-        context.config.fft_size,
-        context.config.samp_rate,
-        context.center_freq,
+        params.context.config.peak_detection_threshold,
+        params.context.config.fft_size,
+        params.context.config.samp_rate,
+        params.context.center_freq,
     )
 }
 

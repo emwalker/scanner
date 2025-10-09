@@ -1,7 +1,9 @@
 #[cfg(test)]
 mod tests {
+    use crate::terminal::tui::model::{CandidateStatus, Model, TunerState, UiMode};
+    use crate::terminal::{ProgressEvent, ProgressEventType};
+    use std::time::Instant;
 
-    #[cfg(test)]
     fn create_test_pool_status(
         available: Vec<crate::sdr::DeviceId>,
         scanning: Vec<crate::sdr::DeviceId>,
@@ -50,12 +52,6 @@ mod tests {
             device_count: available.len(),
         }
     }
-
-    use crate::terminal::tui::model::{
-        CandidateProgress, CandidateStatus, Model, TunerState, UiMode, WindowProgress,
-    };
-    use crate::terminal::{ProgressEvent, ProgressEventType};
-    use std::time::Instant;
 
     /// Test that candidates progress through all expected states
     #[test]

@@ -23,6 +23,12 @@ struct TuneParams {
     audio_quality: Option<crate::audio_quality::AudioQuality>,
 }
 
+enum LoopControl {
+    Continue,
+    Break,
+    Advance,
+}
+
 pub struct MainThread {
     config: ScanningConfig,
     console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
@@ -435,10 +441,10 @@ impl MainThread {
         windows_to_process: usize,
         total_windows: usize,
         audio_session: &mut Option<AudioSession>,
-    ) -> Result<bool> {
+    ) -> Result<LoopControl> {
         self.check_and_handle_command(windows_to_process, total_windows, audio_session)?;
         std::thread::sleep(std::time::Duration::from_millis(100));
-        Ok(true)
+        Ok(LoopControl::Continue)
     }
 
     fn handle_post_scan_browse_mode(
@@ -446,10 +452,132 @@ impl MainThread {
         windows_to_process: usize,
         total_windows: usize,
         audio_session: &mut Option<AudioSession>,
-    ) -> Result<bool> {
+    ) -> Result<LoopControl> {
         self.process_commands(windows_to_process, total_windows, audio_session)?;
         std::thread::sleep(std::time::Duration::from_millis(100));
-        Ok(true)
+        Ok(LoopControl::Continue)
+    }
+
+    fn process_window(
+        &mut self,
+        window_num: usize,
+        center_freq: f64,
+        total_windows: usize,
+    ) -> Result<()> {
+        debug!(
+            window = window_num,
+            total = total_windows,
+            "Processing window"
+        );
+
+        let window = Window::new(crate::window::WindowConfig {
+            center_freq,
+            window_num,
+            total_windows,
+            tuner_provider: self.pool.clone(),
+            config: self.config.clone(),
+            progress_reporter: self.progress_reporter.clone(),
+            shutdown_coordinator: self.shutdown_coordinator.clone(),
+            pause_signal: Some(self.pause_signal.clone()),
+        });
+
+        window.process_with_pool()?;
+
+        debug!(
+            completed_window = window_num,
+            next_window = window_num + 1,
+            "Window complete"
+        );
+        Ok(())
+    }
+
+    fn process_commands_with_pause_check(
+        &mut self,
+        window_num: usize,
+        total_windows: usize,
+        audio_session: &mut Option<AudioSession>,
+    ) -> Result<bool> {
+        self.process_commands(window_num, total_windows, audio_session)?;
+
+        if self.scanner_state.is_paused() {
+            return Ok(true);
+        }
+
+        self.check_and_handle_command(window_num, total_windows, audio_session)?;
+        Ok(self.scanner_state.is_paused())
+    }
+
+    fn handle_scanning_state(
+        &mut self,
+        window_index: usize,
+        windows_to_process: usize,
+        window_centers: &[f64],
+        audio_session: &mut Option<AudioSession>,
+    ) -> Result<LoopControl> {
+        if window_index >= windows_to_process {
+            debug!("Scan band complete - all windows processed");
+            self.scanner_state.mark_scan_complete(windows_to_process);
+            return Ok(LoopControl::Continue);
+        }
+
+        debug!(
+            iteration = window_index,
+            total = windows_to_process,
+            "Start of scan loop iteration"
+        );
+
+        if self.process_commands_with_pause_check(
+            window_index + 1,
+            window_centers.len(),
+            audio_session,
+        )? {
+            return Ok(LoopControl::Continue);
+        }
+
+        let center_freq = window_centers[window_index];
+        self.process_window(window_index + 1, center_freq, window_centers.len())?;
+
+        self.process_commands(window_index + 1, window_centers.len(), audio_session)?;
+
+        debug!(
+            completed_window = window_index + 1,
+            next_window = window_index + 2,
+            remaining = windows_to_process - window_index - 1,
+            "Window complete, advancing to next"
+        );
+
+        Ok(LoopControl::Advance)
+    }
+
+    fn handle_paused_state(
+        &mut self,
+        window_index: usize,
+        windows_to_process: usize,
+        total_windows: usize,
+        audio_session: &mut Option<AudioSession>,
+    ) -> Result<LoopControl> {
+        if !window_index.is_multiple_of(50) {
+            debug!(
+                iteration = window_index,
+                total = windows_to_process,
+                "Paused - waiting for commands"
+            );
+        }
+
+        self.process_commands(window_index + 1, total_windows, audio_session)?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        Ok(LoopControl::Continue)
+    }
+
+    fn handle_listening_state(
+        &mut self,
+        window_index: usize,
+        total_windows: usize,
+        audio_session: &mut Option<AudioSession>,
+    ) -> Result<LoopControl> {
+        self.process_commands(window_index + 1, total_windows, audio_session)?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        Ok(LoopControl::Continue)
     }
 
     fn scan_band(&mut self) -> Result<()> {
@@ -474,118 +602,48 @@ impl MainThread {
         let mut audio_session: Option<AudioSession> = None;
 
         loop {
-            // Check for shutdown FIRST - compiler will force us to handle this in all match arms
             if self.shutdown_coordinator.is_shutdown() {
                 self.scanner_state.shutdown();
             }
 
-            // Exhaustive state machine - compiler enforces handling all states
-            match &self.scanner_state.mode {
+            let control = match &self.scanner_state.mode {
                 crate::scanner_state::ScanMode::ShuttingDown => {
                     debug!("Shutdown requested, stopping band scanning");
-                    break;
+                    LoopControl::Break
                 }
-                crate::scanner_state::ScanMode::ScanComplete { .. } => {
-                    if !self.handle_post_scan_waiting(
+                crate::scanner_state::ScanMode::ScanComplete { .. } => self
+                    .handle_post_scan_waiting(
                         windows_to_process,
                         window_centers.len(),
                         &mut audio_session,
-                    )? {
-                        break;
-                    }
-                    continue;
-                }
-                crate::scanner_state::ScanMode::ScanCompletePaused { .. } => {
-                    if !self.handle_post_scan_browse_mode(
+                    )?,
+                crate::scanner_state::ScanMode::ScanCompletePaused { .. } => self
+                    .handle_post_scan_browse_mode(
                         windows_to_process,
                         window_centers.len(),
                         &mut audio_session,
-                    )? {
-                        break;
-                    }
-                    continue;
-                }
-                crate::scanner_state::ScanMode::Paused { .. } => {
-                    if !i.is_multiple_of(50) {
-                        debug!(
-                            iteration = i,
-                            total = windows_to_process,
-                            "Paused - waiting for commands"
-                        );
-                    }
-
-                    self.process_commands(i + 1, window_centers.len(), &mut audio_session)?;
-
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    continue;
-                }
+                    )?,
+                crate::scanner_state::ScanMode::Paused { .. } => self.handle_paused_state(
+                    i,
+                    windows_to_process,
+                    window_centers.len(),
+                    &mut audio_session,
+                )?,
                 crate::scanner_state::ScanMode::Listening { .. } => {
-                    self.process_commands(i + 1, window_centers.len(), &mut audio_session)?;
-
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    continue;
+                    self.handle_listening_state(i, window_centers.len(), &mut audio_session)?
                 }
-                crate::scanner_state::ScanMode::Scanning => {
-                    // Check if we've scanned all windows
-                    if i >= windows_to_process {
-                        debug!("Scan band complete - all windows processed");
-                        self.scanner_state.mark_scan_complete(windows_to_process);
-                        continue;
-                    }
+                crate::scanner_state::ScanMode::Scanning => self.handle_scanning_state(
+                    i,
+                    windows_to_process,
+                    &window_centers,
+                    &mut audio_session,
+                )?,
+            };
 
-                    debug!(
-                        iteration = i,
-                        total = windows_to_process,
-                        "Start of scan loop iteration"
-                    );
-
-                    self.process_commands(i + 1, window_centers.len(), &mut audio_session)?;
-
-                    // After processing commands, check if we transitioned to paused
-                    if self.scanner_state.is_paused() {
-                        continue;
-                    }
-
-                    debug!(
-                        window = i + 1,
-                        total = windows_to_process,
-                        "Processing window"
-                    );
-
-                    self.check_and_handle_command(i + 1, window_centers.len(), &mut audio_session)?;
-                    if self.scanner_state.is_paused() {
-                        continue;
-                    }
-
-                    let center_freq = window_centers[i];
-                    let window = Window::new(crate::window::WindowConfig {
-                        center_freq,
-                        window_num: i + 1,
-                        total_windows: window_centers.len(),
-                        pool: self.pool.clone(),
-                        config: self.config.clone(),
-                        progress_reporter: self.progress_reporter.clone(),
-                        shutdown_coordinator: self.shutdown_coordinator.clone(),
-                        pause_signal: Some(self.pause_signal.clone()),
-                    });
-
-                    self.check_and_handle_command(i + 1, window_centers.len(), &mut audio_session)?;
-                    if self.scanner_state.is_paused() {
-                        continue;
-                    }
-
-                    window.process_with_pool()?;
-
-                    self.process_commands(i + 1, window_centers.len(), &mut audio_session)?;
-
-                    debug!(
-                        completed_window = i + 1,
-                        next_window = i + 2,
-                        remaining = windows_to_process - i - 1,
-                        "Window complete, advancing to next"
-                    );
-                    i += 1;
-                }
+            match control {
+                LoopControl::Break => break,
+                LoopControl::Continue => continue,
+                LoopControl::Advance => i += 1,
             }
         }
 

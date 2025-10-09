@@ -1,6 +1,6 @@
 use crate::shutdown::ShutdownCoordinator;
 use crate::types::{Result, ScannerError, ScanningConfig, Signal};
-use crate::window::Window;
+use crate::window::{create_audio_fm_graph, create_audio_stream, setup_audio_device};
 use cpal::traits::StreamTrait;
 use cpal::{BufferSize, SampleFormat, StreamConfig};
 use rustradio::graph::GraphRunner;
@@ -27,16 +27,13 @@ impl AudioSession {
         let (audio_tx, audio_rx) =
             std::sync::mpsc::sync_channel::<crate::mpsc::AudioPacket>(audio_buffer_packets);
 
-        let (audio_device, supported_config) =
-            Window::setup_audio_device(config.audio_sample_rate)?;
+        let (audio_device, supported_config) = setup_audio_device(config.audio_sample_rate)?;
         let sample_format = supported_config.sample_format();
         let mut stream_config: StreamConfig = supported_config.into();
         stream_config.buffer_size = BufferSize::Fixed(config.audio_buffer_size);
 
         let stream = match sample_format {
-            SampleFormat::F32 => {
-                Window::create_audio_stream(&audio_device, &stream_config, audio_rx)?
-            }
+            SampleFormat::F32 => create_audio_stream(&audio_device, &stream_config, audio_rx)?,
             _ => {
                 return Err(ScannerError::Custom("Unsupported audio format".to_string()));
             }
@@ -71,7 +68,7 @@ impl AudioSession {
 
         let sdr_rx = segment.audio_subscriber();
 
-        let mut audio_graph = Window::create_audio_fm_graph(
+        let mut audio_graph = create_audio_fm_graph(
             signal,
             sdr_rx,
             self.audio_tx.clone(),
