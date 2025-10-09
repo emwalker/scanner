@@ -54,11 +54,7 @@ pub enum TuiEvent {
     /// Scanner has been paused and is ready for browsing
     Paused { tuner_id: crate::sdr::DeviceId },
     /// Active tuners state has been updated
-    ActiveTunersUpdated {
-        available: Vec<crate::sdr::DeviceId>,
-        scanning: Vec<crate::sdr::DeviceId>,
-        listening: Vec<crate::sdr::DeviceId>,
-    },
+    ActiveTunersUpdated { status: crate::pool::PoolStatus },
 }
 
 /// Commands sent from TUI to scanner for interactive control

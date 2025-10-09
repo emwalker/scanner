@@ -17,27 +17,6 @@ struct TuneParams {
     audio_quality: Option<crate::audio_quality::AudioQuality>,
 }
 
-/// Tracks which tuners are available and actively allocated to different functions
-#[derive(Clone, Debug)]
-pub struct ActiveTuners {
-    /// Pool of tuners that can be allocated (relatively static, changes with discovery)
-    pub available: Vec<crate::sdr::DeviceId>,
-    /// Tuners currently allocated to scanning
-    pub scanning: Vec<crate::sdr::DeviceId>,
-    /// Tuners currently allocated to listening
-    pub listening: Vec<crate::sdr::DeviceId>,
-}
-
-impl ActiveTuners {
-    fn new() -> Self {
-        Self {
-            available: vec![],
-            scanning: vec![],
-            listening: vec![],
-        }
-    }
-}
-
 pub struct MainThread {
     config: ScanningConfig,
     console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
@@ -50,7 +29,6 @@ pub struct MainThread {
     scanner_state: ScannerState,
     pause_signal: PauseSignal,
     current_playing: Option<TuneParams>,
-    active_tuners: ActiveTuners,
     pool: Arc<crate::pool::Pool>,
 }
 
@@ -62,8 +40,6 @@ impl MainThread {
         backend: Arc<dyn crate::sdr::Backend>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
     ) -> Result<Self> {
-        let active_tuners = ActiveTuners::new();
-
         let filter = crate::pool::PoolFilter::new()
             .with_driver("sdrplay")
             .with_mode(crate::pool::TuningMode::SingleTuner);
@@ -81,7 +57,6 @@ impl MainThread {
             scanner_state: ScannerState::new(),
             pause_signal: PauseSignal::new(),
             current_playing: None,
-            active_tuners,
             pool: Arc::new(pool),
         })
     }
@@ -95,8 +70,6 @@ impl MainThread {
         shutdown_coordinator: Arc<ShutdownCoordinator>,
         pool: Arc<crate::pool::Pool>,
     ) -> Result<Self> {
-        let active_tuners = ActiveTuners::new();
-
         Ok(MainThread {
             config,
             console_writer,
@@ -109,7 +82,6 @@ impl MainThread {
             scanner_state: ScannerState::new(),
             pause_signal: PauseSignal::new(),
             current_playing: None,
-            active_tuners,
             pool,
         })
     }
@@ -132,11 +104,8 @@ impl MainThread {
 
     fn send_active_tuners_update(&self) {
         if let Some(ref sender) = self.tui_event_sender {
-            let event = crate::terminal::TuiEvent::ActiveTunersUpdated {
-                available: self.active_tuners.available.clone(),
-                scanning: self.active_tuners.scanning.clone(),
-                listening: self.active_tuners.listening.clone(),
-            };
+            let status = self.pool.status();
+            let event = crate::terminal::TuiEvent::ActiveTunersUpdated { status };
             let _ = sender.send(event);
         }
     }
@@ -189,6 +158,10 @@ impl MainThread {
             "Tuning to candidate"
         );
 
+        // CRITICAL: Stop current station FIRST to release tuner back to pool
+        // This must happen BEFORE creating new segment, otherwise we get NoAvailableTuner
+        audio_session.stop_current_station();
+
         // Create pool-based segment for listening
         let segment = crate::pool::Segment::new(
             &self.pool,
@@ -197,8 +170,16 @@ impl MainThread {
             &self.shutdown_coordinator,
         )?;
 
-        // Get tuner ID from active tuners (listening)
-        let tuner_id = self.active_tuners.listening.first().cloned();
+        // Get tuner ID from pool status (first allocated tuner for listening)
+        let status = self.pool.status();
+        let tuner_id = status
+            .tuners
+            .iter()
+            .find(|t| {
+                t.state == crate::pool::TunerState::Allocated
+                    && t.activity == Some(crate::pool::TunerActivity::Listening)
+            })
+            .map(|t| t.id.device_id.clone());
 
         let signal = crate::types::Signal {
             frequency_hz: params.candidate_frequency,
@@ -267,12 +248,12 @@ impl MainThread {
 
                 // Send Paused event to TUI so it knows scanning has stopped and can now tune
                 if let Some(ref sender) = self.tui_event_sender {
-                    // Get tuner ID from active tuners
-                    let tuner_id = self
-                        .active_tuners
-                        .available
+                    // Get any available tuner ID from pool status
+                    let status = self.pool.status();
+                    let tuner_id = status
+                        .tuners
                         .first()
-                        .cloned()
+                        .map(|t| t.id.device_id.clone())
                         .unwrap_or_else(|| crate::sdr::DeviceId::from_serial("unknown", "0"));
                     let _ = sender.send(crate::terminal::TuiEvent::Paused { tuner_id });
                 }
@@ -287,13 +268,12 @@ impl MainThread {
                 self.pause_signal.unpause();
                 let _next_window = self.scanner_state.handle_resume();
 
-                // Move tuner from listening back to scanning
-                self.active_tuners.listening.clear();
-                self.active_tuners.scanning = self.active_tuners.available.clone();
-                self.send_active_tuners_update();
-
+                // Pool will automatically handle tuner state when AudioSession drops
                 *audio_session = None;
                 debug!("AudioSession dropped, returning to scan mode");
+
+                // Send updated pool status to TUI
+                self.send_active_tuners_update();
 
                 Ok(None)
             }
@@ -313,9 +293,8 @@ impl MainThread {
                 );
                 self.scanner_state.handle_tune(window_num);
 
-                // Move tuner from scanning to listening
-                self.active_tuners.scanning.clear();
-                self.active_tuners.listening = self.active_tuners.available.clone();
+                // Pool will automatically track tuner activity when we create AudioSession
+                // Send updated status to TUI
                 self.send_active_tuners_update();
 
                 if let Some(session) = audio_session {
@@ -345,7 +324,16 @@ impl MainThread {
 
                 // Send AudioPlaybackCompleted event if we were playing something
                 if let Some(params) = self.current_playing.take() {
-                    let tuner_id = self.active_tuners.listening.first().cloned();
+                    // Get tuner ID from pool status
+                    let status = self.pool.status();
+                    let tuner_id = status
+                        .tuners
+                        .iter()
+                        .find(|t| {
+                            t.state == crate::pool::TunerState::Allocated
+                                && t.activity == Some(crate::pool::TunerActivity::Listening)
+                        })
+                        .map(|t| t.id.device_id.clone());
                     self.progress_reporter
                         .report(crate::terminal::ProgressEvent {
                             event_type: crate::terminal::ProgressEventType::AudioPlaybackCompleted,
@@ -385,7 +373,7 @@ impl MainThread {
             );
 
             // Create a window for this specific station frequency (pool-based)
-            let window = Window::for_station_with_pool(
+            let window = Window::for_station(
                 station_freq,
                 station_idx + 1,
                 total_stations,
@@ -571,7 +559,7 @@ impl MainThread {
                     }
 
                     let center_freq = window_centers[i];
-                    let window = Window::new_with_pool(crate::window::PoolWindowConfig {
+                    let window = Window::new(crate::window::WindowConfig {
                         center_freq,
                         window_num: i + 1,
                         total_windows: window_centers.len(),

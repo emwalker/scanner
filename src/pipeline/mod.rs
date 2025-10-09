@@ -11,7 +11,6 @@ use rustradio::graph::GraphRunner;
 pub struct AnalysisContext<'a> {
     pub config: &'a ScanningConfig,
     pub center_freq: f64,
-    pub device: &'a crate::soapy::Device,
     pub progress_reporter: std::sync::Arc<dyn ProgressReporter + Send + Sync>,
     pub metadata: crate::window::WindowMetadata,
 }
@@ -52,7 +51,7 @@ pub fn process_peak_to_signal(
         audio_quality: None,
         signal_strength: None,
         timestamp: std::time::Instant::now(),
-        tuner_id: context.device.tuner_id().ok(),
+        tuner_id: None, // Tuner ID tracking removed with device field
     });
 
     // Refine frequency using tracking
@@ -76,7 +75,7 @@ pub fn process_peak_to_signal(
         audio_quality: None,
         signal_strength: None,
         timestamp: std::time::Instant::now(),
-        tuner_id: context.device.tuner_id().ok(),
+        tuner_id: None, // Tuner ID tracking removed with device field
     });
 
     // Run the detection and squelch analysis
@@ -170,7 +169,6 @@ fn run_detection_analysis(
         context.center_freq,
         refined_frequency,
         Some(signal_tx),
-        context.device,
         audio_analyzer,
         Some(context.progress_reporter.clone()),
         context.metadata.window_id,
@@ -198,7 +196,7 @@ fn run_detection_analysis(
             original_frequency_hz,
             candidate_id: candidate_id.to_string(),
             metadata: context.metadata,
-            tuner_id: context.device.tuner_id().ok(),
+            tuner_id: None, // Tuner ID tracking removed with device field
         },
         decision_state,
         detection_cancel_token,
@@ -213,7 +211,7 @@ fn run_detection_analysis(
         &*context.progress_reporter,
         rejection_rx,
         candidate_id,
-        context.device.tuner_id().ok(),
+        None, // Tuner ID tracking removed with device field
     )
 }
 
@@ -538,26 +536,18 @@ mod tests {
         rx
     }
 
-    /// Create a mock device for testing
-    fn create_mock_device() -> crate::soapy::Device {
-        // Create a minimal mock device with empty device string
-        crate::soapy::Device::new("mock_device".to_string()).unwrap()
-    }
-
     #[test]
     fn test_weak_peak_exits_early() {
         let config = create_test_config();
         let sdr_rx = create_mock_sdr_stream();
         let center_freq = TEST_FREQUENCY_HZ;
         let (signal_tx, signal_rx) = mpsc::sync_channel::<Signal>(10);
-        let device = create_mock_device();
         let progress_reporter = NoOpProgressReporter;
 
         // Process a weak peak - should exit early due to weak signal
         let context = AnalysisContext {
             config: &config,
             center_freq,
-            device: &device,
             progress_reporter: std::sync::Arc::new(progress_reporter),
             metadata: crate::window::WindowMetadata {
                 center_frequency_hz: center_freq,
@@ -582,7 +572,6 @@ mod tests {
         let sdr_rx = create_mock_strong_sdr_stream();
         let center_freq = TEST_FREQUENCY_HZ;
         let (signal_tx, _signal_rx) = mpsc::sync_channel::<Signal>(10);
-        let device = create_mock_device();
         let progress_reporter = MockProgressReporter::new();
         let progress_arc = std::sync::Arc::new(progress_reporter.clone());
 
@@ -590,7 +579,7 @@ mod tests {
         let context = AnalysisContext {
             config: &config,
             center_freq,
-            device: &device,
+
             progress_reporter: progress_arc,
             metadata: crate::window::WindowMetadata {
                 center_frequency_hz: center_freq,
@@ -623,7 +612,6 @@ mod tests {
         let sdr_rx = create_mock_sdr_stream();
         let center_freq = TEST_FREQUENCY_HZ;
         let (signal_tx, _signal_rx) = mpsc::sync_channel::<Signal>(10);
-        let device = create_mock_device();
         let progress_reporter = MockProgressReporter::new();
         let progress_arc = std::sync::Arc::new(progress_reporter.clone());
 
@@ -631,7 +619,7 @@ mod tests {
         let context = AnalysisContext {
             config: &config,
             center_freq,
-            device: &device,
+
             progress_reporter: progress_arc,
             metadata: crate::window::WindowMetadata {
                 center_frequency_hz: center_freq,
@@ -675,7 +663,6 @@ mod tests {
         let sdr_rx = create_mock_sdr_stream();
         let center_freq = TEST_FREQUENCY_HZ;
         let (signal_tx, _signal_rx) = mpsc::sync_channel::<Signal>(10);
-        let device = create_mock_device();
         let progress_reporter = MockProgressReporter::new();
         let progress_arc = std::sync::Arc::new(progress_reporter.clone());
 
@@ -683,7 +670,7 @@ mod tests {
         let context = AnalysisContext {
             config: &config,
             center_freq,
-            device: &device,
+
             progress_reporter: progress_arc,
             metadata: crate::window::WindowMetadata {
                 center_frequency_hz: center_freq,

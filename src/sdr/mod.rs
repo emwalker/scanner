@@ -22,8 +22,6 @@ pub mod rtlsdr;
 // Legacy modules (will be removed in future refactoring)
 pub mod sample_source;
 
-use crate::types::{Result, ScanningConfig};
-
 // Re-export commonly used types
 pub use backend::Backend;
 pub use device::DeviceTrait;
@@ -41,12 +39,3 @@ pub use rtlsdr::RtlSdr;
 
 // Re-export legacy sample source types
 pub use sample_source::SampleSource;
-
-// Keep old Device trait name for backward compatibility during migration
-pub trait Device {
-    fn tune(
-        &self,
-        config: &ScanningConfig,
-        center_freq: f64,
-    ) -> Result<Box<dyn crate::pool::SegmentTrait>>;
-}

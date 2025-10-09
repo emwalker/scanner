@@ -23,17 +23,6 @@ pub struct WindowConfig {
     pub center_freq: f64,
     pub window_num: usize,
     pub total_windows: usize,
-    pub device: crate::soapy::Device,
-    pub config: ScanningConfig,
-    pub progress_reporter: Arc<dyn ProgressReporter>,
-    pub shutdown_coordinator: Arc<ShutdownCoordinator>,
-    pub pause_signal: Option<crate::scanner_state::PauseSignal>,
-}
-
-pub struct PoolWindowConfig {
-    pub center_freq: f64,
-    pub window_num: usize,
-    pub total_windows: usize,
     pub pool: Arc<crate::pool::Pool>,
     pub config: ScanningConfig,
     pub progress_reporter: Arc<dyn ProgressReporter>,
@@ -47,8 +36,7 @@ pub struct Window {
     window_num: usize,
     total_windows: usize,
     station_mode: bool, // True if this is a specific station frequency, not band scanning
-    device: crate::soapy::Device,
-    pool: Option<Arc<crate::pool::Pool>>, // Pool-based device management (replaces device)
+    pool: Arc<crate::pool::Pool>,
     config: ScanningConfig,
     progress_reporter: Arc<dyn ProgressReporter>,
     shutdown_token: CancellationToken,
@@ -57,14 +45,14 @@ pub struct Window {
 }
 
 impl Window {
+    /// Create a Window for band scanning using pool-based device management
     pub fn new(window_config: WindowConfig) -> Self {
         Self {
             center_freq: window_config.center_freq,
             window_num: window_config.window_num,
             total_windows: window_config.total_windows,
             station_mode: false,
-            device: window_config.device,
-            pool: None,
+            pool: window_config.pool,
             config: window_config.config,
             progress_reporter: window_config.progress_reporter,
             shutdown_token: window_config.shutdown_coordinator.token(),
@@ -76,60 +64,11 @@ impl Window {
         }
     }
 
-    pub fn for_station(
-        center_freq: f64,
-        window_num: usize,
-        total_windows: usize,
-        device: crate::soapy::Device,
-        config: ScanningConfig,
-        progress_reporter: Arc<dyn ProgressReporter>,
-        shutdown_coordinator: Arc<ShutdownCoordinator>,
-    ) -> Self {
-        Self {
-            center_freq,
-            window_num,
-            total_windows,
-            station_mode: true,
-            device,
-            pool: None,
-            config,
-            progress_reporter,
-            shutdown_token: shutdown_coordinator.token(),
-            metadata: WindowMetadata {
-                center_frequency_hz: center_freq,
-                window_id: window_num,
-            },
-            pause_signal: None,
-        }
-    }
-
-    /// Create a Window for band scanning using pool-based device management
-    pub fn new_with_pool(pool_config: PoolWindowConfig) -> Self {
-        let dummy_device = crate::soapy::Device("".to_string());
-
-        Self {
-            center_freq: pool_config.center_freq,
-            window_num: pool_config.window_num,
-            total_windows: pool_config.total_windows,
-            station_mode: false,
-            device: dummy_device,
-            pool: Some(pool_config.pool),
-            config: pool_config.config,
-            progress_reporter: pool_config.progress_reporter,
-            shutdown_token: pool_config.shutdown_coordinator.token(),
-            metadata: WindowMetadata {
-                center_frequency_hz: pool_config.center_freq,
-                window_id: pool_config.window_num,
-            },
-            pause_signal: pool_config.pause_signal,
-        }
-    }
-
     /// Create a Window for station scanning using pool-based device management
     ///
-    /// This constructor takes a pool reference instead of a device, allowing
-    /// the Window to acquire and release tuners dynamically using RAII.
-    pub fn for_station_with_pool(
+    /// This constructor takes a pool reference, allowing the Window to acquire
+    /// and release tuners dynamically using RAII.
+    pub fn for_station(
         center_freq: f64,
         window_num: usize,
         total_windows: usize,
@@ -138,16 +77,12 @@ impl Window {
         progress_reporter: Arc<dyn ProgressReporter>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
     ) -> Self {
-        // Create a dummy device for now (will be removed once fully migrated)
-        let dummy_device = crate::soapy::Device("".to_string());
-
         Self {
             center_freq,
             window_num,
             total_windows,
             station_mode: true,
-            device: dummy_device,
-            pool: Some(pool),
+            pool,
             config,
             progress_reporter,
             shutdown_token: shutdown_coordinator.token(),
@@ -157,10 +92,6 @@ impl Window {
             },
             pause_signal: None,
         }
-    }
-
-    fn tuner_id(&self) -> Option<crate::sdr::DeviceId> {
-        self.device.tuner_id().ok()
     }
 
     fn peaks(&self, device: &dyn SegmentTrait) -> Result<Vec<crate::types::Peak>> {
@@ -294,14 +225,13 @@ impl Window {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: std::time::Instant::now(),
-                tuner_id: self.tuner_id(),
+                tuner_id: None, // Legacy process() path - tuner ID not tracked
             });
 
             let sdr_rx = segment.audio_subscriber();
             let signal_tx_clone = signal_tx.clone();
             let config_clone = self.config.clone();
             let center_freq = self.center_freq;
-            let device_clone = self.device.clone();
             let progress_reporter_clone = self.progress_reporter.clone();
             let window_num = self.window_num;
             let pause_signal_clone = self.pause_signal.clone();
@@ -318,7 +248,6 @@ impl Window {
                 let context = crate::pipeline::AnalysisContext {
                     config: &config_clone,
                     center_freq,
-                    device: &device_clone,
                     progress_reporter: progress_reporter_clone,
                     metadata: crate::window::WindowMetadata {
                         center_frequency_hz: center_freq,
@@ -781,7 +710,7 @@ impl Window {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: std::time::Instant::now(),
-                tuner_id: self.tuner_id(), // Will be populated when we track active tuner
+                tuner_id: None, // Will be populated when we track active tuner
             });
 
             tracing::info!(
@@ -813,7 +742,7 @@ impl Window {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: std::time::Instant::now(),
-                tuner_id: self.tuner_id(), // Will be populated when we track active tuner
+                tuner_id: None, // Will be populated when we track active tuner
             });
         }
 
@@ -830,13 +759,6 @@ impl Window {
     /// - pool::Segment passes shutdown token to graph
     /// - Tuner automatically returned to pool even if shutdown occurs mid-processing
     pub fn process_with_pool(&self) -> Result<()> {
-        // Pool must be available
-        let pool = self.pool.as_ref().ok_or_else(|| {
-            crate::types::ScannerError::Custom(
-                "Window not configured for pool-based operation".to_string(),
-            )
-        })?;
-
         debug!(
             "Scanning window {} of {} at {:.1} MHz (pool-based)",
             self.window_num,
@@ -858,7 +780,9 @@ impl Window {
             priority: crate::pool::TaskPriority::Normal,
         };
 
-        let tuner = pool.acquire(&requirements, crate::pool::TunerActivity::Scanning)?;
+        let tuner = self
+            .pool
+            .acquire(&requirements, crate::pool::TunerActivity::Scanning)?;
         debug!(tuner_id = ?tuner.id(), "Acquired tuner from pool");
 
         // Create pool::Segment (implements Segment trait, provides samples via broadcast channel)
@@ -900,7 +824,7 @@ impl Window {
                 audio_quality: None,
                 signal_strength: None,
                 timestamp: std::time::Instant::now(),
-                tuner_id: self.tuner_id(), // Will be populated when we track active tuner
+                tuner_id: None, // Will be populated when we track active tuner
             });
         }
 
@@ -923,7 +847,7 @@ impl Window {
                     audio_quality: None,
                     signal_strength: None,
                     timestamp: std::time::Instant::now(),
-                    tuner_id: self.tuner_id(), // Will be populated when we track active tuner
+                    tuner_id: None, // Will be populated when we track active tuner
                 });
             }
 

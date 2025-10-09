@@ -193,7 +193,7 @@ pub struct Model {
     pub focus_state: FocusState, // Which component has focus
     pub tuners: Vec<DeviceInfo>, // Discovered SDR devices
     pub tuner_states: HashMap<crate::sdr::DeviceId, TunerState>, // State of each tuner
-    pub active_tuners: Option<crate::main_thread::ActiveTuners>, // Source of truth for tuner allocation
+    pub pool_status: Option<crate::pool::PoolStatus>, // Source of truth for tuner allocation
 }
 
 impl Default for Model {
@@ -217,7 +217,7 @@ impl Model {
             focus_state: FocusState::Spectrum,
             tuners: Vec::new(),
             tuner_states: HashMap::new(),
-            active_tuners: None,
+            pool_status: None,
         }
     }
 
@@ -244,18 +244,25 @@ impl Model {
         }
     }
 
-    /// Get the state of a specific tuner based on active tuners allocation
+    /// Get the state of a specific tuner based on pool status
     pub fn tuner_state(&self, tuner_id: &crate::sdr::DeviceId) -> TunerState {
-        if let Some(ref active) = self.active_tuners {
-            if active.scanning.contains(tuner_id) {
-                return TunerState::Scanning;
-            }
-            if active.listening.contains(tuner_id) {
-                return TunerState::Listening;
+        if let Some(ref status) = self.pool_status {
+            // Check all tuners in the pool status
+            for tuner in &status.tuners {
+                if &tuner.id.device_id == tuner_id {
+                    return match (&tuner.state, &tuner.activity) {
+                        (crate::pool::TunerState::Available, _) => TunerState::Available,
+                        (crate::pool::TunerState::Allocated, Some(activity)) => match activity {
+                            crate::pool::TunerActivity::Scanning => TunerState::Scanning,
+                            crate::pool::TunerActivity::Listening => TunerState::Listening,
+                            crate::pool::TunerActivity::Other => TunerState::Available,
+                        },
+                        (crate::pool::TunerState::Allocated, None) => TunerState::Available,
+                    };
+                }
             }
         }
         // Fall back to HashMap for backward compatibility during transition
-        // (e.g., Paused event still uses HashMap)
         self.tuner_states
             .get(tuner_id)
             .cloned()
@@ -277,22 +284,22 @@ impl Model {
                 debug!(tuner_id = ?tuner_id, "Scanning paused, tuner now available");
                 self.tuner_states.insert(tuner_id, TunerState::Available);
             }
-            TuiEvent::ActiveTunersUpdated {
-                available,
-                scanning,
-                listening,
-            } => {
+            TuiEvent::ActiveTunersUpdated { status } => {
                 debug!(
-                    available_count = available.len(),
-                    scanning_count = scanning.len(),
-                    listening_count = listening.len(),
-                    "Active tuners updated"
+                    total_tuners = status.tuners.len(),
+                    available_count = status
+                        .tuners
+                        .iter()
+                        .filter(|t| t.state == crate::pool::TunerState::Available)
+                        .count(),
+                    allocated_count = status
+                        .tuners
+                        .iter()
+                        .filter(|t| t.state == crate::pool::TunerState::Allocated)
+                        .count(),
+                    "Pool status updated"
                 );
-                self.active_tuners = Some(crate::main_thread::ActiveTuners {
-                    available,
-                    scanning,
-                    listening,
-                });
+                self.pool_status = Some(status);
             }
         }
     }
@@ -937,6 +944,57 @@ impl Model {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(test)]
+    fn create_test_pool_status(
+        available: Vec<crate::sdr::DeviceId>,
+        scanning: Vec<crate::sdr::DeviceId>,
+        listening: Vec<crate::sdr::DeviceId>,
+    ) -> crate::pool::PoolStatus {
+        use crate::pool::{PoolStatus, TunerActivity, TunerId, TunerState, TunerStatus};
+
+        let mut tuners = Vec::new();
+
+        // Add all tuners from available list
+        for device_id in available.iter() {
+            let is_scanning = scanning.contains(device_id);
+            let is_listening = listening.contains(device_id);
+
+            let (state, activity) = if is_scanning {
+                (TunerState::Allocated, Some(TunerActivity::Scanning))
+            } else if is_listening {
+                (TunerState::Allocated, Some(TunerActivity::Listening))
+            } else {
+                (TunerState::Available, None)
+            };
+
+            tuners.push(TunerStatus {
+                id: TunerId {
+                    device_id: device_id.clone(),
+                    channel_index: 0,
+                },
+                model: "Test Device".to_string(),
+                backend: "test".to_string(),
+                channel_index: 0,
+                state,
+                activity,
+            });
+        }
+
+        let available_count = available
+            .iter()
+            .filter(|id| !scanning.contains(id) && !listening.contains(id))
+            .count();
+        let allocated_count = scanning.len() + listening.len();
+
+        PoolStatus {
+            tuners,
+            available_tuner_count: available_count,
+            allocated_tuner_count: allocated_count,
+            device_count: available.len(),
+        }
+    }
+
     use super::*;
     use crate::terminal::{ProgressEvent, ProgressEventType};
     use std::time::Instant;
@@ -3309,9 +3367,11 @@ mod tests {
 
         // MainThread starts scan with SDRplay - sends ActiveTunersUpdated event
         model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
-            available: vec![sdrplay_tuner.id.clone()],
-            scanning: vec![sdrplay_tuner.id.clone()],
-            listening: vec![],
+            status: create_test_pool_status(
+                vec![sdrplay_tuner.id.clone()],
+                vec![sdrplay_tuner.id.clone()],
+                vec![],
+            ),
         });
 
         // SDRplay should now be Scanning
@@ -3367,9 +3427,11 @@ mod tests {
 
         // MainThread starts scan with SDRplay
         model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
-            available: vec![sdrplay_tuner.id.clone()],
-            scanning: vec![sdrplay_tuner.id.clone()],
-            listening: vec![],
+            status: create_test_pool_status(
+                vec![sdrplay_tuner.id.clone()],
+                vec![sdrplay_tuner.id.clone()],
+                vec![],
+            ),
         });
 
         // SDRplay is now Scanning
@@ -3377,9 +3439,11 @@ mod tests {
 
         // User presses Enter to tune to the candidate - MainThread moves tuner to listening
         model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
-            available: vec![sdrplay_tuner.id.clone()],
-            scanning: vec![],
-            listening: vec![sdrplay_tuner.id.clone()],
+            status: create_test_pool_status(
+                vec![sdrplay_tuner.id.clone()],
+                vec![],
+                vec![sdrplay_tuner.id.clone()],
+            ),
         });
 
         // SDRplay should transition to Listening
@@ -3435,9 +3499,11 @@ mod tests {
 
         // MainThread allocates SDRplay for scanning
         model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
-            available: vec![sdrplay_tuner.id.clone()],
-            scanning: vec![sdrplay_tuner.id.clone()],
-            listening: vec![],
+            status: create_test_pool_status(
+                vec![sdrplay_tuner.id.clone()],
+                vec![sdrplay_tuner.id.clone()],
+                vec![],
+            ),
         });
 
         // SDRplay is now Scanning
@@ -3456,9 +3522,11 @@ mod tests {
 
         // MainThread continues to report tuner as scanning during automatic playback
         model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
-            available: vec![sdrplay_tuner.id.clone()],
-            scanning: vec![sdrplay_tuner.id.clone()],
-            listening: vec![],
+            status: create_test_pool_status(
+                vec![sdrplay_tuner.id.clone()],
+                vec![sdrplay_tuner.id.clone()],
+                vec![],
+            ),
         });
 
         // The tuner should remain in Scanning state during automatic audio playback
@@ -3471,9 +3539,11 @@ mod tests {
 
         // Audio playback completes automatically, tuner still scanning
         model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
-            available: vec![sdrplay_tuner.id.clone()],
-            scanning: vec![sdrplay_tuner.id.clone()],
-            listening: vec![],
+            status: create_test_pool_status(
+                vec![sdrplay_tuner.id.clone()],
+                vec![sdrplay_tuner.id.clone()],
+                vec![],
+            ),
         });
 
         // Should still be Scanning after automatic playback completes
@@ -3509,9 +3579,11 @@ mod tests {
 
         // MainThread allocates SDRplay for scanning (not RTL-SDR)
         model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
-            available: vec![sdrplay_tuner.id.clone()],
-            scanning: vec![sdrplay_tuner.id.clone()],
-            listening: vec![],
+            status: create_test_pool_status(
+                vec![sdrplay_tuner.id.clone()],
+                vec![sdrplay_tuner.id.clone()],
+                vec![],
+            ),
         });
 
         // SDRplay should be Scanning, RTL-SDR should remain Available
@@ -3520,9 +3592,11 @@ mod tests {
 
         // User presses Enter to listen - MainThread moves SDRplay to listening list
         model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
-            available: vec![sdrplay_tuner.id.clone()],
-            scanning: vec![],
-            listening: vec![sdrplay_tuner.id.clone()],
+            status: create_test_pool_status(
+                vec![sdrplay_tuner.id.clone()],
+                vec![],
+                vec![sdrplay_tuner.id.clone()],
+            ),
         });
 
         // SDRplay should be Listening, RTL-SDR should remain Available
@@ -3532,9 +3606,11 @@ mod tests {
         // User presses Escape to go back to scanning
         // MainThread moves SDRplay back to scanning list
         model.update_tui_event(crate::terminal::TuiEvent::ActiveTunersUpdated {
-            available: vec![sdrplay_tuner.id.clone()],
-            scanning: vec![sdrplay_tuner.id.clone()],
-            listening: vec![],
+            status: create_test_pool_status(
+                vec![sdrplay_tuner.id.clone()],
+                vec![sdrplay_tuner.id.clone()],
+                vec![],
+            ),
         });
 
         // After returning from listening to scanning, only SDRplay should be Scanning
@@ -3552,18 +3628,30 @@ mod tests {
         );
 
         // Verify that exactly one tuner is in Scanning state by checking active_tuners
-        if let Some(ref active) = model.active_tuners {
+        if let Some(ref status) = model.pool_status {
             assert_eq!(
-                active.scanning.len(),
+                status
+                    .tuners
+                    .iter()
+                    .filter(|t| t.activity == Some(crate::pool::TunerActivity::Scanning))
+                    .count(),
                 1,
                 "Exactly one tuner should be in scanning list"
             );
             assert_eq!(
-                active.scanning[0], sdrplay_tuner.id,
+                status
+                    .tuners
+                    .iter()
+                    .find(|t| t.activity == Some(crate::pool::TunerActivity::Scanning))
+                    .unwrap()
+                    .id
+                    .device_id
+                    .clone(),
+                sdrplay_tuner.id,
                 "Only SDRplay should be in scanning list"
             );
         } else {
-            panic!("active_tuners should be set");
+            panic!("pool_status should be set");
         }
     }
 }

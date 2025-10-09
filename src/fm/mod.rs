@@ -328,7 +328,6 @@ pub fn create_detection_graph(
     center_freq: f64,
     tune_freq: f64,
     signal_tx: Option<std::sync::mpsc::SyncSender<crate::types::Signal>>,
-    _device: &crate::soapy::Device,
     audio_analyzer: crate::audio_quality::AudioAnalyzer,
     progress_reporter: Option<std::sync::Arc<dyn crate::terminal::ProgressReporter + Send + Sync>>,
     window_id: usize,
@@ -418,7 +417,7 @@ pub fn create_detection_graph(
         audio_capturer,
         progress_reporter,
         window_id,
-        tuner_id: _device.tuner_id().ok(),
+        tuner_id: None, // Tuner ID not available without device reference
     };
     let (squelch_block, decision_state) = SquelchBlock::new(prev, squelch_config);
     graph.add(Box::new(squelch_block));
