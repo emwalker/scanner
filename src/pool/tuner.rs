@@ -1,7 +1,7 @@
 //! RAII wrapper for tuners acquired from the pool
 
-use super::PoolInner;
-use super::TunerId;
+use crate::pool::state::PoolInner;
+use crate::pool::types::TunerId;
 use crate::sdr;
 use crate::types::{Result, ScannerError};
 use rustradio::Complex;
