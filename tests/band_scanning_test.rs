@@ -1,7 +1,7 @@
 use rustradio::Complex;
+use scanner::core::types::{Band, ScanningConfig};
 use scanner::testing::MockSampleSource;
 use scanner::testing::SampleSource;
-use scanner::types::{Band, ScanningConfig};
 use tracing::debug;
 
 /// Test the band scanning window calculation logic in isolation
@@ -138,7 +138,7 @@ fn test_freq_xlating_fir_dc_signal_retention() {
     let input_power = 0.25; // 0.5^2
 
     let (input, stream) = new_stream();
-    let (mut filter, output) = scanner::freq_xlating_fir::FreqXlatingFir::with_real_taps(
+    let (mut filter, output) = scanner::signal::freq_xlating_fir::FreqXlatingFir::with_real_taps(
         stream, &taps, -200_000.0, samp_rate, 1,
     );
 
@@ -234,7 +234,7 @@ fn test_peak_detection_with_synthetic_signal() {
     };
 
     // Process samples and find peaks
-    let peaks = scanner::peaks::collect_peaks_from_source(&config, &mut sample_source)
+    let peaks = scanner::signal::peaks::collect_peaks_from_source(&config, &mut sample_source)
         .expect("Failed to collect peaks");
 
     println!("Found {} peaks from synthetic signal", peaks.len());

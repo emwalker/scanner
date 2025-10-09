@@ -4,7 +4,7 @@ use super::{
     polling::Polling,
     service::{Event, Service},
 };
-use crate::sdr;
+use crate::hardware;
 use nix::poll::{PollFd, PollFlags, poll};
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -17,7 +17,7 @@ const DEBOUNCE_DURATION: Duration = Duration::from_millis(150);
 
 pub struct Udev {
     enumerator: MultiEnumerator,
-    known_devices: HashMap<sdr::DeviceId, sdr::DeviceInfo>,
+    known_devices: HashMap<hardware::DeviceId, hardware::DeviceInfo>,
     pending_rescan: bool,
 }
 

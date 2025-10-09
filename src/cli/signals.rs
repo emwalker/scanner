@@ -1,5 +1,5 @@
+use crate::hardware::soapy;
 use crate::shutdown::ShutdownCoordinator;
-use crate::soapy;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 

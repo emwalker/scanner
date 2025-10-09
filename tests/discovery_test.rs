@@ -1,5 +1,5 @@
 use scanner::discovery::{self, DiscoveryMode, Event};
-use scanner::sdr::{Backend, Mock};
+use scanner::hardware::{Backend, Mock};
 use scanner::shutdown::ShutdownCoordinator;
 use std::sync::mpsc;
 use std::time::Duration;

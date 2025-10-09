@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::{
+    core::types::{Format, Result, ScannerError, ScanningConfig},
     file::IqFileMetadata,
-    types::{Format, Result, ScannerError, ScanningConfig},
 };
 use std::f32::consts::PI;
 use std::io::Read;
@@ -357,7 +357,7 @@ pub fn test_peak_detection_isolated(
     expected_peaks: &[f64],
     config: &ScanningConfig,
     debug: bool,
-) -> crate::types::Result<TestPeakResult> {
+) -> crate::core::types::Result<TestPeakResult> {
     let (mut sample_source, metadata) = load_iq_fixture(iq_file_path)?;
 
     if debug {
@@ -378,7 +378,7 @@ pub fn test_peak_detection_isolated(
         }
     }
 
-    let peaks = crate::peaks::collect_peaks_from_source(config, &mut sample_source)?;
+    let peaks = crate::signal::peaks::collect_peaks_from_source(config, &mut sample_source)?;
 
     if debug {
         debug!(
@@ -428,7 +428,7 @@ pub fn test_peak_detection_isolated(
 
 #[derive(Debug)]
 pub struct TestPeakResult {
-    pub peaks: Vec<crate::types::Peak>,
+    pub peaks: Vec<crate::core::types::Peak>,
     pub metadata: crate::file::IqFileMetadata,
     pub expected_found: Vec<bool>,
     pub all_expected_found: bool,
@@ -448,7 +448,7 @@ pub struct FrequencyTranslationResult {
 #[derive(Debug)]
 pub struct PipelineTestResult {
     pub peak_result: TestPeakResult,
-    pub candidates: Vec<crate::types::Candidate>,
+    pub candidates: Vec<crate::core::types::Candidate>,
     pub translation_results: Vec<FrequencyTranslationResult>,
     pub target_found: bool,
     pub scanning_mode: ScanningMode,
@@ -465,7 +465,7 @@ pub enum ScanningMode {
 pub fn init_test_logging(
     verbose: bool,
     format: Format,
-) -> crate::types::Result<crate::logging::LogBuffer> {
+) -> crate::core::types::Result<crate::logging::LogBuffer> {
     use tracing::Level;
     use tracing_subscriber::FmtSubscriber;
 
@@ -509,9 +509,9 @@ pub fn with_captured_logs<F, R>(
     verbose: bool,
     format: Format,
     test_fn: F,
-) -> crate::types::Result<(R, String)>
+) -> crate::core::types::Result<(R, String)>
 where
-    F: FnOnce() -> crate::types::Result<R>,
+    F: FnOnce() -> crate::core::types::Result<R>,
 {
     let log_buffer = init_test_logging(verbose, format)?;
     let result = test_fn()?;
@@ -532,17 +532,17 @@ where
 /// will need minimal or no overrides. This captures the current behavior and protects
 /// against regressions.
 pub fn assert_classifies_audio(
-    classifier: &dyn crate::audio_quality::Classifier,
-    overrides: &[(&str, crate::audio_quality::AudioQuality)],
-) -> crate::types::Result<()> {
+    classifier: &dyn crate::audio::quality::Classifier,
+    overrides: &[(&str, crate::audio::quality::AudioQuality)],
+) -> crate::core::types::Result<()> {
     use std::collections::HashMap;
 
     // Convert overrides to a HashMap for quick lookup
-    let override_map: HashMap<&str, crate::audio_quality::AudioQuality> =
+    let override_map: HashMap<&str, crate::audio::quality::AudioQuality> =
         overrides.iter().cloned().collect();
 
     // Get the training dataset
-    let training_data = crate::audio_quality::training_dataset();
+    let training_data = crate::audio::quality::training_dataset();
 
     let mut total_tests = 0;
     let mut correct_classifications = 0;
@@ -570,7 +570,7 @@ pub fn assert_classifies_audio(
         }
 
         // Load the audio file
-        let audio_samples = match crate::wave::load_file(&wav_path) {
+        let audio_samples = match crate::file::wave::load_file(&wav_path) {
             Ok(samples) => samples,
             Err(e) => {
                 debug!(filename = %filename, error = %e, "Failed to load audio file, skipping");
@@ -613,7 +613,7 @@ pub fn assert_classifies_audio(
                 failed_files.push((
                     filename.to_string(),
                     *expected_quality,
-                    crate::audio_quality::AudioQuality::Unknown,
+                    crate::audio::quality::AudioQuality::Unknown,
                     0.0,
                 ));
             }
@@ -709,7 +709,10 @@ impl SdrStreamSource {
 }
 
 impl SampleSource for SdrStreamSource {
-    fn read_samples(&mut self, buffer: &mut [rustradio::Complex]) -> crate::types::Result<usize> {
+    fn read_samples(
+        &mut self,
+        buffer: &mut [rustradio::Complex],
+    ) -> crate::core::types::Result<usize> {
         use std::thread;
         use std::time::Duration;
 
@@ -753,7 +756,7 @@ impl SampleSource for SdrStreamSource {
         self.peak_scan_duration
     }
 
-    fn deactivate(&mut self) -> crate::types::Result<()> {
+    fn deactivate(&mut self) -> crate::core::types::Result<()> {
         // Nothing to deactivate for SDR stream source
         Ok(())
     }

@@ -3,12 +3,12 @@
 use super::benchmark_datasets::{BenchmarkTestResult, test_peak_detection_against_benchmarks};
 use super::signal_generation::create_fm_band_test_scenario;
 use super::variance_measurement::{VarianceMeasurement, VarianceStats};
-use crate::types::Result;
+use crate::core::types::Result;
 use tracing::debug;
 
 /// Run statistical validation to compare baseline vs improved peak detection
 pub fn validate_variance_reduction(
-    config: &crate::types::ScanningConfig,
+    config: &crate::core::types::ScanningConfig,
     num_runs: usize,
     significance_level: f64,
 ) -> Result<StatisticalValidationResult> {
@@ -28,7 +28,7 @@ pub fn validate_variance_reduction(
         // Test with our standard FM band scenario for variance measurement
         let mut generator = create_fm_band_test_scenario();
         let expected_peaks = generator.expected_peaks();
-        let peaks = crate::peaks::collect_peaks_from_source(config, &mut generator)?;
+        let peaks = crate::signal::peaks::collect_peaks_from_source(config, &mut generator)?;
 
         let mut variance_measurement = VarianceMeasurement::new("FM_Band_Standard", expected_peaks);
         variance_measurement.add_measurement(&peaks);

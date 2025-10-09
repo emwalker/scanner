@@ -1,4 +1,4 @@
-use crate::sdr;
+use crate::hardware;
 use std::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -8,6 +8,6 @@ pub trait Service: Send {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    Added(sdr::DeviceInfo),
-    Removed(sdr::DeviceId),
+    Added(hardware::DeviceInfo),
+    Removed(hardware::DeviceId),
 }

@@ -1,4 +1,4 @@
-use scanner::types::ScanningConfig;
+use scanner::core::types::ScanningConfig;
 
 /// Test frequency detection accuracy with band scanning
 #[test]
@@ -21,10 +21,10 @@ fn test_band_scan_frequency_detection() {
         ..Default::default()
     };
 
-    let peaks = scanner::peaks::collect_peaks_from_source(&config, &mut file_source)
+    let peaks = scanner::signal::peaks::collect_peaks_from_source(&config, &mut file_source)
         .expect("Failed to collect peaks from I/Q file");
 
-    let candidates = scanner::fm::find_candidates(&peaks, &config, metadata.center_frequency);
+    let candidates = scanner::signal::find_candidates(&peaks, &config, metadata.center_frequency);
 
     // Should find 88.9 MHz station within ±200 kHz tolerance
     let target_freq = 88.9e6;

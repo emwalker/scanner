@@ -1,10 +1,10 @@
-use crate::sdr;
+use crate::hardware;
 use std::collections::HashMap;
 
 pub fn detect_changes(
-    known: &HashMap<sdr::DeviceId, sdr::DeviceInfo>,
-    current: &HashMap<sdr::DeviceId, sdr::DeviceInfo>,
-) -> (Vec<sdr::DeviceInfo>, Vec<sdr::DeviceId>) {
+    known: &HashMap<hardware::DeviceId, hardware::DeviceInfo>,
+    current: &HashMap<hardware::DeviceId, hardware::DeviceInfo>,
+) -> (Vec<hardware::DeviceInfo>, Vec<hardware::DeviceId>) {
     let mut added: Vec<_> = current
         .iter()
         .filter(|(id, _)| !known.contains_key(id))
@@ -25,7 +25,7 @@ pub fn detect_changes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdr::{DeviceId, DeviceInfo};
+    use crate::hardware::{DeviceId, DeviceInfo};
 
     #[test]
     fn test_detect_no_changes() {

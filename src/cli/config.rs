@@ -1,5 +1,5 @@
-use crate::audio_quality::{AudioAnalyzer, AudioQuality};
-use crate::types::{Format, Result, ScannerError, ScanningConfig};
+use crate::audio::quality::{AudioAnalyzer, AudioQuality};
+use crate::core::types::{Format, Result, ScannerError, ScanningConfig};
 
 use super::args::{AudioClassifier, ScanArgs};
 
@@ -22,16 +22,16 @@ pub fn create_audio_analyzer(
     sample_rate: f32,
     model_path: Option<&str>,
 ) -> Result<AudioAnalyzer> {
-    let classifier: Box<dyn crate::audio_quality::Classifier> = match classifier_type {
-        AudioClassifier::Heuristic1 => Box::new(crate::audio_quality::heuristic1::Classifier::new(
-            sample_rate,
-        )),
-        AudioClassifier::Heuristic2 => Box::new(crate::audio_quality::heuristic2::Classifier::new(
-            sample_rate,
-        )),
-        AudioClassifier::Heuristic3 => Box::new(crate::audio_quality::heuristic3::Classifier::new(
-            sample_rate,
-        )),
+    let classifier: Box<dyn crate::audio::quality::Classifier> = match classifier_type {
+        AudioClassifier::Heuristic1 => Box::new(
+            crate::audio::quality::heuristic1::Classifier::new(sample_rate),
+        ),
+        AudioClassifier::Heuristic2 => Box::new(
+            crate::audio::quality::heuristic2::Classifier::new(sample_rate),
+        ),
+        AudioClassifier::Heuristic3 => Box::new(
+            crate::audio::quality::heuristic3::Classifier::new(sample_rate),
+        ),
         AudioClassifier::RandomForest => {
             use super::model::discover_latest_model;
 
@@ -42,7 +42,7 @@ pub fn create_audio_analyzer(
             match discovered_path {
                 Some(path) => {
                     tracing::debug!(model_path = %path, "Attempting to load Random Forest model");
-                    match crate::audio_quality::random_forest::Classifier::load_pretrained(&path) {
+                    match crate::audio::quality::random_forest::Classifier::load_pretrained(&path) {
                         Ok(classifier) => {
                             tracing::debug!(model_path = %path, "Successfully loaded Random Forest model");
                             Box::new(classifier)
@@ -53,7 +53,7 @@ pub fn create_audio_analyzer(
                                 error = %e,
                                 "Failed to load pre-trained model, falling back to heuristic1 classifier"
                             );
-                            Box::new(crate::audio_quality::heuristic1::Classifier::new(
+                            Box::new(crate::audio::quality::heuristic1::Classifier::new(
                                 sample_rate,
                             ))
                         }
@@ -64,7 +64,7 @@ pub fn create_audio_analyzer(
                         "No Random Forest model found, falling back to heuristic1 classifier"
                     );
                     tracing::info!("To train a model, run: scanner train");
-                    Box::new(crate::audio_quality::heuristic1::Classifier::new(
+                    Box::new(crate::audio::quality::heuristic1::Classifier::new(
                         sample_rate,
                     ))
                 }

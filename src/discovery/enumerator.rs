@@ -1,9 +1,9 @@
-use crate::sdr;
+use crate::hardware;
 use std::collections::HashMap;
 use tracing::debug;
 
 pub trait DeviceEnumerator: Send {
-    fn enumerate(&self) -> Result<Vec<sdr::DeviceInfo>, Box<dyn std::error::Error>>;
+    fn enumerate(&self) -> Result<Vec<hardware::DeviceInfo>, Box<dyn std::error::Error>>;
     fn name(&self) -> &str;
 }
 
@@ -18,7 +18,7 @@ pub struct MultiEnumerator {
 }
 
 impl MultiEnumerator {
-    pub fn enumerate(&self) -> Vec<sdr::DeviceInfo> {
+    pub fn enumerate(&self) -> Vec<hardware::DeviceInfo> {
         let mut devices_by_id = HashMap::new();
 
         for (enumerator, priority) in &self.enumerators {
@@ -62,11 +62,11 @@ impl MultiEnumerator {
 }
 
 pub struct BackendEnumerator {
-    pub backends: Vec<Box<dyn sdr::Backend>>,
+    pub backends: Vec<Box<dyn hardware::Backend>>,
 }
 
 impl DeviceEnumerator for BackendEnumerator {
-    fn enumerate(&self) -> Result<Vec<sdr::DeviceInfo>, Box<dyn std::error::Error>> {
+    fn enumerate(&self) -> Result<Vec<hardware::DeviceInfo>, Box<dyn std::error::Error>> {
         let mut devices = Vec::new();
         for backend in &self.backends {
             if let Ok(devs) = backend.enumerate_devices() {
@@ -118,7 +118,7 @@ impl UsbEnumerator {
         db
     }
 
-    fn try_extract_device_info(&self, device: &udev::Device) -> Option<sdr::DeviceInfo> {
+    fn try_extract_device_info(&self, device: &udev::Device) -> Option<hardware::DeviceInfo> {
         let (vid_str, pid_str) = (
             device.attribute_value("idVendor")?,
             device.attribute_value("idProduct")?,
@@ -144,8 +144,8 @@ impl UsbEnumerator {
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
 
-        Some(sdr::DeviceInfo {
-            id: sdr::DeviceId::Usb {
+        Some(hardware::DeviceInfo {
+            id: hardware::DeviceId::Usb {
                 vid,
                 pid,
                 serial: serial.to_string(),
@@ -158,7 +158,7 @@ impl UsbEnumerator {
 
 #[cfg(target_os = "linux")]
 impl DeviceEnumerator for UsbEnumerator {
-    fn enumerate(&self) -> Result<Vec<sdr::DeviceInfo>, Box<dyn std::error::Error>> {
+    fn enumerate(&self) -> Result<Vec<hardware::DeviceInfo>, Box<dyn std::error::Error>> {
         let mut devices = Vec::new();
         let mut enumerator = udev::Enumerator::new()?;
         enumerator.match_subsystem("usb")?;
@@ -180,11 +180,11 @@ impl DeviceEnumerator for UsbEnumerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdr::Mock;
+    use crate::hardware::Mock;
 
     #[test]
     fn test_backend_enumerator() {
-        let backends: Vec<Box<dyn crate::sdr::Backend>> = vec![Box::new(Mock)];
+        let backends: Vec<Box<dyn crate::hardware::Backend>> = vec![Box::new(Mock)];
         let enumerator = BackendEnumerator { backends };
 
         let devices = enumerator.enumerate().unwrap();
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_multi_enumerator_single_source() {
-        let backends: Vec<Box<dyn crate::sdr::Backend>> = vec![Box::new(Mock)];
+        let backends: Vec<Box<dyn crate::hardware::Backend>> = vec![Box::new(Mock)];
         let enumerator = MultiEnumerator {
             enumerators: vec![(
                 Box::new(BackendEnumerator { backends }),
@@ -208,8 +208,8 @@ mod tests {
 
     #[test]
     fn test_multi_enumerator_priority() {
-        let mock1: Vec<Box<dyn crate::sdr::Backend>> = vec![Box::new(Mock)];
-        let mock2: Vec<Box<dyn crate::sdr::Backend>> = vec![Box::new(Mock)];
+        let mock1: Vec<Box<dyn crate::hardware::Backend>> = vec![Box::new(Mock)];
+        let mock2: Vec<Box<dyn crate::hardware::Backend>> = vec![Box::new(Mock)];
 
         let enumerator = MultiEnumerator {
             enumerators: vec![
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_multi_enumerator_deterministic_ordering() {
-        let backends: Vec<Box<dyn crate::sdr::Backend>> = vec![Box::new(Mock)];
+        let backends: Vec<Box<dyn crate::hardware::Backend>> = vec![Box::new(Mock)];
         let enumerator = MultiEnumerator {
             enumerators: vec![(
                 Box::new(BackendEnumerator { backends }),

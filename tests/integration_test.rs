@@ -1,5 +1,5 @@
+use scanner::core::types::{Format, ScanningConfig};
 use scanner::testing::*;
-use scanner::types::{Format, ScanningConfig};
 
 #[test]
 fn test_pipeline_debug_modes() {

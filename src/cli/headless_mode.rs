@@ -1,7 +1,7 @@
+use crate::core::types::{Format, Result, ScannerError, ScanningConfig};
 use crate::logging::DefaultLogger;
 use crate::main_thread::{DefaultConsoleWriter, MainThread};
 use crate::shutdown::ShutdownCoordinator;
-use crate::types::{Format, Result, ScannerError, ScanningConfig};
 use std::sync::Arc;
 use std::thread;
 
@@ -27,7 +27,7 @@ pub fn run_headless(
     crate::logging::init(logger.as_ref(), verbose)?;
 
     let console_writer = Arc::new(DefaultConsoleWriter);
-    let backend = Arc::new(crate::sdr::Soapy);
+    let backend = Arc::new(crate::hardware::Soapy);
 
     let main_thread = MainThread::new(
         config,

@@ -1,6 +1,6 @@
 use clap::Parser;
 use scanner::cli::{Cli, Commands};
-use scanner::types::Result;
+use scanner::core::types::Result;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();

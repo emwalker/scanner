@@ -1,7 +1,7 @@
 //! Performance regression testing module
 
 use super::benchmark_datasets::BenchmarkDataset;
-use crate::types::Result;
+use crate::core::types::Result;
 use tracing::debug;
 
 /// Performance requirements for regression testing
@@ -26,7 +26,7 @@ impl Default for PerformanceRequirements {
 
 /// Run performance regression tests to ensure optimizations don't degrade performance
 pub fn run_performance_regression_tests(
-    config: &crate::types::ScanningConfig,
+    config: &crate::core::types::ScanningConfig,
     requirements: &PerformanceRequirements,
     num_runs: usize,
 ) -> Result<PerformanceRegressionResult> {
@@ -72,7 +72,7 @@ pub fn run_performance_regression_tests(
 
 /// Measure performance of peak detection for a specific dataset
 fn measure_peak_detection_performance(
-    config: &crate::types::ScanningConfig,
+    config: &crate::core::types::ScanningConfig,
     dataset: &BenchmarkDataset,
     test_name: &str,
 ) -> Result<PerformanceMeasurement> {
@@ -83,7 +83,7 @@ fn measure_peak_detection_performance(
     let start_memory = memory_usage_mb();
 
     // Perform peak detection
-    let peaks = crate::peaks::collect_peaks_from_source(config, &mut generator)?;
+    let peaks = crate::signal::peaks::collect_peaks_from_source(config, &mut generator)?;
 
     let processing_time = start_time.elapsed();
     let end_memory = memory_usage_mb();
@@ -218,7 +218,7 @@ fn memory_usage_mb() -> u64 {
 }
 
 /// Validate that current performance meets baseline expectations
-pub fn validate_performance_baseline(config: &crate::types::ScanningConfig) -> Result<bool> {
+pub fn validate_performance_baseline(config: &crate::core::types::ScanningConfig) -> Result<bool> {
     let requirements = PerformanceRequirements::default();
     let result = run_performance_regression_tests(config, &requirements, 3)?;
 

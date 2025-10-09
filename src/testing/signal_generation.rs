@@ -1,6 +1,6 @@
 //! Signal generation for testing peak detection algorithms
 
-use crate::types::Result;
+use crate::core::types::Result;
 use rustradio::Complex;
 use std::f32::consts::PI;
 use tracing::debug;

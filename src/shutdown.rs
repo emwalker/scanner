@@ -6,7 +6,7 @@
 //! - All threads are properly joined during cleanup
 //! - It's architecturally impossible to forget shutdown checks
 
-use crate::types::{Result, ScannerError};
+use crate::core::types::{Result, ScannerError};
 use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;

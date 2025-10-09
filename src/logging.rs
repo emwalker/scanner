@@ -1,4 +1,4 @@
-use crate::types::{Format, Logger, Result, ScannerError};
+use crate::core::types::{Format, Logger, Result, ScannerError};
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use tracing::Level;

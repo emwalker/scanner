@@ -1,4 +1,4 @@
-use crate::types::Band;
+use crate::core::types::Band;
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(ValueEnum, Clone, Debug)]

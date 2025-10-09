@@ -1,7 +1,7 @@
 //! Benchmark datasets with known peak locations for testing
 
 use super::signal_generation::{PeakTestSignalGenerator, TestSignal};
-use crate::types::Result;
+use crate::core::types::Result;
 use tracing::debug;
 
 /// Benchmark dataset containing predefined test scenarios with known peak locations
@@ -229,7 +229,7 @@ impl BenchmarkDataset {
 
 /// Run peak detection tests against all benchmark datasets
 pub fn test_peak_detection_against_benchmarks(
-    config: &crate::types::ScanningConfig,
+    config: &crate::core::types::ScanningConfig,
 ) -> Result<Vec<BenchmarkTestResult>> {
     let mut results = Vec::new();
 
@@ -239,7 +239,7 @@ pub fn test_peak_detection_against_benchmarks(
         let mut generator = dataset.generate_signals();
         let expected_peaks = dataset.expected_frequencies();
 
-        let peaks = crate::peaks::collect_peaks_from_source(config, &mut generator)?;
+        let peaks = crate::signal::peaks::collect_peaks_from_source(config, &mut generator)?;
 
         let tolerance_hz = 50_000.0; // 50 kHz tolerance
         let mut detected_count = 0;

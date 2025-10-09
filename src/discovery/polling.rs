@@ -3,7 +3,7 @@ use super::{
     enumerator::MultiEnumerator,
     service::{Event, Service},
 };
-use crate::sdr;
+use crate::hardware;
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -12,7 +12,7 @@ use tracing::debug;
 
 pub struct Polling {
     enumerator: MultiEnumerator,
-    known_devices: HashMap<sdr::DeviceId, sdr::DeviceInfo>,
+    known_devices: HashMap<hardware::DeviceId, hardware::DeviceInfo>,
     poll_interval: Duration,
 }
 

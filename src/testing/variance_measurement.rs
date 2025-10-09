@@ -18,7 +18,7 @@ impl VarianceMeasurement {
         }
     }
 
-    pub fn add_measurement(&mut self, peaks: &[crate::types::Peak]) {
+    pub fn add_measurement(&mut self, peaks: &[crate::core::types::Peak]) {
         let frequencies: Vec<f64> = peaks.iter().map(|p| p.frequency_hz).collect();
         self.peak_counts.push(peaks.len());
         self.peak_frequencies.push(frequencies);

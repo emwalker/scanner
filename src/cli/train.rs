@@ -1,4 +1,4 @@
-use crate::types::Result;
+use crate::core::types::Result;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use super::model::generate_versioned_filename;
 pub fn handle_train_command(args: TrainArgs) -> Result<()> {
     let logger = Arc::new(crate::logging::DefaultLogger::new(
         args.verbose,
-        crate::types::Format::Text,
+        crate::core::types::Format::Text,
     ));
     crate::logging::init(logger.as_ref(), args.verbose)?;
 
@@ -25,7 +25,7 @@ pub fn handle_train_command(args: TrainArgs) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
 
-    let mut classifier = crate::audio_quality::random_forest::Classifier::new(args.sample_rate);
+    let mut classifier = crate::audio::quality::random_forest::Classifier::new(args.sample_rate);
 
     tracing::debug!("Loading training data and extracting features");
     classifier.train()?;

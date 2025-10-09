@@ -3,8 +3,8 @@
 //! This module provides the testable pipeline function that processes
 //! individual frequency peaks through the complete analysis pipeline.
 
-use crate::terminal::ProgressReporter;
-use crate::types::{Result, ScanningConfig, Signal};
+use crate::core::types::{Result, ScanningConfig, Signal};
+use crate::ui::ProgressReporter;
 use rustradio::graph::GraphRunner;
 
 /// Context struct to group related parameters for analysis functions
@@ -12,7 +12,7 @@ pub struct AnalysisContext<'a> {
     pub config: &'a ScanningConfig,
     pub center_freq: f64,
     pub progress_reporter: std::sync::Arc<dyn ProgressReporter + Send + Sync>,
-    pub metadata: crate::window::WindowMetadata,
+    pub metadata: crate::scanning::window::WindowMetadata,
 }
 
 /// Parameters for squelch monitoring thread
@@ -21,8 +21,8 @@ pub struct SquelchMonitoringParams {
     pub refined_frequency: f64,
     pub original_frequency_hz: f64,
     pub candidate_id: String,
-    pub metadata: crate::window::WindowMetadata,
-    pub tuner_id: Option<crate::sdr::DeviceId>,
+    pub metadata: crate::scanning::window::WindowMetadata,
+    pub tuner_id: Option<crate::hardware::DeviceId>,
 }
 
 /// Process a single peak through the complete pipeline to generate a signal
@@ -32,7 +32,7 @@ pub fn process_peak_to_signal(
     signal_tx: std::sync::mpsc::SyncSender<Signal>,
     context: &AnalysisContext,
 ) -> Result<()> {
-    use crate::terminal::{ProgressEvent, ProgressEventType};
+    use crate::ui::{ProgressEvent, ProgressEventType};
 
     tracing::debug!(
         frequency_hz = frequency_hz / 1e6,
@@ -130,7 +130,7 @@ fn refine_frequency(
 fn is_frequency_already_processed(refined_frequency: f64) -> Result<bool> {
     let frequency_khz = (refined_frequency / 1000.0) as u64;
 
-    let processed = crate::fm::PROCESSED_FREQUENCIES.lock().unwrap();
+    let processed = crate::signal::PROCESSED_FREQUENCIES.lock().unwrap();
     if processed.contains(&frequency_khz) {
         tracing::debug!(
             refined_freq_mhz = refined_frequency / 1e6,
@@ -161,7 +161,7 @@ fn run_detection_analysis(
     let audio_analyzer = context.config.audio_analyzer.clone();
 
     // Create detection graph
-    let (detection_graph, decision_state) = crate::fm::create_detection_graph(
+    let (detection_graph, decision_state) = crate::signal::create_detection_graph(
         sdr_rx,
         context.config.samp_rate,
         station_name,
@@ -237,7 +237,7 @@ fn spawn_squelch_monitoring_thread(
     params: SquelchMonitoringParams,
     decision_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
     detection_cancel_token: rustradio::graph::CancellationToken,
-    rejection_sender: std::sync::mpsc::Sender<crate::terminal::ProgressEvent>,
+    rejection_sender: std::sync::mpsc::Sender<crate::ui::ProgressEvent>,
 ) -> std::thread::JoinHandle<()> {
     let frequency_khz = (params.refined_frequency / 1000.0) as u64;
 
@@ -249,17 +249,17 @@ fn spawn_squelch_monitoring_thread(
         for _check_num in 0..total_checks {
             std::thread::sleep(check_interval);
 
-            let current_decision = crate::fm::squelch::Decision::from_u8(
+            let current_decision = crate::signal::squelch::Decision::from_u8(
                 decision_state.load(std::sync::atomic::Ordering::Relaxed),
             );
 
             match current_decision {
-                crate::fm::squelch::Decision::Noise => {
+                crate::signal::squelch::Decision::Noise => {
                     tracing::debug!("Squelch detected noise, exiting early");
 
                     // Report candidate rejection
-                    let _ = rejection_sender.send(crate::terminal::ProgressEvent {
-                        event_type: crate::terminal::ProgressEventType::CandidateRejected,
+                    let _ = rejection_sender.send(crate::ui::ProgressEvent {
+                        event_type: crate::ui::ProgressEventType::CandidateRejected,
                         frequency_hz: params.original_frequency_hz,
                         metadata: params.metadata,
                         candidate_id: Some(params.candidate_id.clone()),
@@ -272,7 +272,7 @@ fn spawn_squelch_monitoring_thread(
                     detection_cancel_token.cancel();
                     return;
                 }
-                crate::fm::squelch::Decision::Audio => {
+                crate::signal::squelch::Decision::Audio => {
                     tracing::debug!(
                         "squelch detected audio at {:.1} MHz",
                         params.original_frequency_hz / 1e6
@@ -280,8 +280,8 @@ fn spawn_squelch_monitoring_thread(
                     mark_frequency_as_processed(frequency_khz);
 
                     // Report audio analysis completion
-                    let _ = rejection_sender.send(crate::terminal::ProgressEvent {
-                        event_type: crate::terminal::ProgressEventType::AudioAnalysisCompleted,
+                    let _ = rejection_sender.send(crate::ui::ProgressEvent {
+                        event_type: crate::ui::ProgressEventType::AudioAnalysisCompleted,
                         frequency_hz: params.original_frequency_hz,
                         metadata: params.metadata,
                         candidate_id: Some(params.candidate_id.clone()),
@@ -295,7 +295,7 @@ fn spawn_squelch_monitoring_thread(
                     detection_cancel_token.cancel();
                     return;
                 }
-                crate::fm::squelch::Decision::Learning => {
+                crate::signal::squelch::Decision::Learning => {
                     // Still learning, continue waiting
                 }
             }
@@ -307,8 +307,8 @@ fn spawn_squelch_monitoring_thread(
         );
 
         // Report audio analysis completion (timeout case)
-        let _ = rejection_sender.send(crate::terminal::ProgressEvent {
-            event_type: crate::terminal::ProgressEventType::AudioAnalysisCompleted,
+        let _ = rejection_sender.send(crate::ui::ProgressEvent {
+            event_type: crate::ui::ProgressEventType::AudioAnalysisCompleted,
             frequency_hz: params.original_frequency_hz,
             metadata: params.metadata,
             candidate_id: Some(params.candidate_id.clone()),
@@ -324,7 +324,7 @@ fn spawn_squelch_monitoring_thread(
 
 /// Mark a frequency as successfully processed
 fn mark_frequency_as_processed(frequency_khz: u64) {
-    let mut processed = crate::fm::PROCESSED_FREQUENCIES.lock().unwrap();
+    let mut processed = crate::signal::PROCESSED_FREQUENCIES.lock().unwrap();
     processed.insert(frequency_khz);
     tracing::debug!(frequency_khz, "Frequency marked as successfully processed");
 }
@@ -335,9 +335,9 @@ fn wait_for_threads_completion(
     timer_handle: std::thread::JoinHandle<()>,
     frequency_hz: f64,
     progress_reporter: &dyn ProgressReporter,
-    rejection_rx: std::sync::mpsc::Receiver<crate::terminal::ProgressEvent>,
+    rejection_rx: std::sync::mpsc::Receiver<crate::ui::ProgressEvent>,
     candidate_id: &str,
-    tuner_id: Option<crate::sdr::DeviceId>,
+    tuner_id: Option<crate::hardware::DeviceId>,
 ) -> Result<()> {
     tracing::debug!(
         "Waiting for detection graph and timer threads to complete for {:.1} MHz",
@@ -381,8 +381,8 @@ fn wait_for_threads_completion(
     // Report audio analysis completion - use metadata from rejection event or create fallback
     // This shouldn't normally be needed as the squelch thread should send completion events
     if let Some(metadata) = received_metadata {
-        progress_reporter.report(crate::terminal::ProgressEvent {
-            event_type: crate::terminal::ProgressEventType::AudioAnalysisCompleted,
+        progress_reporter.report(crate::ui::ProgressEvent {
+            event_type: crate::ui::ProgressEventType::AudioAnalysisCompleted,
             frequency_hz,
             metadata,
             candidate_id: Some(candidate_id.to_string()),
@@ -402,7 +402,7 @@ fn run_frequency_tracking(
     config: &ScanningConfig,
     mut sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
 ) -> Option<f64> {
-    use crate::frequency_tracking::{
+    use crate::signal::frequency_tracking::{
         TrackingConfig, TrackingMethod, TrackingState, create_tracker,
     };
 
@@ -488,9 +488,9 @@ fn run_frequency_tracking(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_quality::AudioAnalyzer;
-    use crate::terminal::{MockProgressReporter, NoOpProgressReporter, ProgressEventType};
-    use crate::types::{ScanningConfig, Signal, TEST_FREQUENCY_HZ};
+    use crate::audio::quality::AudioAnalyzer;
+    use crate::core::types::{ScanningConfig, Signal, TEST_FREQUENCY_HZ};
+    use crate::ui::{MockProgressReporter, NoOpProgressReporter, ProgressEventType};
     use std::sync::mpsc;
     use tokio::sync::broadcast;
 
@@ -550,7 +550,7 @@ mod tests {
             config: &config,
             center_freq,
             progress_reporter: std::sync::Arc::new(progress_reporter),
-            metadata: crate::window::WindowMetadata {
+            metadata: crate::scanning::window::WindowMetadata {
                 center_frequency_hz: center_freq,
                 window_id: 1,
             },
@@ -582,7 +582,7 @@ mod tests {
             center_freq,
 
             progress_reporter: progress_arc,
-            metadata: crate::window::WindowMetadata {
+            metadata: crate::scanning::window::WindowMetadata {
                 center_frequency_hz: center_freq,
                 window_id: 1,
             },
@@ -622,7 +622,7 @@ mod tests {
             center_freq,
 
             progress_reporter: progress_arc,
-            metadata: crate::window::WindowMetadata {
+            metadata: crate::scanning::window::WindowMetadata {
                 center_frequency_hz: center_freq,
                 window_id: 1,
             },
@@ -673,7 +673,7 @@ mod tests {
             center_freq,
 
             progress_reporter: progress_arc,
-            metadata: crate::window::WindowMetadata {
+            metadata: crate::scanning::window::WindowMetadata {
                 center_frequency_hz: center_freq,
                 window_id: 1,
             },
@@ -695,7 +695,7 @@ mod tests {
         assert!(
             matches!(
                 events[0].event_type,
-                crate::terminal::ProgressEventType::PeakDetected
+                crate::ui::ProgressEventType::PeakDetected
             ),
             "First event should be PeakDetected"
         );

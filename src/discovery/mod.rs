@@ -10,8 +10,8 @@ mod polling;
 pub use enumerator::{DeviceEnumerator, MultiEnumerator, SourcePriority};
 pub use service::{Event, Service};
 
-use crate::sdr;
-use crate::types::Result;
+use crate::core::types::Result;
+use crate::hardware;
 use std::time::Duration;
 
 pub enum DiscoveryMode {
@@ -21,7 +21,7 @@ pub enum DiscoveryMode {
     ForceUdev,
 }
 
-pub fn create(backends: Vec<Box<dyn sdr::Backend>>, mode: DiscoveryMode) -> Box<dyn Service> {
+pub fn create(backends: Vec<Box<dyn hardware::Backend>>, mode: DiscoveryMode) -> Box<dyn Service> {
     use enumerator::{BackendEnumerator, MultiEnumerator, SourcePriority};
 
     let mut enumerators: Vec<(Box<dyn DeviceEnumerator>, SourcePriority)> = vec![(
@@ -64,7 +64,7 @@ pub fn create(backends: Vec<Box<dyn sdr::Backend>>, mode: DiscoveryMode) -> Box<
 /// This bypasses USB enumeration to avoid detecting real hardware during tests.
 /// Intended for test use only.
 pub fn create_for_testing(
-    backends: Vec<Box<dyn sdr::Backend>>,
+    backends: Vec<Box<dyn hardware::Backend>>,
     mode: DiscoveryMode,
 ) -> Box<dyn Service> {
     use enumerator::{BackendEnumerator, MultiEnumerator, SourcePriority};
@@ -107,9 +107,9 @@ pub fn create_for_testing(
 /// # Returns
 /// List of discovered devices matching the filter
 pub fn enumerate_once(
-    backends: &[Box<dyn sdr::Backend>],
+    backends: &[Box<dyn hardware::Backend>],
     filter: Option<&str>,
-) -> Result<Vec<sdr::DeviceInfo>> {
+) -> Result<Vec<hardware::DeviceInfo>> {
     let mut all_devices = Vec::new();
 
     for backend in backends {
@@ -124,7 +124,7 @@ pub fn enumerate_once(
             Ok(all_devices
                 .into_iter()
                 .filter(|device| match (&device.id, key) {
-                    (sdr::DeviceId::Backend { backend, .. }, "driver") => backend == value,
+                    (hardware::DeviceId::Backend { backend, .. }, "driver") => backend == value,
                     _ => false,
                 })
                 .collect())

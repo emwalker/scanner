@@ -1,14 +1,16 @@
-use crate::audio_session::AudioSession;
-use crate::fm;
-use crate::pool::{Pool, PoolFilter, Segment, TunerActivity, TunerState, TuningMode};
+use crate::audio::session::AudioSession;
+use crate::core::types::{
+    ConsoleWriter, Logger, ModulationType, Result, ScannerError, ScanningConfig,
+};
+use crate::hardware::DeviceId;
+use crate::hardware::pool::{Pool, PoolFilter, Segment, TunerActivity, TunerState, TuningMode};
 use crate::scanner_state::{PauseSignal, ScannerState};
-use crate::sdr::DeviceId;
+use crate::scanning::window::Window;
 use crate::shutdown::ShutdownCoordinator;
-use crate::terminal::{
+use crate::signal;
+use crate::ui::{
     NoOpProgressReporter, ProgressEventType, ProgressReporter, ScannerCommand, TuiEvent,
 };
-use crate::types::{ConsoleWriter, Logger, ModulationType, Result, ScannerError, ScanningConfig};
-use crate::window::Window;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use tracing::{debug, info};
@@ -20,7 +22,7 @@ struct TuneParams {
     center_frequency: f64,
     candidate_frequency: f64,
     signal_strength: Option<f64>,
-    audio_quality: Option<crate::audio_quality::AudioQuality>,
+    audio_quality: Option<crate::audio::quality::AudioQuality>,
 }
 
 enum LoopControl {
@@ -33,7 +35,7 @@ pub struct MainThread {
     config: ScanningConfig,
     console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
     _logger: Arc<dyn Logger + Send + Sync>,
-    _backend: Arc<dyn crate::sdr::Backend>,
+    _backend: Arc<dyn crate::hardware::Backend>,
     progress_reporter: Arc<dyn ProgressReporter>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
     command_receiver: Option<Receiver<ScannerCommand>>,
@@ -49,7 +51,7 @@ impl MainThread {
         config: ScanningConfig,
         console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
         logger: Arc<dyn Logger + Send + Sync>,
-        backend: Arc<dyn crate::sdr::Backend>,
+        backend: Arc<dyn crate::hardware::Backend>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
     ) -> Result<Self> {
         let filter = PoolFilter::new()
@@ -77,7 +79,7 @@ impl MainThread {
         config: ScanningConfig,
         console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
         logger: Arc<dyn Logger + Send + Sync>,
-        backend: Arc<dyn crate::sdr::Backend>,
+        backend: Arc<dyn crate::hardware::Backend>,
         progress_reporter: Arc<dyn ProgressReporter>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
         pool: Arc<Pool>,
@@ -186,7 +188,7 @@ impl MainThread {
             })
             .map(|t| t.id.device_id.clone());
 
-        let signal = crate::types::Signal {
+        let signal = crate::core::types::Signal {
             frequency_hz: params.candidate_frequency,
             signal_strength: params.signal_strength.unwrap_or(0.1) as f32,
             bandwidth_hz: 200_000.0,
@@ -197,7 +199,7 @@ impl MainThread {
             detection_center_freq: params.center_frequency,
             audio_quality: params
                 .audio_quality
-                .unwrap_or(crate::audio_quality::AudioQuality::Unknown),
+                .unwrap_or(crate::audio::quality::AudioQuality::Unknown),
         };
 
         tracing::info!(
@@ -214,20 +216,19 @@ impl MainThread {
             "MainThread: Sending AudioPlaybackStarted event to TUI"
         );
 
-        self.progress_reporter
-            .report(crate::terminal::ProgressEvent {
-                event_type: ProgressEventType::AudioPlaybackStarted,
-                frequency_hz: params.candidate_frequency,
-                metadata: crate::window::WindowMetadata {
-                    center_frequency_hz: params.center_frequency,
-                    window_id: params.window_id,
-                },
-                candidate_id: Some(params.candidate_id),
-                audio_quality: None,
-                signal_strength: None,
-                timestamp: std::time::Instant::now(),
-                tuner_id,
-            });
+        self.progress_reporter.report(crate::ui::ProgressEvent {
+            event_type: ProgressEventType::AudioPlaybackStarted,
+            frequency_hz: params.candidate_frequency,
+            metadata: crate::scanning::window::WindowMetadata {
+                center_frequency_hz: params.center_frequency,
+                window_id: params.window_id,
+            },
+            candidate_id: Some(params.candidate_id),
+            audio_quality: None,
+            signal_strength: None,
+            timestamp: std::time::Instant::now(),
+            tuner_id,
+        });
 
         Ok(())
     }
@@ -339,20 +340,19 @@ impl MainThread {
                                 && t.activity == Some(TunerActivity::Listening)
                         })
                         .map(|t| t.id.device_id.clone());
-                    self.progress_reporter
-                        .report(crate::terminal::ProgressEvent {
-                            event_type: ProgressEventType::AudioPlaybackCompleted,
-                            frequency_hz: params.candidate_frequency,
-                            metadata: crate::window::WindowMetadata {
-                                center_frequency_hz: params.center_frequency,
-                                window_id: params.window_id,
-                            },
-                            candidate_id: Some(params.candidate_id),
-                            audio_quality: params.audio_quality,
-                            signal_strength: params.signal_strength,
-                            timestamp: std::time::Instant::now(),
-                            tuner_id,
-                        });
+                    self.progress_reporter.report(crate::ui::ProgressEvent {
+                        event_type: ProgressEventType::AudioPlaybackCompleted,
+                        frequency_hz: params.candidate_frequency,
+                        metadata: crate::scanning::window::WindowMetadata {
+                            center_frequency_hz: params.center_frequency,
+                            window_id: params.window_id,
+                        },
+                        candidate_id: Some(params.candidate_id),
+                        audio_quality: params.audio_quality,
+                        signal_strength: params.signal_strength,
+                        timestamp: std::time::Instant::now(),
+                        tuner_id,
+                    });
                 }
 
                 Ok(None)
@@ -470,7 +470,7 @@ impl MainThread {
             "Processing window"
         );
 
-        let window = Window::new(crate::window::WindowConfig {
+        let window = Window::new(crate::scanning::window::WindowConfig {
             center_freq,
             window_num,
             total_windows,
@@ -581,7 +581,7 @@ impl MainThread {
     }
 
     fn scan_band(&mut self) -> Result<()> {
-        fm::clear_processed_frequencies();
+        signal::clear_processed_frequencies();
 
         let window_centers = self
             .config
@@ -667,9 +667,9 @@ impl ConsoleWriter for DefaultConsoleWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_quality::AudioAnalyzer;
-    use crate::sdr::Backend;
-    use crate::types::ScanningConfig;
+    use crate::audio::quality::AudioAnalyzer;
+    use crate::core::types::ScanningConfig;
+    use crate::hardware::Backend;
     use std::sync::{Arc, Mutex};
 
     // Mock implementations for testing
@@ -740,8 +740,8 @@ mod tests {
         DeviceId::from_serial("mock", "test123")
     }
 
-    fn create_test_backend() -> Arc<dyn crate::sdr::Backend> {
-        Arc::new(crate::sdr::mock::Mock)
+    fn create_test_backend() -> Arc<dyn crate::hardware::Backend> {
+        Arc::new(crate::hardware::mock::Mock)
     }
 
     #[test]
@@ -921,7 +921,7 @@ mod tests {
             .with_mode(TuningMode::SingleTuner);
         let pool = Pool::new(filter);
 
-        let mock_backend = crate::sdr::Mock;
+        let mock_backend = crate::hardware::Mock;
         let device = mock_backend.open_device(&tuner_id).unwrap();
 
         pool.add_device(device, "Mock".to_string()).unwrap();
@@ -940,18 +940,18 @@ mod tests {
             .with_mode(TuningMode::SingleTuner);
         let pool = Pool::new(filter);
 
-        let mock_backend = crate::sdr::Mock;
+        let mock_backend = crate::hardware::Mock;
         let device = mock_backend.open_device(&tuner_id).unwrap();
         pool.add_device(device, "Mock".to_string()).unwrap();
 
         let pool = Arc::new(pool);
 
         // Acquire tuner from pool
-        let requirements = crate::pool::TaskRequirements {
+        let requirements = crate::hardware::pool::TaskRequirements {
             frequency_hz: 88.9e6,
             bandwidth_hz: 200_000.0,
             required_sample_rate: 2_400_000.0,
-            priority: crate::pool::TaskPriority::Normal,
+            priority: crate::hardware::pool::TaskPriority::Normal,
         };
 
         let pooled_tuner = pool

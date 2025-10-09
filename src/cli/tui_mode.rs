@@ -1,11 +1,11 @@
+use crate::core::types::{Logger, Result, ScannerError, ScanningConfig};
+use crate::hardware::pool::Pool;
 use crate::logging::DefaultLogger;
 use crate::main_thread::{DefaultConsoleWriter, MainThread};
-use crate::pool::Pool;
 use crate::shutdown::ShutdownCoordinator;
-use crate::terminal::tui::TuiProgressDisplay;
-use crate::terminal::tui::themes::{ThemeName, create_theme};
-use crate::terminal::{ChannelProgressReporter, ScannerCommand, TuiEvent};
-use crate::types::{Logger, Result, ScannerError, ScanningConfig};
+use crate::ui::tui::TuiProgressDisplay;
+use crate::ui::tui::themes::{ThemeName, create_theme};
+use crate::ui::{ChannelProgressReporter, ScannerCommand, TuiEvent};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
@@ -103,7 +103,7 @@ pub fn run_with_tui(
     logger: Arc<dyn Logger + Send + Sync>,
 ) -> Result<()> {
     let console_writer = Arc::new(DefaultConsoleWriter);
-    let backend = Arc::new(crate::sdr::Soapy);
+    let backend = Arc::new(crate::hardware::Soapy);
 
     let main_thread = MainThread::new_with_progress(
         config,

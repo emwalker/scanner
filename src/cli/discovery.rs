@@ -1,9 +1,9 @@
+use crate::core::types::{Result, ScannerError};
 use crate::discovery::{self, DiscoveryMode};
-use crate::pool::{AddDeviceResult, Pool, PoolFilter, TuningMode};
-use crate::sdr::{Backend, DeviceId};
+use crate::hardware::pool::{AddDeviceResult, Pool, PoolFilter, TuningMode};
+use crate::hardware::{Backend, DeviceId};
 use crate::shutdown::ShutdownCoordinator;
-use crate::terminal::TuiEvent;
-use crate::types::{Result, ScannerError};
+use crate::ui::TuiEvent;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
@@ -60,7 +60,7 @@ pub fn start_discovery_service(
     tui_event_sender: mpsc::Sender<TuiEvent>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
 ) -> Result<DiscoverySetup> {
-    let backends: Vec<Box<dyn Backend>> = vec![Box::new(crate::sdr::Soapy)];
+    let backends: Vec<Box<dyn Backend>> = vec![Box::new(crate::hardware::Soapy)];
     let mut discovery_service = discovery::create(backends, DiscoveryMode::Auto);
 
     let (discovery_sender, discovery_receiver) = mpsc::channel();
