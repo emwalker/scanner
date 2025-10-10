@@ -88,7 +88,7 @@ fn benchmark_fft_sizes(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let mut config = create_test_config();
-                    config.fft_size = fft_size;
+                    config.peak_detection.fft_size = fft_size;
                     let generator = create_fm_band_test_scenario();
                     (config, generator)
                 },
@@ -125,7 +125,7 @@ fn benchmark_peak_scan_durations(c: &mut Criterion) {
                 b.iter_batched(
                     || {
                         let mut config = create_test_config();
-                        config.peak_scan_duration = duration;
+                        config.peak_detection.scan_duration = duration;
                         let generator = create_fm_band_test_scenario();
                         (config, generator)
                     },
@@ -206,67 +206,45 @@ fn benchmark_performance_regression(c: &mut Criterion) {
 }
 
 fn create_test_config() -> ScanningConfig {
-    ScanningConfig {
-        audio_buffer_size: 8192,
-        audio_sample_rate: 48000,
-        band: scanner::types::Band::Fm,
-        capture_audio_duration: 3.0,
-        capture_audio: None,
-        capture_duration: 2.0,
-        capture_iq: None,
-        debug_pipeline: false,
-        duration: 3,
-        sdr_gain: 24.0,
-        scanning_windows: Some(2),
-        fft_size: 1024,
-        peak_detection_threshold: 1.0,
-        peak_scan_duration: 1.5, // Use our optimized default
-        print_candidates: false,
-        samp_rate: 2_000_000.0,
-        squelch_learning_duration: 1.0,
-        frequency_tracking_method: "pll".to_string(),
-        tracking_accuracy: 5000.0,
-        disable_frequency_tracking: false,
-        spectral_threshold: 0.2,
-        agc_settling_time: 0.45,
-        window_overlap: 0.75,
-        packet_size: 16384,
-        disable_squelch: false,
-        squelch_threshold: scanner::audio_quality::AudioQuality::Moderate,
-        disable_if_agc: false,
-        audio_analyzer: scanner::audio_quality::AudioAnalyzer::pass_through(),
-        // Signal averaging defaults
-        enable_exponential_smoothing: false,
-        smoothing_alpha: 0.3,
-        enable_multi_frame_averaging: false,
-        averaging_frames: 8,
-        enable_coherent_integration: false,
-        enable_moving_average_filter: false,
-        moving_average_window_size: 5,
-        // CFAR detection defaults
-        enable_cfar_detection: false,
-        cfar_threshold_factor: 10.0,
-        cfar_guard_cells: 10,
-        cfar_reference_cells: 50,
-        cfar_false_alarm_rate: 0.01,
-        // Spectral preprocessing defaults (disabled for benchmarking baseline performance)
-        enable_windowing: false,
-        window_type: scanner::types::WindowType::Rectangular,
-        zero_padding_factor: 1,
-        window_overlap_percent: 0.0,
-        // Multi-frame integration defaults (disabled for benchmarking baseline performance)
-        enable_multi_frame_integration: false,
-        multi_frame_history_frames: 5,
-        multi_frame_confirmation_threshold: 3,
-        multi_frame_frequency_tolerance: 25_000.0,
-        multi_frame_max_age: 10.0,
-        // Dynamic noise floor defaults (disabled for benchmarking baseline performance)
-        enable_dynamic_noise_floor: false,
-        noise_floor_percentile: 0.25,
-        noise_floor_history_frames: 8,
-        noise_floor_threshold_multiplier: 1.6,
-        noise_floor_adaptation_rate: 0.35,
-    }
+    let mut config = ScanningConfig::default();
+
+    // Override fields for benchmarking baseline performance
+    config.audio.buffer_size = 8192;
+    config.audio.sample_rate = 48000;
+    config.audio.squelch.learning_duration = 1.0;
+    config.audio.analyzer = scanner::audio_quality::AudioAnalyzer::pass_through();
+
+    config.peak_detection.fft_size = 1024;
+    config.peak_detection.threshold = 1.0;
+    config.peak_detection.scan_duration = 1.5;
+    config.peak_detection.spectral_threshold = 0.2;
+
+    // Disable all advanced features for baseline benchmarking
+    config.peak_detection.cfar.enabled = false;
+    config.peak_detection.noise_floor.enabled = false;
+    config.peak_detection.windowing.enabled = false;
+    config
+        .peak_detection
+        .averaging
+        .exponential_smoothing
+        .enabled = false;
+    config
+        .peak_detection
+        .averaging
+        .multi_frame_averaging
+        .enabled = false;
+    config.peak_detection.averaging.coherent_integration_enabled = false;
+    config.peak_detection.averaging.moving_average.enabled = false;
+    config.peak_detection.multi_frame.enabled = false;
+
+    config.signal_processing.frequency_tracking.disabled = false;
+
+    config.duration = 3;
+    config.sdr_gain = 24.0;
+    config.samp_rate = 2_000_000.0;
+    config.scanning_windows = Some(2);
+
+    config
 }
 
 /// Comprehensive benchmark comparing different feature configurations
@@ -340,90 +318,98 @@ fn create_baseline_config() -> ScanningConfig {
 /// Signal averaging only: Signal averaging enabled, others disabled
 fn create_signal_averaging_only_config() -> ScanningConfig {
     let mut config = create_test_config();
-    config.enable_exponential_smoothing = true;
-    config.enable_multi_frame_averaging = true;
-    config.enable_coherent_integration = true;
-    config.enable_moving_average_filter = true;
+    config
+        .peak_detection
+        .averaging
+        .exponential_smoothing
+        .enabled = true;
+    config
+        .peak_detection
+        .averaging
+        .multi_frame_averaging
+        .enabled = true;
+    config.peak_detection.averaging.coherent_integration_enabled = true;
+    config.peak_detection.averaging.moving_average.enabled = true;
     config
 }
 
 /// CFAR only: CFAR detection enabled, others disabled
 fn create_cfar_only_config() -> ScanningConfig {
     let mut config = create_test_config();
-    config.enable_cfar_detection = true;
-    config.cfar_threshold_factor = 3.0;
-    config.cfar_guard_cells = 10;
-    config.cfar_reference_cells = 50;
+    config.peak_detection.cfar.enabled = true;
+    config.peak_detection.cfar.threshold_factor = 3.0;
+    config.peak_detection.cfar.guard_cells = 10;
+    config.peak_detection.cfar.reference_cells = 50;
     config
 }
 
 /// Spectral preprocessing only: Windowing and zero-padding enabled, others disabled
 fn create_spectral_preprocessing_only_config() -> ScanningConfig {
     let mut config = create_test_config();
-    config.enable_windowing = true;
-    config.window_type = scanner::types::WindowType::BlackmanHarris;
-    config.zero_padding_factor = 2;
+    config.peak_detection.windowing.enabled = true;
+    config.peak_detection.windowing.window_type = scanner::types::WindowType::BlackmanHarris;
+    config.peak_detection.windowing.zero_padding_factor = 2;
     config
 }
 
 /// Multi-frame integration only: Peak persistence tracking enabled, others disabled
 fn create_multi_frame_integration_only_config() -> ScanningConfig {
     let mut config = create_test_config();
-    config.enable_multi_frame_integration = true;
-    config.multi_frame_history_frames = 5;
-    config.multi_frame_confirmation_threshold = 3;
-    config.multi_frame_frequency_tolerance = 25_000.0;
-    config.multi_frame_max_age = 10.0;
+    config.peak_detection.multi_frame.enabled = true;
+    config.peak_detection.multi_frame.history_frames = 5;
+    config.peak_detection.multi_frame.confirmation_threshold = 3;
+    config.peak_detection.multi_frame.frequency_tolerance = 25_000.0;
+    config.peak_detection.multi_frame.max_age = 10.0;
     config
 }
 
 /// Signal averaging + CFAR: Both signal averaging and CFAR enabled
 fn create_signal_averaging_plus_cfar_config() -> ScanningConfig {
     let mut config = create_signal_averaging_only_config();
-    config.enable_cfar_detection = true;
-    config.cfar_threshold_factor = 3.0;
-    config.cfar_guard_cells = 10;
-    config.cfar_reference_cells = 50;
+    config.peak_detection.cfar.enabled = true;
+    config.peak_detection.cfar.threshold_factor = 3.0;
+    config.peak_detection.cfar.guard_cells = 10;
+    config.peak_detection.cfar.reference_cells = 50;
     config
 }
 
 /// Signal averaging + spectral preprocessing: Signal averaging and windowing enabled
 fn create_signal_averaging_plus_spectral_config() -> ScanningConfig {
     let mut config = create_signal_averaging_only_config();
-    config.enable_windowing = true;
-    config.window_type = scanner::types::WindowType::BlackmanHarris;
-    config.zero_padding_factor = 2;
+    config.peak_detection.windowing.enabled = true;
+    config.peak_detection.windowing.window_type = scanner::types::WindowType::BlackmanHarris;
+    config.peak_detection.windowing.zero_padding_factor = 2;
     config
 }
 
 /// CFAR + spectral preprocessing: CFAR and windowing enabled
 fn create_cfar_plus_spectral_config() -> ScanningConfig {
     let mut config = create_cfar_only_config();
-    config.enable_windowing = true;
-    config.window_type = scanner::types::WindowType::BlackmanHarris;
-    config.zero_padding_factor = 2;
+    config.peak_detection.windowing.enabled = true;
+    config.peak_detection.windowing.window_type = scanner::types::WindowType::BlackmanHarris;
+    config.peak_detection.windowing.zero_padding_factor = 2;
     config
 }
 
 /// Signal averaging + multi-frame integration: Signal averaging and persistence tracking enabled
 fn create_signal_averaging_plus_multi_frame_config() -> ScanningConfig {
     let mut config = create_signal_averaging_only_config();
-    config.enable_multi_frame_integration = true;
-    config.multi_frame_history_frames = 5;
-    config.multi_frame_confirmation_threshold = 3;
-    config.multi_frame_frequency_tolerance = 25_000.0;
-    config.multi_frame_max_age = 10.0;
+    config.peak_detection.multi_frame.enabled = true;
+    config.peak_detection.multi_frame.history_frames = 5;
+    config.peak_detection.multi_frame.confirmation_threshold = 3;
+    config.peak_detection.multi_frame.frequency_tolerance = 25_000.0;
+    config.peak_detection.multi_frame.max_age = 10.0;
     config
 }
 
 /// CFAR + multi-frame integration: CFAR detection and persistence tracking enabled
 fn create_cfar_plus_multi_frame_config() -> ScanningConfig {
     let mut config = create_cfar_only_config();
-    config.enable_multi_frame_integration = true;
-    config.multi_frame_history_frames = 5;
-    config.multi_frame_confirmation_threshold = 3;
-    config.multi_frame_frequency_tolerance = 25_000.0;
-    config.multi_frame_max_age = 10.0;
+    config.peak_detection.multi_frame.enabled = true;
+    config.peak_detection.multi_frame.history_frames = 5;
+    config.peak_detection.multi_frame.confirmation_threshold = 3;
+    config.peak_detection.multi_frame.frequency_tolerance = 25_000.0;
+    config.peak_detection.multi_frame.max_age = 10.0;
     config
 }
 

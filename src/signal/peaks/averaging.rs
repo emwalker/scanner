@@ -45,8 +45,10 @@ pub fn apply_coherent_integration(
             *magnitude = *accumulated / cycle_count;
         }
     } else {
-        // First cycle - initialize accumulator with current values
-        *accumulator = Some(magnitudes.to_vec());
+        // First cycle - allocate once and initialize with current values
+        let mut new_accumulator = Vec::with_capacity(magnitudes.len());
+        new_accumulator.extend_from_slice(magnitudes);
+        *accumulator = Some(new_accumulator);
     }
 }
 
@@ -81,8 +83,10 @@ pub fn apply_multi_frame_averaging(
         // Not enough frames yet - don't extract peaks this cycle
         false
     } else {
-        // First frame - initialize accumulator
-        *accumulator = Some(magnitudes.to_vec());
+        // First frame - allocate once and initialize with current values
+        let mut new_accumulator = Vec::with_capacity(magnitudes.len());
+        new_accumulator.extend_from_slice(magnitudes);
+        *accumulator = Some(new_accumulator);
         false // Need more frames
     }
 }
@@ -101,8 +105,10 @@ pub fn apply_exponential_smoothing(
         // Copy smoothed values back to magnitudes for peak detection
         magnitudes.copy_from_slice(smoothed);
     } else {
-        // First frame - initialize smoothed magnitudes with current values
-        *smoothed_magnitudes = Some(magnitudes.to_vec());
+        // First frame - allocate once and initialize with current values
+        let mut new_smoothed = Vec::with_capacity(magnitudes.len());
+        new_smoothed.extend_from_slice(magnitudes);
+        *smoothed_magnitudes = Some(new_smoothed);
     }
 }
 

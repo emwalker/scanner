@@ -253,7 +253,7 @@ mod tests {
             }
         }
 
-        let (mut input, read_stream) = WriteStream::new();
+        let (input, read_stream) = WriteStream::new();
         let full_sink = FullAudioSink;
         let packet_size = 100;
 

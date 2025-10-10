@@ -1,5 +1,6 @@
 lint:
-	cargo fmt
+	cargo check --all
+	cargo fmt --all
 	cargo clippy --fix --allow-dirty -- -D clippy::print_stdout -D clippy::print_stderr -D clippy::cognitive_complexity -D warnings
 
 test:

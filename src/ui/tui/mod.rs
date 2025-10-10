@@ -189,10 +189,71 @@ impl TuiProgressDisplay {
         }
     }
 
+    fn handle_enter_browsing_mode(&mut self, selected_index: usize) -> bool {
+        self.model.ui_mode = model::UiMode::AwaitingTune {
+            navigation_index: selected_index,
+            tuning_index: selected_index,
+        };
+
+        if let Some(sender) = &self.command_sender {
+            let _ = sender.send(crate::ui::ScannerCommand::Pause);
+        }
+
+        true
+    }
+
+    fn handle_switch_station(
+        &mut self,
+        selected_index: usize,
+        info: model::SelectedCandidateInfo,
+    ) -> bool {
+        debug!(
+            candidate_id = ?info.candidate_id,
+            window_id = info.metadata.window_id,
+            candidate_frequency_mhz = info.candidate_frequency / 1e6,
+            "TUI: Sending TuneToCandidate command"
+        );
+
+        self.model.ui_mode = model::UiMode::AwaitingTune {
+            navigation_index: selected_index,
+            tuning_index: selected_index,
+        };
+
+        if let Some(sender) = &self.command_sender {
+            let _ = sender.send(crate::ui::ScannerCommand::TuneToCandidate {
+                candidate_id: info.candidate_id,
+                window_id: info.metadata.window_id,
+                center_frequency: info.metadata.center_frequency_hz,
+                candidate_frequency: info.candidate_frequency,
+                signal_strength: info.signal_strength,
+                audio_quality: info.audio_quality,
+            });
+        }
+
+        self.model.playback_active = true;
+        true
+    }
+
+    fn handle_resume_scan(&mut self) -> bool {
+        self.model.exit_browsing_mode();
+        self.model.ui_mode = model::UiMode::Idle;
+
+        if let Some(sender) = &self.command_sender {
+            let _ = sender.send(crate::ui::ScannerCommand::ResumeScan);
+        }
+
+        if self.model.playback_active {
+            if let Some(sender) = &self.command_sender {
+                let _ = sender.send(crate::ui::ScannerCommand::StopListening);
+            }
+            self.model.playback_active = false;
+        }
+
+        true
+    }
+
     /// Handle tuning/playback actions (Enter key in various contexts)
     fn handle_tuning_actions(&mut self, key: &event::KeyEvent) -> bool {
-        let mut needs_redraw = false;
-
         if key.code != KeyCode::Enter || self.model.theme_selector_open {
             return false;
         }
@@ -201,55 +262,19 @@ impl TuiProgressDisplay {
         if matches!(self.model.focus_state, model::FocusState::Scan)
             && self.model.selection_mode()
             && !self.model.browsing_mode()
-            && self.model.selected_candidate_index().is_some()
+            && let Some(selected_index) = self.model.selected_candidate_index()
         {
-            if let Some(selected_index) = self.model.selected_candidate_index() {
-                self.model.ui_mode = model::UiMode::AwaitingTune {
-                    navigation_index: selected_index,
-                    tuning_index: selected_index,
-                };
-                needs_redraw = true;
-            }
-
-            if let Some(sender) = &self.command_sender {
-                let _ = sender.send(crate::ui::ScannerCommand::Pause);
-            }
-            return needs_redraw;
+            return self.handle_enter_browsing_mode(selected_index);
         }
 
         // Case 2: Switch station while listening
         if matches!(self.model.ui_mode, model::UiMode::Listening { .. })
             && !self.model.is_continue_scan_selected()
-            && self.model.selected_candidate_index().is_some()
+            && let Some(selected_index) = self.model.selected_candidate_index()
+            && let Some(info) = self.model.selected_candidate_info()
+            && self.command_sender.is_some()
         {
-            if let Some(info) = self.model.selected_candidate_info()
-                && let Some(sender) = &self.command_sender
-                && let Some(selected_index) = self.model.selected_candidate_index()
-            {
-                debug!(
-                    candidate_id = ?info.candidate_id,
-                    window_id = info.metadata.window_id,
-                    candidate_frequency_mhz = info.candidate_frequency / 1e6,
-                    "TUI: Sending TuneToCandidate command"
-                );
-
-                self.model.ui_mode = model::UiMode::AwaitingTune {
-                    navigation_index: selected_index,
-                    tuning_index: selected_index,
-                };
-                needs_redraw = true;
-
-                let _ = sender.send(crate::ui::ScannerCommand::TuneToCandidate {
-                    candidate_id: info.candidate_id,
-                    window_id: info.metadata.window_id,
-                    center_frequency: info.metadata.center_frequency_hz,
-                    candidate_frequency: info.candidate_frequency,
-                    signal_strength: info.signal_strength,
-                    audio_quality: info.audio_quality,
-                });
-                self.model.playback_active = true;
-            }
-            return needs_redraw;
+            return self.handle_switch_station(selected_index, info);
         }
 
         // Case 3: Resume scan from browsing mode
@@ -258,23 +283,10 @@ impl TuiProgressDisplay {
             model::UiMode::Listening { .. } | model::UiMode::AwaitingTune { .. }
         ) && self.model.is_continue_scan_selected()
         {
-            self.model.exit_browsing_mode();
-            self.model.ui_mode = model::UiMode::Idle;
-
-            if let Some(sender) = &self.command_sender {
-                let _ = sender.send(crate::ui::ScannerCommand::ResumeScan);
-            }
-
-            if self.model.playback_active {
-                if let Some(sender) = &self.command_sender {
-                    let _ = sender.send(crate::ui::ScannerCommand::StopListening);
-                }
-                self.model.playback_active = false;
-            }
-            needs_redraw = true;
+            return self.handle_resume_scan();
         }
 
-        needs_redraw
+        false
     }
 
     /// Process TUI events (progress updates and discovery)

@@ -105,11 +105,11 @@ fn test_immediate_shutdown() {
 
     let coordinator = Arc::new(ShutdownCoordinator::new());
 
-    coordinator.shutdown();
-
     coordinator
         .spawn_sdr_thread(simulate_scanning_loop)
         .unwrap();
+
+    coordinator.shutdown();
 
     Arc::try_unwrap(coordinator).unwrap().wait().unwrap();
 

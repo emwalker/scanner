@@ -37,6 +37,8 @@ This ensures we avoid any licensing concerns while still learning from the broad
   - Use namespaces as an alternative to "as" for disambiguation (e.g., import `use std::io;` and `use tokio::io;` then use `std::io::Error` vs `tokio::io::Error`)
   - Only use namespaces at call sites for disambiguation or when it improves clarity
   - Avoid long qualified paths like `foo::bar::baz::Thing` - instead import intermediate modules if needed
+  - **Avoid wildcard imports** (`use foo::*;`) in production code - use explicit imports to make dependencies clear and improve maintainability
+    - Exception: `use super::*;` is acceptable in test modules (`#[cfg(test)]`)
   - Exception: For enum variants, prefer keeping the enum name (e.g., `Status::Success` not `Success`)
 - Return results instead of panicking, even in "impossible" code paths
 

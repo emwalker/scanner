@@ -83,19 +83,25 @@ impl ShutdownCoordinator {
     where
         F: FnOnce(CancellationToken) + Send + 'static,
     {
+        if self.is_shutdown() {
+            return Err(ScannerError::PoolShutdown);
+        }
+
         let cancel_token = self.token();
         let handle = std::thread::spawn(move || {
             f(cancel_token);
         });
 
-        self.thread_handles
-            .lock()
-            .map_err(|e| ScannerError::MutexPoisoned {
+        match self.thread_handles.try_lock() {
+            Ok(mut guard) => {
+                guard.push(handle);
+                Ok(())
+            }
+            Err(std::sync::TryLockError::Poisoned(e)) => Err(ScannerError::MutexPoisoned {
                 context: format!("Failed to lock thread_handles: {}", e),
-            })?
-            .push(handle);
-
-        Ok(())
+            }),
+            Err(std::sync::TryLockError::WouldBlock) => Err(ScannerError::PoolShutdown),
+        }
     }
 
     /// Initiate graceful shutdown
@@ -275,5 +281,40 @@ mod tests {
         assert!(token1.is_cancelled());
         assert!(token2.is_cancelled());
         assert!(token3.is_cancelled());
+    }
+
+    #[test]
+    fn test_spawn_after_shutdown_returns_error() {
+        let coordinator = ShutdownCoordinator::new();
+        coordinator.shutdown();
+
+        let result = coordinator.spawn_sdr_thread(|_cancel| {});
+
+        assert!(result.is_err());
+        match result {
+            Err(ScannerError::PoolShutdown) => {}
+            _ => panic!("Expected PoolShutdown error"),
+        }
+    }
+
+    #[test]
+    fn test_spawn_during_concurrent_shutdown() {
+        let coordinator = Arc::new(ShutdownCoordinator::new());
+        let coordinator_clone = coordinator.clone();
+
+        let spawn_handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            coordinator_clone.spawn_sdr_thread(|_cancel| {
+                std::thread::sleep(Duration::from_millis(50));
+            })
+        });
+
+        coordinator.shutdown();
+
+        let spawn_result = spawn_handle.join().unwrap();
+        assert!(
+            spawn_result.is_err(),
+            "Spawning during shutdown should fail"
+        );
     }
 }
