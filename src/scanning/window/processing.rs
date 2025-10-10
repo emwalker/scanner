@@ -97,8 +97,16 @@ pub(super) fn candidates_from_peaks(
         let frequency_khz = (rounded_freq / 1000.0) as u64;
 
         let already_processed = {
-            let processed = crate::signal::PROCESSED_FREQUENCIES.lock().unwrap();
-            processed.contains(&frequency_khz)
+            match crate::signal::PROCESSED_FREQUENCIES.lock() {
+                Ok(processed) => processed.contains(&frequency_khz),
+                Err(e) => {
+                    debug!(
+                        error = %e,
+                        "Failed to lock PROCESSED_FREQUENCIES, assuming not processed"
+                    );
+                    false
+                }
+            }
         };
 
         if already_processed {

@@ -22,7 +22,9 @@ impl Classifier {
         samples: &[f32],
     ) -> crate::core::types::Result<super::AudioFeatures> {
         if samples.is_empty() {
-            return Err(ScannerError::Custom("Empty audio samples".to_string()));
+            return Err(ScannerError::SignalProcessingFailed(
+                "Empty audio samples".to_string(),
+            ));
         }
 
         // 1. Energy-based features

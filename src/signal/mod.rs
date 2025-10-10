@@ -136,8 +136,16 @@ fn analyze_spectral_characteristics(
     // Calculate spectral width characteristics
     let peak_count = sorted_peaks.len();
     let freq_span_khz = if peak_count > 1 {
-        (sorted_peaks.last().unwrap().frequency_hz - sorted_peaks.first().unwrap().frequency_hz)
-            / 1000.0
+        match (sorted_peaks.last(), sorted_peaks.first()) {
+            (Some(last), Some(first)) => (last.frequency_hz - first.frequency_hz) / 1000.0,
+            _ => {
+                debug_assert!(
+                    false,
+                    "Invariant violated: sorted_peaks should have elements when peak_count > 1"
+                );
+                0.0
+            }
+        }
     } else {
         0.0
     };
@@ -310,7 +318,7 @@ pub fn find_candidates(
 
     while fm_freq <= freq_end_mhz {
         debug!("Analyzing {:.1} MHz... ", fm_freq);
-        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+        let _ = std::io::Write::flush(&mut std::io::stdout());
 
         let (spectral_score, analysis_summary) =
             analyze_spectral_characteristics(peaks, fm_freq, config.samp_rate, center_freq);

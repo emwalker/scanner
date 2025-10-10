@@ -47,7 +47,7 @@ impl Segment {
         // Check shutdown before acquiring from pool
         if shutdown_token.is_cancelled() {
             debug!("Shutdown requested before pool acquisition, aborting");
-            return Err(ScannerError::Custom("Shutdown in progress".to_string()));
+            return Err(ScannerError::PoolShutdown);
         }
 
         // Acquire tuner from pool
@@ -132,7 +132,7 @@ impl Segment {
                 debug!("Pool-based SDR graph ready");
             }
             Err(_) => {
-                return Err(ScannerError::Custom(
+                return Err(ScannerError::InitializationTimeout(
                     "Pool-based SDR graph failed to initialize within 5 seconds".to_string(),
                 ));
             }

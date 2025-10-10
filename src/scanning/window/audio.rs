@@ -367,7 +367,11 @@ pub(super) fn play_signals(
     }
 
     let mut sorted_signals = signals;
-    sorted_signals.sort_by(|a, b| a.frequency_hz.partial_cmp(&b.frequency_hz).unwrap());
+    sorted_signals.sort_by(|a, b| {
+        a.frequency_hz
+            .partial_cmp(&b.frequency_hz)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     debug!(
         "Window {} playing {} signals in frequency order",
@@ -388,7 +392,9 @@ pub(super) fn play_signals(
     let stream = match sample_format {
         SampleFormat::F32 => create_audio_stream(&audio_device, &stream_config, audio_rx)?,
         _ => {
-            return Err(ScannerError::Custom("Unsupported audio format".to_string()));
+            return Err(ScannerError::UnsupportedAudioFormat(
+                "WAV format required".to_string(),
+            ));
         }
     };
 

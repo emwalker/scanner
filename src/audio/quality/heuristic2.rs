@@ -93,7 +93,7 @@ impl Classifier {
             segment_powers.push(power);
         }
 
-        segment_powers.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        segment_powers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
         let noise_power = segment_powers[0].max(1e-10);
         let signal_power = segment_powers[segment_powers.len() - 1].max(1e-10);

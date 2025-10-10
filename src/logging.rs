@@ -15,10 +15,18 @@ pub struct LogBuffer(Arc<Mutex<Vec<u8>>>);
 impl LogBuffer {
     /// Consumes the buffer and returns the captured logs as a string.
     pub fn into_string(&self) -> String {
-        let mut buffer = self.0.lock().unwrap();
-        let s = String::from_utf8_lossy(&buffer).to_string();
-        buffer.clear(); // Clear the buffer after getting the contents.
-        s
+        match self.0.lock() {
+            Ok(mut buffer) => {
+                let s = String::from_utf8_lossy(&buffer).to_string();
+                buffer.clear();
+                s
+            }
+            Err(e) => {
+                // If mutex is poisoned, return what we can recover from the poisoned state
+                let buffer = e.into_inner();
+                String::from_utf8_lossy(&buffer).to_string()
+            }
+        }
     }
 }
 
@@ -59,11 +67,15 @@ impl Write for &TestWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match &self.mode {
             WriterMode::Buffered(buffer) => {
-                let mut buffer = buffer.0.lock().unwrap();
+                let mut buffer = buffer.0.lock().map_err(|_| {
+                    io::Error::other("Log buffer mutex poisoned")
+                })?;
                 buffer.extend_from_slice(buf);
             }
             WriterMode::File(file) => {
-                let mut file = file.lock().unwrap();
+                let mut file = file
+                    .lock()
+                    .map_err(|_| io::Error::other("Log file mutex poisoned"))?;
                 file.write_all(buf)?;
                 file.flush()?;
             }
@@ -86,7 +98,9 @@ impl Write for &TestWriter {
 
     fn flush(&mut self) -> io::Result<()> {
         if let WriterMode::File(file) = &self.mode {
-            file.lock().unwrap().flush()?;
+            file.lock()
+                .map_err(|_| io::Error::other("Log file mutex poisoned"))?
+                .flush()?;
         }
         Ok(())
     }
@@ -96,11 +110,15 @@ impl Write for TestWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match &self.mode {
             WriterMode::Buffered(buffer) => {
-                let mut buffer = buffer.0.lock().unwrap();
+                let mut buffer = buffer.0.lock().map_err(|_| {
+                    io::Error::other("Log buffer mutex poisoned")
+                })?;
                 buffer.extend_from_slice(buf);
             }
             WriterMode::File(file) => {
-                let mut file = file.lock().unwrap();
+                let mut file = file
+                    .lock()
+                    .map_err(|_| io::Error::other("Log file mutex poisoned"))?;
                 file.write_all(buf)?;
                 file.flush()?;
             }
@@ -124,7 +142,9 @@ impl Write for TestWriter {
     fn flush(&mut self) -> io::Result<()> {
         match &self.mode {
             WriterMode::File(file) => {
-                file.lock().unwrap().flush()?;
+                file.lock()
+                    .map_err(|_| io::Error::other("Log file mutex poisoned"))?
+                    .flush()?;
             }
             WriterMode::Immediate => {
                 use std::fs::OpenOptions;
@@ -235,7 +255,9 @@ impl Logger for DefaultLogger {
                 .write(true)
                 .truncate(true)
                 .open(log_file_path)
-                .map_err(|e| ScannerError::Custom(format!("Failed to open log file: {}", e)))?;
+                .map_err(|e| {
+                    ScannerError::ConfigurationError(format!("Failed to open log file: {}", e))
+                })?;
             let file_writer = FileWriter::new(file);
 
             match self.format {

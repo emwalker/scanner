@@ -71,9 +71,7 @@ impl Tuner {
     ) -> Result<rustradio::stream::ReadStream<Complex>> {
         // Check shutdown mode first (lock-free)
         if self.shutdown_mode.load(Ordering::SeqCst) {
-            return Err(ScannerError::Custom(
-                "Operation rejected - pool in shutdown mode".to_string(),
-            ));
+            return Err(ScannerError::PoolShutdown);
         }
 
         let device = self.device.lock().map_err(|_e| {
@@ -94,9 +92,7 @@ impl Tuner {
     pub fn tune(&mut self, freq: f64) -> Result<()> {
         // Check shutdown mode first (lock-free)
         if self.shutdown_mode.load(Ordering::SeqCst) {
-            return Err(ScannerError::Custom(
-                "Operation rejected - pool in shutdown mode".to_string(),
-            ));
+            return Err(ScannerError::PoolShutdown);
         }
 
         let mut device = self.device.lock().map_err(|_e| {
@@ -117,9 +113,7 @@ impl Tuner {
     pub fn set_gain(&mut self, gain: f64) -> Result<()> {
         // Check shutdown mode first (lock-free)
         if self.shutdown_mode.load(Ordering::SeqCst) {
-            return Err(ScannerError::Custom(
-                "Operation rejected - pool in shutdown mode".to_string(),
-            ));
+            return Err(ScannerError::PoolShutdown);
         }
 
         let mut device = self.device.lock().map_err(|_e| {

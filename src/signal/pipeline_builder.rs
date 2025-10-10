@@ -74,7 +74,10 @@ impl FmPipelineBuilder {
             );
         graph.add(Box::new(freq_xlating_block));
 
-        Ok((output, decimation.try_into().unwrap()))
+        let decimation_u32 = decimation
+            .try_into()
+            .map_err(|e| rustradio::Error::msg(format!("Decimation conversion failed: {}", e)))?;
+        Ok((output, decimation_u32))
     }
 
     /// Create audio decimation chain (anti-aliasing filter + rational resampler)

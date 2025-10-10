@@ -127,23 +127,30 @@ impl MockProgressReporter {
 
     /// Get all captured events
     pub fn events(&self) -> Vec<ProgressEvent> {
-        self.events.lock().unwrap().clone()
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Get the count of captured events
     pub fn event_count(&self) -> usize {
-        self.events.lock().unwrap().len()
+        self.events.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Clear all captured events
     pub fn clear(&self) {
-        self.events.lock().unwrap().clear();
+        if let Ok(mut events) = self.events.lock() {
+            events.clear();
+        }
     }
 }
 
 impl ProgressReporter for MockProgressReporter {
     fn report(&self, event: ProgressEvent) {
-        self.events.lock().unwrap().push(event);
+        if let Ok(mut events) = self.events.lock() {
+            events.push(event);
+        }
     }
 }
 

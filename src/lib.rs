@@ -15,3 +15,8 @@ pub mod shutdown;
 pub mod signal;
 pub mod testing;
 pub mod ui;
+
+// Re-export commonly used types for convenience (backward compatibility)
+pub use audio::quality as audio_quality;
+pub use core::types;
+pub use signal::peaks;

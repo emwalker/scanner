@@ -127,20 +127,18 @@ impl PeakTracker {
 
         // Improved recency factor with exponential decay
         let recency_factor = if !self.detections.is_empty() {
-            let latest_frame = self
-                .detections
-                .iter()
-                .map(|(frame, _)| *frame)
-                .max()
-                .unwrap();
-            let frame_ages: f32 = self
-                .detections
-                .iter()
-                .map(|(frame, _)| (latest_frame - frame) as f32)
-                .map(|age| (-age / 2.0).exp()) // Exponential decay
-                .sum();
+            if let Some(latest_frame) = self.detections.iter().map(|(frame, _)| *frame).max() {
+                let frame_ages: f32 = self
+                    .detections
+                    .iter()
+                    .map(|(frame, _)| (latest_frame - frame) as f32)
+                    .map(|age| (-age / 2.0).exp()) // Exponential decay
+                    .sum();
 
-            (frame_ages / self.detections.len() as f32).min(1.0)
+                (frame_ages / self.detections.len() as f32).min(1.0)
+            } else {
+                1.0
+            }
         } else {
             1.0
         };

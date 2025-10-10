@@ -35,7 +35,9 @@ impl AudioSession {
         let stream = match sample_format {
             SampleFormat::F32 => create_audio_stream(&audio_device, &stream_config, audio_rx)?,
             _ => {
-                return Err(ScannerError::Custom("Unsupported audio format".to_string()));
+                return Err(ScannerError::UnsupportedAudioFormat(
+                    "WAV format required".to_string(),
+                ));
             }
         };
 

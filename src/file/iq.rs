@@ -126,7 +126,7 @@ impl AudioCaptureSink {
 
             test_num += 1;
             if test_num > 999 {
-                return Err(ScannerError::Custom(
+                return Err(ScannerError::ConfigurationError(
                     "Maximum test number (999) exceeded for frequency".to_string(),
                 ));
             }

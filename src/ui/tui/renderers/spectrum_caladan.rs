@@ -341,7 +341,11 @@ fn render_window_detail_row(
     {
         let mut stations: Vec<_> = current_window.candidates.iter().collect();
 
-        stations.sort_by(|a, b| a.frequency_hz.partial_cmp(&b.frequency_hz).unwrap());
+        stations.sort_by(|a, b| {
+            a.frequency_hz
+                .partial_cmp(&b.frequency_hz)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         for candidate in stations {
             let freq_in_window = candidate.frequency_hz - ws;

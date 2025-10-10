@@ -81,7 +81,7 @@ impl Backend for Soapy {
         let (backend, serial) = match id {
             DeviceId::Backend { backend, serial } => (backend.as_str(), serial.as_str()),
             DeviceId::Usb { .. } => {
-                return Err(ScannerError::Custom(
+                return Err(ScannerError::HardwareNotAvailable(
                     "USB device IDs not supported for opening via SoapySDR backend".to_string(),
                 ));
             }

@@ -10,7 +10,7 @@ pub fn parse_squelch_threshold(threshold_str: &str) -> Result<AudioQuality> {
         "poor" => Ok(AudioQuality::Poor),
         "moderate" => Ok(AudioQuality::Moderate),
         "good" => Ok(AudioQuality::Good),
-        _ => Err(ScannerError::Custom(format!(
+        _ => Err(ScannerError::ConfigurationError(format!(
             "Invalid squelch threshold '{}'. Valid values: static, no-audio, poor, moderate, good",
             threshold_str
         ))),

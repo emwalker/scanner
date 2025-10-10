@@ -55,14 +55,14 @@ impl Classifier {
         let saved: SavedClassifier = bincode::deserialize_from(reader)?;
 
         if saved.serializable_data.is_none() {
-            return Err(crate::core::types::ScannerError::Custom(
+            return Err(crate::core::types::ScannerError::ModelError(
                 "Loaded model file contains no training data".to_string(),
             ));
         }
 
         // Validate model compatibility
         if saved.feature_count != 11 {
-            return Err(crate::core::types::ScannerError::Custom(format!(
+            return Err(crate::core::types::ScannerError::ModelError(format!(
                 "Model feature count mismatch: expected 11, got {}",
                 saved.feature_count
             )));
@@ -101,7 +101,7 @@ impl Classifier {
         use std::io::BufWriter;
 
         if self.serializable_data.is_none() {
-            return Err(crate::core::types::ScannerError::Custom(
+            return Err(crate::core::types::ScannerError::ModelError(
                 "Cannot save model: no training data available".to_string(),
             ));
         }
@@ -120,7 +120,11 @@ impl Classifier {
             serializable_data: Option<SerializableModel>,
         }
 
-        let serializable_data = self.serializable_data.as_ref().unwrap();
+        let serializable_data = self.serializable_data.as_ref().ok_or_else(|| {
+            crate::core::types::ScannerError::ModelError(
+                "Internal error: serializable_data missing after validation".to_string(),
+            )
+        })?;
         let current_time = chrono::Utc::now().to_rfc3339();
 
         let to_save = SavedClassifier {
@@ -151,7 +155,7 @@ impl Classifier {
     /// Rebuild model from serializable data
     fn rebuild_model(&mut self) -> crate::core::types::Result<()> {
         let serializable_data = self.serializable_data.as_ref().ok_or_else(|| {
-            crate::core::types::ScannerError::Custom(
+            crate::core::types::ScannerError::ModelError(
                 "No training data available to rebuild model".to_string(),
             )
         })?;
@@ -232,7 +236,7 @@ impl Classifier {
         }
 
         if features_matrix.is_empty() {
-            return Err(crate::core::types::ScannerError::Custom(
+            return Err(crate::core::types::ScannerError::ModelError(
                 "No training data available".to_string(),
             ));
         }
@@ -267,7 +271,7 @@ impl Classifier {
         samples: &[f32],
     ) -> crate::core::types::Result<super::AudioFeatures> {
         if samples.is_empty() {
-            return Err(crate::core::types::ScannerError::Custom(
+            return Err(crate::core::types::ScannerError::SignalProcessingFailed(
                 "Empty audio samples".to_string(),
             ));
         }
@@ -472,7 +476,9 @@ impl super::Classifier for Classifier {
 
         // Check if model is trained
         let model = self.model.as_ref().ok_or_else(|| {
-            crate::core::types::ScannerError::Custom("Random Forest model not trained".to_string())
+            crate::core::types::ScannerError::ModelError(
+                "Random Forest model not trained".to_string(),
+            )
         })?;
 
         // Prepare features for prediction

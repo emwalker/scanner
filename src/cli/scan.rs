@@ -27,7 +27,9 @@ pub fn handle_scan_command(args: ScanArgs) -> Result<()> {
     let discovered_devices = crate::discovery::enumerate_once(&backends, driver_filter)?;
 
     if discovered_devices.is_empty() {
-        return Err(ScannerError::Custom("No SDR devices found".to_string()));
+        return Err(ScannerError::HardwareNotAvailable(
+            "No SDR devices found".to_string(),
+        ));
     }
 
     let selected_device = &discovered_devices[0];
@@ -62,7 +64,7 @@ fn run_tui_mode(
     let theme_name = args
         .theme
         .parse::<ThemeName>()
-        .map_err(|e| ScannerError::Custom(format!("Invalid theme: {}", e)))?;
+        .map_err(|e| ScannerError::ConfigurationError(format!("Invalid theme: {}", e)))?;
 
     let (command_sender, command_receiver) = std::sync::mpsc::channel();
     tui_context.command_receiver = command_receiver;

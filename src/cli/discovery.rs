@@ -36,20 +36,16 @@ pub fn initialize_pool_with_device(
             );
         }
         AddDeviceResult::FilteredOut { device_id, reason } => {
-            return Err(ScannerError::Custom(format!(
+            return Err(ScannerError::HardwareNotAvailable(format!(
                 "Selected device {:?} was filtered out: {}",
                 device_id, reason
             )));
         }
         AddDeviceResult::ShutdownMode => {
-            return Err(ScannerError::Custom(
-                "Pool in shutdown mode during initialization".to_string(),
-            ));
+            return Err(ScannerError::PoolShutdown);
         }
         AddDeviceResult::PoolBusy => {
-            return Err(ScannerError::Custom(
-                "Pool busy during initialization".to_string(),
-            ));
+            return Err(ScannerError::PoolLockTimeout);
         }
     }
 

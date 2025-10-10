@@ -88,7 +88,12 @@ impl ShutdownCoordinator {
             f(cancel_token);
         });
 
-        self.thread_handles.lock().unwrap().push(handle);
+        self.thread_handles
+            .lock()
+            .map_err(|e| ScannerError::MutexPoisoned {
+                context: format!("Failed to lock thread_handles: {}", e),
+            })?
+            .push(handle);
 
         Ok(())
     }
@@ -119,7 +124,12 @@ impl ShutdownCoordinator {
     pub fn wait(self) -> Result<()> {
         debug!("ShutdownCoordinator: Waiting for all threads to complete");
 
-        let handles = self.thread_handles.into_inner().unwrap();
+        let handles =
+            self.thread_handles
+                .into_inner()
+                .map_err(|e| ScannerError::MutexPoisoned {
+                    context: format!("Failed to unwrap thread_handles: {}", e),
+                })?;
         let total_threads = handles.len();
 
         debug!(
@@ -143,7 +153,7 @@ impl ShutdownCoordinator {
                         error = ?e,
                         "ShutdownCoordinator: Thread panicked"
                     );
-                    return Err(ScannerError::Custom(
+                    return Err(ScannerError::ThreadPanic(
                         "Thread panicked during shutdown".to_string(),
                     ));
                 }
