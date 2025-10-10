@@ -175,12 +175,10 @@ impl SquelchBlock {
         (quality, signal_strength)
     }
 
-    fn process_sample_for_analysis(&mut self, sample: f32) {
-        // Collect samples for normalized analysis
+    fn collect_sample_for_analysis(&mut self, sample: f32) {
         self.audio_samples.push(sample);
         self.samples_analyzed += 1;
 
-        // Also capture samples for audio file if capturer is available
         if let Some(ref mut capturer) = self.audio_capturer
             && let Err(e) = capturer.capture_samples(&[sample])
         {
@@ -190,8 +188,80 @@ impl SquelchBlock {
                 "Failed to capture audio sample"
             );
         }
+    }
 
-        // Check if learning period is complete and analysis hasn't been done yet
+    fn handle_audio_file_passed(&mut self) {
+        if let Some(ref mut capturer) = self.audio_capturer {
+            if let Err(e) = capturer.create_file_and_flush_buffer() {
+                debug!(
+                    frequency_mhz = self.frequency_hz / 1e6,
+                    error = %e,
+                    "Failed to create audio file after squelch pass"
+                );
+            } else {
+                debug!(
+                    frequency_mhz = self.frequency_hz / 1e6,
+                    "Squelch passed - created audio file and flushed buffer"
+                );
+            }
+        }
+    }
+
+    fn handle_audio_file_failed(&mut self) {
+        if let Some(ref mut capturer) = self.audio_capturer {
+            capturer.discard_buffer();
+            debug!(
+                frequency_mhz = self.frequency_hz / 1e6,
+                "Squelch failed - discarded audio buffer"
+            );
+        }
+    }
+
+    fn create_and_queue_signal(
+        &self,
+        audio_quality: AudioQuality,
+        signal_strength: f32,
+        duration_ms: u32,
+    ) {
+        if let Some(ref tx) = self.signal_tx {
+            let signal = Signal::new_fm(
+                self.frequency_hz,
+                signal_strength,
+                200_000.0,
+                self._sample_rate as u32,
+                duration_ms,
+                self.detection_center_freq,
+                audio_quality,
+            );
+
+            if let Some(ref progress_reporter) = self.progress_reporter {
+                let candidate_id =
+                    format!("{:.1}-{}", self.frequency_hz / 1e6, self.metadata.window_id);
+                progress_reporter.report(crate::ui::ProgressEvent {
+                    event_type: crate::ui::ProgressEventType::SignalGenerated,
+                    frequency_hz: self.frequency_hz,
+                    metadata: self.metadata,
+                    candidate_id: Some(candidate_id),
+                    audio_quality: Some(audio_quality),
+                    signal_strength: Some(signal_strength as f64),
+                    timestamp: std::time::Instant::now(),
+                    tuner_id: self.tuner_id.clone(),
+                });
+            }
+
+            match tx.try_send(signal) {
+                Ok(()) => debug!(
+                    "Signal queued for frequency {:.1} MHz",
+                    self.frequency_hz / 1e6
+                ),
+                Err(e) => debug!("Failed to queue signal: {}", e),
+            }
+        }
+    }
+
+    fn process_sample_for_analysis(&mut self, sample: f32) {
+        self.collect_sample_for_analysis(sample);
+
         if self.samples_analyzed >= self.learning_samples_needed && !self.analysis_completed {
             let (audio_quality, signal_strength) = self.analyze_audio_content();
             self.analysis_completed = true;
@@ -205,75 +275,19 @@ impl SquelchBlock {
                 self.decision_state
                     .store(Decision::Audio.to_u8(), Ordering::Relaxed);
 
-                // Coordinate audio file creation - squelch passed
-                if let Some(ref mut capturer) = self.audio_capturer {
-                    if let Err(e) = capturer.create_file_and_flush_buffer() {
-                        debug!(
-                            frequency_mhz = self.frequency_hz / 1e6,
-                            error = %e,
-                            "Failed to create audio file after squelch pass"
-                        );
-                    } else {
-                        debug!(
-                            frequency_mhz = self.frequency_hz / 1e6,
-                            "Squelch passed - created audio file and flushed buffer"
-                        );
-                    }
-                }
-
-                // Push signal to queue if channel is available
-                if let Some(ref tx) = self.signal_tx {
-                    let signal = Signal::new_fm(
-                        self.frequency_hz,
-                        signal_strength,
-                        200_000.0, // Standard FM channel bandwidth
-                        self._sample_rate as u32,
-                        (self._learning_duration * 1000.0) as u32, // Convert to ms
-                        self.detection_center_freq,
-                        audio_quality,
-                    );
-
-                    // Report signal generation immediately after creation
-                    if let Some(ref progress_reporter) = self.progress_reporter {
-                        let candidate_id =
-                            format!("{:.1}-{}", self.frequency_hz / 1e6, self.metadata.window_id);
-                        progress_reporter.report(crate::ui::ProgressEvent {
-                            event_type: crate::ui::ProgressEventType::SignalGenerated,
-                            frequency_hz: self.frequency_hz,
-                            metadata: self.metadata,
-                            candidate_id: Some(candidate_id),
-                            audio_quality: Some(audio_quality),
-                            signal_strength: Some(signal_strength as f64),
-                            timestamp: std::time::Instant::now(),
-                            tuner_id: self.tuner_id.clone(),
-                        });
-                    }
-
-                    match tx.try_send(signal) {
-                        Ok(()) => debug!(
-                            "Signal queued for frequency {:.1} MHz",
-                            self.frequency_hz / 1e6
-                        ),
-                        Err(e) => debug!("Failed to queue signal: {}", e),
-                    }
-                }
+                self.handle_audio_file_passed();
+                self.create_and_queue_signal(
+                    audio_quality,
+                    signal_strength,
+                    (self._learning_duration * 1000.0) as u32,
+                );
             } else {
                 debug!(
                     frequency_mhz = self.frequency_hz / 1e6,
                     "Squelch: Noise detected, blocking output and signaling early exit"
                 );
                 self.decision = Decision::Noise;
-
-                // Coordinate audio file discard - squelch failed
-                if let Some(ref mut capturer) = self.audio_capturer {
-                    capturer.discard_buffer();
-                    debug!(
-                        frequency_mhz = self.frequency_hz / 1e6,
-                        "Squelch failed - discarded audio buffer"
-                    );
-                }
-
-                // Signal that noise was detected
+                self.handle_audio_file_failed();
                 self.decision_state
                     .store(Decision::Noise.to_u8(), Ordering::Relaxed);
             }
@@ -289,7 +303,6 @@ impl BlockName for SquelchBlock {
 
 impl BlockEOF for SquelchBlock {
     fn eof(&mut self) -> bool {
-        // When we hit EOF, analyze what we have if we haven't already
         if self.input.eof() && !self.analysis_completed && self.samples_analyzed > 0 {
             debug!(
                 samples_analyzed = self.samples_analyzed,
@@ -297,7 +310,6 @@ impl BlockEOF for SquelchBlock {
                 "EOF reached before full learning period - analyzing available samples"
             );
 
-            // Analyze with whatever samples we have
             let (audio_quality, signal_strength) = self.analyze_audio_content();
             self.analysis_completed = true;
 
@@ -310,74 +322,17 @@ impl BlockEOF for SquelchBlock {
                 self.decision_state
                     .store(Decision::Audio.to_u8(), Ordering::Relaxed);
 
-                // Coordinate audio file creation - squelch passed at EOF
-                if let Some(ref mut capturer) = self.audio_capturer {
-                    if let Err(e) = capturer.create_file_and_flush_buffer() {
-                        debug!(
-                            frequency_mhz = self.frequency_hz / 1e6,
-                            error = %e,
-                            "Failed to create audio file after squelch pass at EOF"
-                        );
-                    } else {
-                        debug!(
-                            frequency_mhz = self.frequency_hz / 1e6,
-                            "Squelch passed at EOF - created audio file and flushed buffer"
-                        );
-                    }
-                }
-
-                // Push signal to queue if channel is available
-                if let Some(ref tx) = self.signal_tx {
-                    let signal = Signal::new_fm(
-                        self.frequency_hz,
-                        signal_strength,
-                        200_000.0, // Standard FM channel bandwidth
-                        self._sample_rate as u32,
-                        (self.samples_analyzed as f32 / self._sample_rate * 1000.0) as u32, // Actual duration analyzed
-                        self.detection_center_freq,
-                        audio_quality,
-                    );
-
-                    // Report signal generation immediately after creation
-                    if let Some(ref progress_reporter) = self.progress_reporter {
-                        let candidate_id =
-                            format!("{:.1}-{}", self.frequency_hz / 1e6, self.metadata.window_id);
-                        progress_reporter.report(crate::ui::ProgressEvent {
-                            event_type: crate::ui::ProgressEventType::SignalGenerated,
-                            frequency_hz: self.frequency_hz,
-                            metadata: self.metadata,
-                            candidate_id: Some(candidate_id),
-                            audio_quality: Some(audio_quality),
-                            signal_strength: Some(signal_strength as f64),
-                            timestamp: std::time::Instant::now(),
-                            tuner_id: self.tuner_id.clone(),
-                        });
-                    }
-
-                    match tx.try_send(signal) {
-                        Ok(()) => debug!(
-                            "Signal queued for frequency {:.1} MHz (partial analysis)",
-                            self.frequency_hz / 1e6
-                        ),
-                        Err(e) => debug!("Failed to queue signal: {}", e),
-                    }
-                }
+                self.handle_audio_file_passed();
+                let duration_ms =
+                    (self.samples_analyzed as f32 / self._sample_rate * 1000.0) as u32;
+                self.create_and_queue_signal(audio_quality, signal_strength, duration_ms);
             } else {
                 debug!(
                     frequency_mhz = self.frequency_hz / 1e6,
                     "Squelch: Noise detected from partial samples at EOF"
                 );
                 self.decision = Decision::Noise;
-
-                // Coordinate audio file discard - squelch failed at EOF
-                if let Some(ref mut capturer) = self.audio_capturer {
-                    capturer.discard_buffer();
-                    debug!(
-                        frequency_mhz = self.frequency_hz / 1e6,
-                        "Squelch failed at EOF - discarded audio buffer"
-                    );
-                }
-
+                self.handle_audio_file_failed();
                 self.decision_state
                     .store(Decision::Noise.to_u8(), Ordering::Relaxed);
             }

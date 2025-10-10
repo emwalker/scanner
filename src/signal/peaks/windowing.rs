@@ -78,15 +78,15 @@ mod tests {
     fn test_windowing_reduces_spectral_leakage() {
         // Test baseline without windowing
         let mut config = create_test_config();
-        config.enable_windowing = false;
+        config.peak_detection.windowing.enabled = false;
         let mut no_window_generator = create_single_tone_scenario();
         let no_window_peaks =
             crate::signal::peaks::collect_peaks_from_source(&config, &mut no_window_generator)
                 .expect("Failed to collect non-windowed peaks");
 
         // Test with windowing enabled
-        config.enable_windowing = true;
-        config.window_type = WindowType::BlackmanHarris;
+        config.peak_detection.windowing.enabled = true;
+        config.peak_detection.windowing.window_type = WindowType::BlackmanHarris;
         let mut windowed_generator = create_single_tone_scenario();
         let windowed_peaks =
             crate::signal::peaks::collect_peaks_from_source(&config, &mut windowed_generator)
@@ -111,14 +111,14 @@ mod tests {
     fn test_zero_padding_improves_frequency_resolution() {
         // Test baseline without zero-padding
         let mut config = create_test_config();
-        config.zero_padding_factor = 1; // No padding
+        config.peak_detection.windowing.zero_padding_factor = 1; // No padding
         let mut no_padding_generator = create_close_frequency_scenario();
         let no_padding_peaks =
             crate::signal::peaks::collect_peaks_from_source(&config, &mut no_padding_generator)
                 .expect("Failed to collect non-padded peaks");
 
         // Test with zero-padding
-        config.zero_padding_factor = 4; // 4x zero-padding
+        config.peak_detection.windowing.zero_padding_factor = 4; // 4x zero-padding
         let mut padded_generator = create_close_frequency_scenario();
         let padded_peaks =
             crate::signal::peaks::collect_peaks_from_source(&config, &mut padded_generator)
@@ -148,9 +148,9 @@ mod tests {
     fn test_fft_processing_maintains_speed() {
         // Measure baseline performance without preprocessing
         let mut config = create_test_config();
-        config.enable_windowing = false;
-        config.zero_padding_factor = 1;
-        config.window_overlap_percent = 0.0;
+        config.peak_detection.windowing.enabled = false;
+        config.peak_detection.windowing.zero_padding_factor = 1;
+        config.peak_detection.windowing.overlap_percent = 0.0;
 
         let baseline_start = std::time::Instant::now();
         let mut baseline_generator = create_performance_test_scenario();
@@ -160,10 +160,10 @@ mod tests {
         let baseline_duration = baseline_start.elapsed();
 
         // Measure performance with all spectral preprocessing enabled
-        config.enable_windowing = true;
-        config.window_type = WindowType::BlackmanHarris;
-        config.zero_padding_factor = 2; // Modest zero-padding for performance
-        config.window_overlap_percent = 50.0; // Modest overlap for performance
+        config.peak_detection.windowing.enabled = true;
+        config.peak_detection.windowing.window_type = WindowType::BlackmanHarris;
+        config.peak_detection.windowing.zero_padding_factor = 2; // Modest zero-padding for performance
+        config.peak_detection.windowing.overlap_percent = 50.0; // Modest overlap for performance
 
         let preprocessed_start = std::time::Instant::now();
         let mut preprocessed_generator = create_performance_test_scenario();
@@ -195,28 +195,35 @@ mod tests {
     // Helper functions for windowing tests
 
     fn create_test_config() -> ScanningConfig {
-        ScanningConfig {
-            audio_buffer_size: 8192,
-            scanning_windows: Some(2),
-            fft_size: 2048, // Larger FFT for better frequency resolution
-            peak_scan_duration: 0.5,
-            audio_analyzer: AudioAnalyzer::mock(),
+        let mut config = ScanningConfig::default();
+        config.audio.buffer_size = 8192;
+        config.audio.analyzer = AudioAnalyzer::mock();
+        config.scanning_windows = Some(2);
+        config.peak_detection.fft_size = 2048; // Larger FFT for better frequency resolution
+        config.peak_detection.scan_duration = 0.5;
 
-            // Disable signal averaging and CFAR for windowing tests
-            enable_exponential_smoothing: false,
-            enable_multi_frame_averaging: false,
-            enable_coherent_integration: false,
-            enable_moving_average_filter: false,
-            enable_cfar_detection: false,
+        // Disable signal averaging and CFAR for windowing tests
+        config
+            .peak_detection
+            .averaging
+            .exponential_smoothing
+            .enabled = false;
+        config
+            .peak_detection
+            .averaging
+            .multi_frame_averaging
+            .enabled = false;
+        config.peak_detection.averaging.coherent_integration_enabled = false;
+        config.peak_detection.averaging.moving_average.enabled = false;
+        config.peak_detection.cfar.enabled = false;
 
-            // Windowing configuration
-            enable_windowing: false,
-            window_type: WindowType::Rectangular,
-            zero_padding_factor: 1,
-            window_overlap_percent: 0.0,
+        // Windowing configuration
+        config.peak_detection.windowing.enabled = false;
+        config.peak_detection.windowing.window_type = WindowType::Rectangular;
+        config.peak_detection.windowing.zero_padding_factor = 1;
+        config.peak_detection.windowing.overlap_percent = 0.0;
 
-            ..Default::default()
-        }
+        config
     }
 
     fn create_single_tone_scenario() -> PeakTestSignalGenerator {

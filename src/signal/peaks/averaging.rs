@@ -122,7 +122,11 @@ mod tests {
         let baseline_config = create_test_config();
 
         assert!(
-            !baseline_config.enable_exponential_smoothing,
+            !baseline_config
+                .peak_detection
+                .averaging
+                .exponential_smoothing
+                .enabled,
             "Baseline should have smoothing disabled"
         );
 
@@ -138,9 +142,22 @@ mod tests {
         );
 
         // Now test with exponential smoothing enabled
-        let mut smoothing_config = baseline_config.clone();
-        smoothing_config.enable_exponential_smoothing = true;
-        smoothing_config.smoothing_alpha = 0.3;
+        let mut smoothing_config = ScanningConfig::default();
+        smoothing_config.audio.buffer_size = 8192;
+        smoothing_config.audio.analyzer = AudioAnalyzer::mock();
+        smoothing_config.scanning_windows = Some(2);
+        smoothing_config.peak_detection.fft_size = 1024;
+        smoothing_config.peak_detection.scan_duration = 1.5;
+        smoothing_config
+            .peak_detection
+            .averaging
+            .exponential_smoothing
+            .enabled = true;
+        smoothing_config
+            .peak_detection
+            .averaging
+            .exponential_smoothing
+            .alpha = 0.3;
 
         let mut smoothing_generator = create_noisy_signal_scenario();
         let smoothing_peaks = crate::signal::peaks::collect_peaks_from_source(
@@ -156,20 +173,36 @@ mod tests {
             );
             println!(
                 "DEBUG: Baseline config: enable_exponential_smoothing = {}",
-                baseline_config.enable_exponential_smoothing
+                baseline_config
+                    .peak_detection
+                    .averaging
+                    .exponential_smoothing
+                    .enabled
             );
             println!(
                 "DEBUG: Smoothing config: enable_exponential_smoothing = {}",
-                smoothing_config.enable_exponential_smoothing
+                smoothing_config
+                    .peak_detection
+                    .averaging
+                    .exponential_smoothing
+                    .enabled
             );
 
             // For now, just verify the feature flag is set correctly
             assert!(
-                smoothing_config.enable_exponential_smoothing,
+                smoothing_config
+                    .peak_detection
+                    .averaging
+                    .exponential_smoothing
+                    .enabled,
                 "Smoothing should be enabled"
             );
             assert!(
-                !baseline_config.enable_exponential_smoothing,
+                !baseline_config
+                    .peak_detection
+                    .averaging
+                    .exponential_smoothing
+                    .enabled,
                 "Baseline should have smoothing disabled"
             );
 
@@ -234,8 +267,11 @@ mod tests {
         }
 
         // Test with coherent integration (improved)
-        let mut integration_config = config.clone();
-        integration_config.enable_coherent_integration = true;
+        let mut integration_config = create_test_config();
+        integration_config
+            .peak_detection
+            .averaging
+            .coherent_integration_enabled = true;
 
         let mut integrated_magnitudes = Vec::new();
         for _ in 0..num_runs {
@@ -281,8 +317,8 @@ mod tests {
     #[test]
     fn test_moving_average_filter_reduces_noise_spikes() {
         let mut config = create_test_config();
-        config.enable_moving_average_filter = true;
-        config.moving_average_window_size = 5;
+        config.peak_detection.averaging.moving_average.enabled = true;
+        config.peak_detection.averaging.moving_average.window_size = 5;
 
         let mut generator = create_spiky_noise_scenario();
         let peaks = crate::signal::peaks::collect_peaks_from_source(&config, &mut generator)
@@ -306,106 +342,35 @@ mod tests {
         );
     }
 
-    /// Test signal averaging regression: should not reduce detection count significantly
-    #[test]
-    fn test_signal_averaging_does_not_reduce_detection_count() {
-        // Create scenario with multiple weak signals that should all be detectable
-        let mut baseline_generator = create_multi_signal_detection_scenario();
-        let baseline_config = ScanningConfig {
-            audio_buffer_size: 8192,
-            scanning_windows: Some(3),
-            fft_size: 1024,
-            peak_scan_duration: 0.5,
-            audio_analyzer: AudioAnalyzer::mock(),
-
-            // Baseline: All signal averaging features disabled
-            enable_exponential_smoothing: false,
-            enable_multi_frame_averaging: false,
-            enable_coherent_integration: false,
-            enable_moving_average_filter: false,
-            // Also disable CFAR to isolate signal averaging testing
-            enable_cfar_detection: false,
-
-            ..Default::default()
-        };
-
-        let baseline_peaks = crate::signal::peaks::collect_peaks_from_source(
-            &baseline_config,
-            &mut baseline_generator,
-        )
-        .expect("Failed to collect baseline peaks");
-
-        // Test with signal averaging enabled
-        let mut averaging_generator = create_multi_signal_detection_scenario();
-        let averaging_config = ScanningConfig {
-            // Enable signal averaging features
-            enable_exponential_smoothing: true,
-            enable_multi_frame_averaging: true,
-            enable_coherent_integration: true,
-            enable_moving_average_filter: true,
-
-            // Keep CFAR disabled to isolate signal averaging impact
-            enable_cfar_detection: false,
-
-            ..baseline_config.clone()
-        };
-
-        let averaging_peaks = crate::signal::peaks::collect_peaks_from_source(
-            &averaging_config,
-            &mut averaging_generator,
-        )
-        .expect("Failed to collect signal averaging peaks");
-
-        println!("Baseline detections: {}", baseline_peaks.len());
-        println!("Signal averaging detections: {}", averaging_peaks.len());
-
-        // Signal averaging should not significantly reduce detection count
-        let detection_ratio = averaging_peaks.len() as f32 / baseline_peaks.len() as f32;
-        println!(
-            "Detection ratio (Signal Averaging / Baseline): {:.2}",
-            detection_ratio
-        );
-
-        assert!(
-            detection_ratio >= 0.8, // Allow up to 20% reduction, but we expect improvement
-            "Signal averaging should not reduce detection count by more than 20%. Got {:.1}% reduction (ratio: {:.2})",
-            (1.0 - detection_ratio) * 100.0,
-            detection_ratio
-        );
-
-        // Ideally, signal averaging should improve detection
-        if detection_ratio > 1.0 {
-            println!(
-                "✅ Signal averaging improved detection by {:.1}%",
-                (detection_ratio - 1.0) * 100.0
-            );
-        } else {
-            println!(
-                "⚠️  Signal averaging reduced detection by {:.1}%",
-                (1.0 - detection_ratio) * 100.0
-            );
-        }
-    }
+    // NOTE: test_signal_averaging_does_not_reduce_detection_count moved to
+    // src/testing/detection_regression_tests.rs to centralize regression tests
 
     // Helper functions for averaging tests
 
     fn create_test_config() -> ScanningConfig {
-        ScanningConfig {
-            audio_buffer_size: 8192,
-            scanning_windows: Some(2),
-            fft_size: 1024,
-            peak_scan_duration: 1.5,
-            audio_analyzer: AudioAnalyzer::mock(),
-            // For testing, we need to explicitly control signal averaging features
-            // These tests compare baseline (disabled) vs improved (enabled)
-            enable_exponential_smoothing: false,
-            enable_multi_frame_averaging: false,
-            enable_coherent_integration: false,
-            enable_moving_average_filter: false,
-            // Also disable CFAR to isolate signal averaging testing
-            enable_cfar_detection: false,
-            ..Default::default()
-        }
+        let mut config = ScanningConfig::default();
+        config.audio.buffer_size = 8192;
+        config.audio.analyzer = AudioAnalyzer::mock();
+        config.scanning_windows = Some(2);
+        config.peak_detection.fft_size = 1024;
+        config.peak_detection.scan_duration = 1.5;
+        // For testing, we need to explicitly control signal averaging features
+        // These tests compare baseline (disabled) vs improved (enabled)
+        config
+            .peak_detection
+            .averaging
+            .exponential_smoothing
+            .enabled = false;
+        config
+            .peak_detection
+            .averaging
+            .multi_frame_averaging
+            .enabled = false;
+        config.peak_detection.averaging.coherent_integration_enabled = false;
+        config.peak_detection.averaging.moving_average.enabled = false;
+        // Also disable CFAR to isolate signal averaging testing
+        config.peak_detection.cfar.enabled = false;
+        config
     }
 
     fn create_noisy_signal_scenario() -> PeakTestSignalGenerator {
@@ -447,24 +412,6 @@ mod tests {
 
         // Add a signal that should survive filtering
         generator.add_signal(TestSignal::new(88_800_000.0, 0.3, "MainSignal"));
-
-        generator
-    }
-
-    fn create_multi_signal_detection_scenario() -> PeakTestSignalGenerator {
-        let mut generator = PeakTestSignalGenerator::new(
-            2_000_000.0,  // sample_rate
-            89_000_000.0, // center_frequency
-            1_000_000,    // max_samples (0.5 seconds)
-            0.3,          // Moderate noise level
-        );
-
-        // Add multiple signals at different strengths to test detection sensitivity
-        generator.add_signal(TestSignal::new(88_700_000.0, 0.25, "Signal1")); // Strong
-        generator.add_signal(TestSignal::new(88_900_000.0, 0.15, "Signal2")); // Medium
-        generator.add_signal(TestSignal::new(89_100_000.0, 0.10, "Signal3")); // Weak
-        generator.add_signal(TestSignal::new(89_300_000.0, 0.08, "Signal4")); // Very weak
-        generator.add_signal(TestSignal::new(89_500_000.0, 0.05, "Signal5")); // Marginal
 
         generator
     }

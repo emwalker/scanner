@@ -103,42 +103,81 @@ pub fn build_scanning_config(args: &ScanArgs) -> Result<ScanningConfig> {
         "Audio analyzer initialized"
     );
 
+    use crate::core::config::*;
+
     Ok(ScanningConfig {
-        audio_buffer_size: 8192,
-        audio_sample_rate: 48000,
         band: args.band,
-        capture_audio_duration: args.audio_capture_duration,
-        capture_audio: args.audio_capture_dir.clone(),
-        capture_duration: args.capture_duration,
-        capture_iq: args.capture_iq.clone(),
-        debug_pipeline: args.debug_pipeline,
         duration: args.duration,
+        samp_rate: 2_000_000.0f64,
         sdr_gain: args.gain.unwrap_or(24.0),
         scanning_windows: args.scanning_windows,
-        fft_size: 1024,
-        peak_detection_threshold: 1.0,
-        peak_scan_duration: args.peak_scan_duration,
-        print_candidates: args.print_candidates,
-        samp_rate: 2_000_000.0f64,
-        squelch_learning_duration: args.learning_duration,
-        frequency_tracking_method: args.frequency_tracking.clone(),
-        tracking_accuracy: args.tracking_accuracy,
-        disable_frequency_tracking: args.disable_frequency_tracking,
-        spectral_threshold: args.spectral_threshold,
-        agc_settling_time: args.agc_settling_time,
-        window_overlap: args.window_overlap,
-        disable_squelch: args.disable_squelch,
-        squelch_threshold,
-        disable_if_agc: args.disable_if_agc,
-        audio_analyzer,
-        enable_exponential_smoothing: !args.disable_signal_averaging,
-        enable_multi_frame_averaging: !args.disable_signal_averaging,
-        enable_coherent_integration: !args.disable_signal_averaging,
-        enable_moving_average_filter: !args.disable_signal_averaging,
-        enable_cfar_detection: !args.disable_cfar,
-        enable_windowing: !args.disable_spectral_preprocessing,
-        enable_dynamic_noise_floor: args.enable_dynamic_noise_floor,
-        enable_multi_frame_integration: args.enable_multi_frame_integration,
-        ..Default::default()
+        audio: AudioConfig {
+            buffer_size: 8192,
+            sample_rate: 48000,
+            analyzer: audio_analyzer,
+            squelch: SquelchConfig {
+                disabled: args.disable_squelch,
+                threshold: squelch_threshold,
+                learning_duration: args.learning_duration,
+            },
+        },
+        peak_detection: PeakDetectionConfig {
+            fft_size: 1024,
+            threshold: 1.0,
+            scan_duration: args.peak_scan_duration,
+            spectral_threshold: args.spectral_threshold,
+            cfar: CfarConfig {
+                enabled: !args.disable_cfar,
+                ..Default::default()
+            },
+            noise_floor: NoiseFloorConfig {
+                enabled: args.enable_dynamic_noise_floor,
+                ..Default::default()
+            },
+            windowing: WindowingConfig {
+                enabled: !args.disable_spectral_preprocessing,
+                ..Default::default()
+            },
+            averaging: AveragingConfig {
+                exponential_smoothing: ExponentialSmoothingConfig {
+                    enabled: !args.disable_signal_averaging,
+                    ..Default::default()
+                },
+                multi_frame_averaging: MultiFrameAveragingConfig {
+                    enabled: !args.disable_signal_averaging,
+                    ..Default::default()
+                },
+                coherent_integration_enabled: !args.disable_signal_averaging,
+                moving_average: MovingAverageConfig {
+                    enabled: !args.disable_signal_averaging,
+                    ..Default::default()
+                },
+            },
+            multi_frame: MultiFrameConfig {
+                enabled: args.enable_multi_frame_integration,
+                ..Default::default()
+            },
+        },
+        signal_processing: SignalProcessingConfig {
+            agc_settling_time: args.agc_settling_time,
+            disable_if_agc: args.disable_if_agc,
+            window_overlap: args.window_overlap,
+            frequency_tracking: FrequencyTrackingConfig {
+                disabled: args.disable_frequency_tracking,
+                method: args.frequency_tracking.clone(),
+                accuracy: args.tracking_accuracy,
+            },
+            ..Default::default()
+        },
+        capture: CaptureConfig {
+            audio_path: args.audio_capture_dir.clone(),
+            audio_duration: args.audio_capture_duration,
+            iq_path: args.capture_iq.clone(),
+            iq_duration: args.capture_duration,
+        },
+        debug: DebugConfig {
+            pipeline: args.debug_pipeline,
+            print_candidates: args.print_candidates,
+        },
     })
 }

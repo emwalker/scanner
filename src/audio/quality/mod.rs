@@ -150,6 +150,7 @@ impl AudioAnalyzer {
     }
 
     /// Create a mock analyzer for testing
+    #[cfg(test)]
     pub fn mock() -> Self {
         Self {
             classifier: std::sync::Arc::new(MockClassifier),
@@ -184,8 +185,10 @@ impl Classifier for PassThroughClassifier {
 
 /// Mock classifier for testing that makes realistic quality decisions
 /// Used in unit tests to avoid complex ML dependencies
+#[cfg(test)]
 struct MockClassifier;
 
+#[cfg(test)]
 impl Classifier for MockClassifier {
     fn analyze(&self, samples: &[f32], _sample_rate: f32) -> Result<QualityResult> {
         let rms_energy = if samples.is_empty() {

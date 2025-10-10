@@ -3,15 +3,13 @@ use scanner::testing::*;
 
 #[test]
 fn test_pipeline_debug_modes() {
-    let config = ScanningConfig {
-        debug_pipeline: true,
-        ..Default::default()
-    };
+    let mut config = ScanningConfig::default();
+    config.debug.pipeline = true;
 
     // Test that debug mode doesn't crash and config is set correctly
-    assert!(config.debug_pipeline);
+    assert!(config.debug.pipeline);
     assert_eq!(config.samp_rate, 2_000_000.0);
-    assert_eq!(config.fft_size, 1024);
+    assert_eq!(config.peak_detection.fft_size, 1024);
 }
 
 #[test]
@@ -42,13 +40,11 @@ fn test_captured_logging() {
 #[test]
 fn test_log_comparison_structure() {
     // Test that we can capture and compare logs from different scanning modes
-    let config = ScanningConfig {
-        debug_pipeline: true,
-        samp_rate: 1_000_000.0,
-        fft_size: 1024,
-        peak_detection_threshold: 1.0,
-        ..Default::default()
-    };
+    let mut config = ScanningConfig::default();
+    config.debug.pipeline = true;
+    config.samp_rate = 1_000_000.0;
+    config.peak_detection.fft_size = 1024;
+    config.peak_detection.threshold = 1.0;
 
     // This demonstrates the structure for comparing scanning modes
     // In practice, this would use actual I/Q test files
@@ -71,5 +67,5 @@ fn test_log_comparison_structure() {
     //     &config,
     // );
 
-    assert!(config.debug_pipeline);
+    assert!(config.debug.pipeline);
 }

@@ -10,22 +10,34 @@ use crate::testing::signal_generation::{PeakTestSignalGenerator, TestSignal};
 fn test_signal_averaging_does_not_reduce_detection_count() {
     // Create scenario with multiple weak signals that should all be detectable
     let mut baseline_generator = create_multi_signal_detection_scenario();
-    let baseline_config = ScanningConfig {
-        audio_buffer_size: 8192,
-        scanning_windows: Some(3),
-        fft_size: 1024,
-        peak_scan_duration: 0.5,
-        audio_analyzer: AudioAnalyzer::mock(),
+    let mut baseline_config = ScanningConfig::default();
+    baseline_config.audio.buffer_size = 8192;
+    baseline_config.audio.analyzer = AudioAnalyzer::mock();
+    baseline_config.scanning_windows = Some(3);
+    baseline_config.peak_detection.fft_size = 1024;
+    baseline_config.peak_detection.scan_duration = 0.5;
 
-        // Baseline: All signal averaging and CFAR features disabled
-        enable_exponential_smoothing: false,
-        enable_multi_frame_averaging: false,
-        enable_coherent_integration: false,
-        enable_moving_average_filter: false,
-        enable_cfar_detection: false,
-
-        ..Default::default()
-    };
+    // Baseline: All signal averaging and CFAR features disabled
+    baseline_config
+        .peak_detection
+        .averaging
+        .exponential_smoothing
+        .enabled = false;
+    baseline_config
+        .peak_detection
+        .averaging
+        .multi_frame_averaging
+        .enabled = false;
+    baseline_config
+        .peak_detection
+        .averaging
+        .coherent_integration_enabled = false;
+    baseline_config
+        .peak_detection
+        .averaging
+        .moving_average
+        .enabled = false;
+    baseline_config.peak_detection.cfar.enabled = false;
 
     let baseline_peaks =
         crate::signal::peaks::collect_peaks_from_source(&baseline_config, &mut baseline_generator)
@@ -33,18 +45,36 @@ fn test_signal_averaging_does_not_reduce_detection_count() {
 
     // Test with signal averaging enabled
     let mut averaging_generator = create_multi_signal_detection_scenario();
-    let averaging_config = ScanningConfig {
-        // Signal averaging: Enable features
-        enable_exponential_smoothing: true,
-        enable_multi_frame_averaging: true,
-        enable_coherent_integration: true,
-        enable_moving_average_filter: true,
+    let mut averaging_config = ScanningConfig::default();
+    averaging_config.audio.buffer_size = 8192;
+    averaging_config.audio.analyzer = AudioAnalyzer::mock();
+    averaging_config.scanning_windows = Some(3);
+    averaging_config.peak_detection.fft_size = 1024;
+    averaging_config.peak_detection.scan_duration = 0.5;
 
-        // CFAR: Keep disabled to isolate signal averaging impact
-        enable_cfar_detection: false,
+    // Signal averaging: Enable features
+    averaging_config
+        .peak_detection
+        .averaging
+        .exponential_smoothing
+        .enabled = true;
+    averaging_config
+        .peak_detection
+        .averaging
+        .multi_frame_averaging
+        .enabled = true;
+    averaging_config
+        .peak_detection
+        .averaging
+        .coherent_integration_enabled = true;
+    averaging_config
+        .peak_detection
+        .averaging
+        .moving_average
+        .enabled = true;
 
-        ..baseline_config.clone()
-    };
+    // CFAR: Keep disabled to isolate signal averaging impact
+    averaging_config.peak_detection.cfar.enabled = false;
 
     let averaging_peaks = crate::signal::peaks::collect_peaks_from_source(
         &averaging_config,
@@ -88,24 +118,36 @@ fn test_signal_averaging_does_not_reduce_detection_count() {
 fn test_cfar_does_not_reduce_detection_count() {
     // Test CFAR impact without signal averaging interference
     let mut baseline_generator = create_multi_signal_detection_scenario();
-    let baseline_config = ScanningConfig {
-        audio_buffer_size: 8192,
-        scanning_windows: Some(3),
-        fft_size: 1024,
-        peak_scan_duration: 0.5,
-        audio_analyzer: AudioAnalyzer::mock(),
+    let mut baseline_config = ScanningConfig::default();
+    baseline_config.audio.buffer_size = 8192;
+    baseline_config.audio.analyzer = AudioAnalyzer::mock();
+    baseline_config.scanning_windows = Some(3);
+    baseline_config.peak_detection.fft_size = 1024;
+    baseline_config.peak_detection.scan_duration = 0.5;
 
-        // Baseline: All features disabled
-        enable_exponential_smoothing: false,
-        enable_multi_frame_averaging: false,
-        enable_coherent_integration: false,
-        enable_moving_average_filter: false,
-        enable_cfar_detection: false,
-        enable_windowing: false,
-        enable_multi_frame_integration: false,
-
-        ..Default::default()
-    };
+    // Baseline: All features disabled
+    baseline_config
+        .peak_detection
+        .averaging
+        .exponential_smoothing
+        .enabled = false;
+    baseline_config
+        .peak_detection
+        .averaging
+        .multi_frame_averaging
+        .enabled = false;
+    baseline_config
+        .peak_detection
+        .averaging
+        .coherent_integration_enabled = false;
+    baseline_config
+        .peak_detection
+        .averaging
+        .moving_average
+        .enabled = false;
+    baseline_config.peak_detection.cfar.enabled = false;
+    baseline_config.peak_detection.windowing.enabled = false;
+    baseline_config.peak_detection.multi_frame.enabled = false;
 
     let baseline_peaks =
         crate::signal::peaks::collect_peaks_from_source(&baseline_config, &mut baseline_generator)
@@ -113,21 +155,35 @@ fn test_cfar_does_not_reduce_detection_count() {
 
     // Test with CFAR enabled
     let mut cfar_generator = create_multi_signal_detection_scenario();
-    let cfar_config = ScanningConfig {
-        // Signal averaging: Keep disabled to isolate CFAR impact
-        enable_exponential_smoothing: false,
-        enable_multi_frame_averaging: false,
-        enable_coherent_integration: false,
-        enable_moving_average_filter: false,
+    let mut cfar_config = ScanningConfig::default();
+    cfar_config.audio.buffer_size = 8192;
+    cfar_config.audio.analyzer = AudioAnalyzer::mock();
+    cfar_config.scanning_windows = Some(3);
+    cfar_config.peak_detection.fft_size = 1024;
+    cfar_config.peak_detection.scan_duration = 0.5;
 
-        // CFAR: Enable for testing
-        enable_cfar_detection: true,
-        cfar_threshold_factor: 3.0, // Lower threshold for better detection
-        cfar_guard_cells: 5,
-        cfar_reference_cells: 20,
+    // Signal averaging: Keep disabled to isolate CFAR impact
+    cfar_config
+        .peak_detection
+        .averaging
+        .exponential_smoothing
+        .enabled = false;
+    cfar_config
+        .peak_detection
+        .averaging
+        .multi_frame_averaging
+        .enabled = false;
+    cfar_config
+        .peak_detection
+        .averaging
+        .coherent_integration_enabled = false;
+    cfar_config.peak_detection.averaging.moving_average.enabled = false;
 
-        ..baseline_config.clone()
-    };
+    // CFAR: Enable for testing
+    cfar_config.peak_detection.cfar.enabled = true;
+    cfar_config.peak_detection.cfar.threshold_factor = 3.0; // Lower threshold for better detection
+    cfar_config.peak_detection.cfar.guard_cells = 5;
+    cfar_config.peak_detection.cfar.reference_cells = 20;
 
     let cfar_peaks =
         crate::signal::peaks::collect_peaks_from_source(&cfar_config, &mut cfar_generator)
@@ -151,24 +207,36 @@ fn test_cfar_does_not_reduce_detection_count() {
 #[test]
 fn test_combined_phases_do_not_drastically_reduce_detection() {
     let mut baseline_generator = create_multi_signal_detection_scenario();
-    let baseline_config = ScanningConfig {
-        audio_buffer_size: 8192,
-        scanning_windows: Some(3),
-        fft_size: 1024,
-        peak_scan_duration: 0.5,
-        audio_analyzer: AudioAnalyzer::mock(),
+    let mut baseline_config = ScanningConfig::default();
+    baseline_config.audio.buffer_size = 8192;
+    baseline_config.audio.analyzer = AudioAnalyzer::mock();
+    baseline_config.scanning_windows = Some(3);
+    baseline_config.peak_detection.fft_size = 1024;
+    baseline_config.peak_detection.scan_duration = 0.5;
 
-        // Baseline: All features disabled
-        enable_exponential_smoothing: false,
-        enable_multi_frame_averaging: false,
-        enable_coherent_integration: false,
-        enable_moving_average_filter: false,
-        enable_cfar_detection: false,
-        enable_windowing: false,
-        enable_multi_frame_integration: false,
-
-        ..Default::default()
-    };
+    // Baseline: All features disabled
+    baseline_config
+        .peak_detection
+        .averaging
+        .exponential_smoothing
+        .enabled = false;
+    baseline_config
+        .peak_detection
+        .averaging
+        .multi_frame_averaging
+        .enabled = false;
+    baseline_config
+        .peak_detection
+        .averaging
+        .coherent_integration_enabled = false;
+    baseline_config
+        .peak_detection
+        .averaging
+        .moving_average
+        .enabled = false;
+    baseline_config.peak_detection.cfar.enabled = false;
+    baseline_config.peak_detection.windowing.enabled = false;
+    baseline_config.peak_detection.multi_frame.enabled = false;
 
     let baseline_peaks =
         crate::signal::peaks::collect_peaks_from_source(&baseline_config, &mut baseline_generator)
@@ -176,24 +244,36 @@ fn test_combined_phases_do_not_drastically_reduce_detection() {
 
     // Test with both signal averaging and CFAR enabled (exclude newer features)
     let mut combined_generator = create_multi_signal_detection_scenario();
-    let combined_config = ScanningConfig {
-        audio_buffer_size: 8192,
-        scanning_windows: Some(3),
-        fft_size: 1024,
-        peak_scan_duration: 0.5,
-        audio_analyzer: AudioAnalyzer::mock(),
+    let mut combined_config = ScanningConfig::default();
+    combined_config.audio.buffer_size = 8192;
+    combined_config.audio.analyzer = AudioAnalyzer::mock();
+    combined_config.scanning_windows = Some(3);
+    combined_config.peak_detection.fft_size = 1024;
+    combined_config.peak_detection.scan_duration = 0.5;
 
-        // Test combination: Signal averaging + CFAR enabled, newer features disabled
-        enable_exponential_smoothing: true,
-        enable_multi_frame_averaging: true,
-        enable_coherent_integration: true,
-        enable_moving_average_filter: true,
-        enable_cfar_detection: true,
-        enable_windowing: false,
-        enable_multi_frame_integration: false,
-
-        ..Default::default()
-    };
+    // Test combination: Signal averaging + CFAR enabled, newer features disabled
+    combined_config
+        .peak_detection
+        .averaging
+        .exponential_smoothing
+        .enabled = true;
+    combined_config
+        .peak_detection
+        .averaging
+        .multi_frame_averaging
+        .enabled = true;
+    combined_config
+        .peak_detection
+        .averaging
+        .coherent_integration_enabled = true;
+    combined_config
+        .peak_detection
+        .averaging
+        .moving_average
+        .enabled = true;
+    combined_config.peak_detection.cfar.enabled = true;
+    combined_config.peak_detection.windowing.enabled = false;
+    combined_config.peak_detection.multi_frame.enabled = false;
 
     let combined_peaks =
         crate::signal::peaks::collect_peaks_from_source(&combined_config, &mut combined_generator)

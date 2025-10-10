@@ -6,10 +6,12 @@
 
 use crate::core::types::Result;
 use rustradio::Complex;
+#[cfg(test)]
 use std::f32::consts::PI;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use tokio::sync::broadcast::error::TryRecvError;
+#[cfg(test)]
 use tracing::debug;
 
 /// Abstraction for sources of I/Q samples
@@ -33,6 +35,7 @@ pub trait SampleSource {
 }
 
 /// Mock sample source for testing that generates a simple sine wave
+#[cfg(test)]
 pub struct MockSampleSource {
     sample_rate: f64,
     center_frequency: f64,
@@ -43,6 +46,7 @@ pub struct MockSampleSource {
     amplitude: f32,        // Signal amplitude
 }
 
+#[cfg(test)]
 impl MockSampleSource {
     pub fn new(
         sample_rate: f64,
@@ -81,6 +85,7 @@ impl MockSampleSource {
     }
 }
 
+#[cfg(test)]
 impl SampleSource for MockSampleSource {
     fn read_samples(&mut self, buffer: &mut [Complex]) -> Result<usize> {
         let samples_to_generate = buffer.len().min(self.max_samples - self.samples_generated);

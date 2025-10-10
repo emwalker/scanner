@@ -50,9 +50,9 @@ pub fn collect_peaks_from_source(
 
     // Prepare FFT processing
     let mut peaks_map: BTreeMap<u64, Peak> = BTreeMap::new();
-    let mut fft_buffer = vec![Complex32::default(); config.fft_size];
+    let mut fft_buffer = vec![Complex32::default(); config.peak_detection.fft_size];
     let mut planner = rustfft::FftPlanner::new();
-    let fft = planner.plan_fft_forward(config.fft_size);
+    let fft = planner.plan_fft_forward(config.peak_detection.fft_size);
 
     // Initialize signal averaging state
     let mut averaging_state = SignalAveragingState {
@@ -65,13 +65,13 @@ pub fn collect_peaks_from_source(
 
     // Initialize dynamic noise floor state
     let mut noise_floor_state = NoiseFloorState {
-        estimator: if config.enable_dynamic_noise_floor {
+        estimator: if config.peak_detection.noise_floor.enabled {
             Some(noise_floor::NoiseFloorEstimator::new(
                 noise_floor::NoiseFloorConfig {
-                    noise_percentile: config.noise_floor_percentile,
-                    history_frames: config.noise_floor_history_frames,
-                    threshold_multiplier: config.noise_floor_threshold_multiplier,
-                    adaptation_rate: config.noise_floor_adaptation_rate,
+                    noise_percentile: config.peak_detection.noise_floor.percentile,
+                    history_frames: config.peak_detection.noise_floor.history_frames,
+                    threshold_multiplier: config.peak_detection.noise_floor.threshold_multiplier,
+                    adaptation_rate: config.peak_detection.noise_floor.adaptation_rate,
                     ..Default::default()
                 },
             ))
@@ -81,13 +81,13 @@ pub fn collect_peaks_from_source(
     };
 
     // Initialize multi-frame integrator if enabled
-    let mut multi_frame_integrator = if config.enable_multi_frame_integration {
+    let mut multi_frame_integrator = if config.peak_detection.multi_frame.enabled {
         Some(multi_frame::MultiFrameIntegrator::new(
             multi_frame::MultiFrameConfig {
-                history_frames: config.multi_frame_history_frames,
-                confirmation_threshold: config.multi_frame_confirmation_threshold,
-                frequency_tolerance: config.multi_frame_frequency_tolerance,
-                max_frame_age: config.multi_frame_max_age,
+                history_frames: config.peak_detection.multi_frame.history_frames,
+                confirmation_threshold: config.peak_detection.multi_frame.confirmation_threshold,
+                frequency_tolerance: config.peak_detection.multi_frame.frequency_tolerance,
+                max_frame_age: config.peak_detection.multi_frame.max_age,
             },
         ))
     } else {
@@ -98,7 +98,7 @@ pub fn collect_peaks_from_source(
     let samples_per_second = sample_source.sample_rate() as usize;
     let total_samples_needed = (samples_per_second as f64 * peak_scan_duration) as usize;
     let mut samples_collected = 0;
-    let mut read_buffer = vec![Complex::default(); config.fft_size];
+    let mut read_buffer = vec![Complex::default(); config.peak_detection.fft_size];
 
     // Collect samples and perform peak detection
     while samples_collected < total_samples_needed {
@@ -180,24 +180,42 @@ pub struct PeakProcessingParams<'a> {
 /// Process a batch of samples and extract peaks using the configured pipeline
 pub fn process_samples_for_peaks(params: &mut PeakProcessingParams) -> Vec<Peak> {
     // Copy samples to FFT buffer and convert to real samples for windowing
-    let mut real_samples = Vec::with_capacity(params.context.config.fft_size);
-    for sample in params
-        .read_buffer
-        .iter()
-        .take(params.samples_read.min(params.context.config.fft_size))
-    {
+    let mut real_samples = Vec::with_capacity(params.context.config.peak_detection.fft_size);
+    for sample in params.read_buffer.iter().take(
+        params
+            .samples_read
+            .min(params.context.config.peak_detection.fft_size),
+    ) {
         // For windowing, we use the magnitude of complex samples
         real_samples.push((sample.re * sample.re + sample.im * sample.im).sqrt());
     }
 
     // Apply windowing if enabled
-    if params.context.config.enable_windowing {
-        windowing::apply_window(&mut real_samples, &params.context.config.window_type);
+    if params.context.config.peak_detection.windowing.enabled {
+        windowing::apply_window(
+            &mut real_samples,
+            &params.context.config.peak_detection.windowing.window_type,
+        );
     }
 
     // Apply zero-padding if enabled
-    if params.context.config.zero_padding_factor > 1 {
-        windowing::apply_zero_padding(&mut real_samples, params.context.config.zero_padding_factor);
+    if params
+        .context
+        .config
+        .peak_detection
+        .windowing
+        .zero_padding_factor
+        > 1
+    {
+        windowing::apply_zero_padding(
+            &mut real_samples,
+            params
+                .context
+                .config
+                .peak_detection
+                .windowing
+                .zero_padding_factor,
+        );
     }
 
     // Copy windowed samples to FFT buffer (convert back to complex)
@@ -214,12 +232,12 @@ pub fn process_samples_for_peaks(params: &mut PeakProcessingParams) -> Vec<Peak>
     let mut magnitudes: Vec<f32> = params.fft_buffer.iter().map(|c| c.norm_sqr()).collect();
 
     // Dynamic noise floor estimation takes priority over other detection methods
-    if params.context.config.enable_dynamic_noise_floor
+    if params.context.config.peak_detection.noise_floor.enabled
         && let Some(ref mut estimator) = params.context.noise_floor_state.estimator
     {
         return estimator.extract_peaks_with_dynamic_threshold(
             &magnitudes,
-            params.context.config.fft_size,
+            params.context.config.peak_detection.fft_size,
             params.context.config.samp_rate,
             params.context.center_freq,
         );
@@ -227,25 +245,38 @@ pub fn process_samples_for_peaks(params: &mut PeakProcessingParams) -> Vec<Peak>
 
     // CFAR detection works best on raw or lightly processed magnitudes
     // Apply it early, before heavy smoothing that changes noise characteristics
-    if params.context.config.enable_cfar_detection {
+    if params.context.config.peak_detection.cfar.enabled {
         return cfar::extract_peaks_with_cfar(
             &magnitudes,
-            params.context.config.cfar_threshold_factor,
-            params.context.config.cfar_guard_cells,
-            params.context.config.cfar_reference_cells,
-            params.context.config.fft_size,
+            params.context.config.peak_detection.cfar.threshold_factor,
+            params.context.config.peak_detection.cfar.guard_cells,
+            params.context.config.peak_detection.cfar.reference_cells,
+            params.context.config.peak_detection.fft_size,
             params.context.config.samp_rate,
             params.context.center_freq,
         );
     }
 
     // For non-CFAR detection, apply signal averaging improvements to enhance signal quality
-    if params.context.config.enable_multi_frame_averaging {
+    if params
+        .context
+        .config
+        .peak_detection
+        .averaging
+        .multi_frame_averaging
+        .enabled
+    {
         let should_extract_peaks = averaging::apply_multi_frame_averaging(
             &mut magnitudes,
             &mut params.context.averaging_state.multi_frame_accumulator,
             &mut params.context.averaging_state.frame_count,
-            params.context.config.averaging_frames,
+            params
+                .context
+                .config
+                .peak_detection
+                .averaging
+                .multi_frame_averaging
+                .frames,
         );
 
         // If we haven't accumulated enough frames yet, return empty peaks
@@ -254,14 +285,33 @@ pub fn process_samples_for_peaks(params: &mut PeakProcessingParams) -> Vec<Peak>
         }
     }
 
-    if params.context.config.enable_moving_average_filter {
+    if params
+        .context
+        .config
+        .peak_detection
+        .averaging
+        .moving_average
+        .enabled
+    {
         averaging::apply_moving_average_filter(
             &mut magnitudes,
-            params.context.config.moving_average_window_size,
+            params
+                .context
+                .config
+                .peak_detection
+                .averaging
+                .moving_average
+                .window_size,
         );
     }
 
-    if params.context.config.enable_coherent_integration {
+    if params
+        .context
+        .config
+        .peak_detection
+        .averaging
+        .coherent_integration_enabled
+    {
         averaging::apply_coherent_integration(
             &mut magnitudes,
             &mut params
@@ -272,19 +322,32 @@ pub fn process_samples_for_peaks(params: &mut PeakProcessingParams) -> Vec<Peak>
         );
     }
 
-    if params.context.config.enable_exponential_smoothing {
+    if params
+        .context
+        .config
+        .peak_detection
+        .averaging
+        .exponential_smoothing
+        .enabled
+    {
         averaging::apply_exponential_smoothing(
             &mut magnitudes,
             &mut params.context.averaging_state.smoothed_magnitudes,
-            params.context.config.smoothing_alpha,
+            params
+                .context
+                .config
+                .peak_detection
+                .averaging
+                .exponential_smoothing
+                .alpha,
         );
     }
 
     // Use simple threshold detection for averaged magnitudes
     extraction::extract_peaks_from_magnitudes(
         &magnitudes,
-        params.context.config.peak_detection_threshold,
-        params.context.config.fft_size,
+        params.context.config.peak_detection.threshold,
+        params.context.config.peak_detection.fft_size,
         params.context.config.samp_rate,
         params.context.center_freq,
     )
@@ -301,48 +364,72 @@ mod tests {
     #[test]
     fn test_combined_phases_do_not_drastically_reduce_detection() {
         let mut baseline_generator = create_multi_signal_detection_scenario();
-        let baseline_config = ScanningConfig {
-            audio_buffer_size: 8192,
-            scanning_windows: Some(3),
-            fft_size: 1024,
-            peak_scan_duration: 0.5,
-            audio_analyzer: AudioAnalyzer::mock(),
+        let mut baseline_config = ScanningConfig::default();
+        baseline_config.audio.buffer_size = 8192;
+        baseline_config.audio.analyzer = AudioAnalyzer::mock();
+        baseline_config.scanning_windows = Some(3);
+        baseline_config.peak_detection.fft_size = 1024;
+        baseline_config.peak_detection.scan_duration = 0.5;
 
-            // Baseline: All features disabled
-            enable_exponential_smoothing: false,
-            enable_multi_frame_averaging: false,
-            enable_coherent_integration: false,
-            enable_moving_average_filter: false,
-            enable_cfar_detection: false,
-            enable_windowing: false,
-            enable_multi_frame_integration: false,
-
-            ..Default::default()
-        };
+        // Baseline: All features disabled
+        baseline_config
+            .peak_detection
+            .averaging
+            .exponential_smoothing
+            .enabled = false;
+        baseline_config
+            .peak_detection
+            .averaging
+            .multi_frame_averaging
+            .enabled = false;
+        baseline_config
+            .peak_detection
+            .averaging
+            .coherent_integration_enabled = false;
+        baseline_config
+            .peak_detection
+            .averaging
+            .moving_average
+            .enabled = false;
+        baseline_config.peak_detection.cfar.enabled = false;
+        baseline_config.peak_detection.windowing.enabled = false;
+        baseline_config.peak_detection.multi_frame.enabled = false;
 
         let baseline_peaks = collect_peaks_from_source(&baseline_config, &mut baseline_generator)
             .expect("Failed to collect baseline peaks");
 
         // Test with both signal averaging and CFAR enabled (exclude newer features)
         let mut combined_generator = create_multi_signal_detection_scenario();
-        let combined_config = ScanningConfig {
-            audio_buffer_size: 8192,
-            scanning_windows: Some(3),
-            fft_size: 1024,
-            peak_scan_duration: 0.5,
-            audio_analyzer: AudioAnalyzer::mock(),
+        let mut combined_config = ScanningConfig::default();
+        combined_config.audio.buffer_size = 8192;
+        combined_config.audio.analyzer = AudioAnalyzer::mock();
+        combined_config.scanning_windows = Some(3);
+        combined_config.peak_detection.fft_size = 1024;
+        combined_config.peak_detection.scan_duration = 0.5;
 
-            // Test combination: Signal averaging + CFAR enabled, newer features disabled
-            enable_exponential_smoothing: true,
-            enable_multi_frame_averaging: true,
-            enable_coherent_integration: true,
-            enable_moving_average_filter: true,
-            enable_cfar_detection: true,
-            enable_windowing: false,
-            enable_multi_frame_integration: false,
-
-            ..Default::default()
-        };
+        // Test combination: Signal averaging + CFAR enabled, newer features disabled
+        combined_config
+            .peak_detection
+            .averaging
+            .exponential_smoothing
+            .enabled = true;
+        combined_config
+            .peak_detection
+            .averaging
+            .multi_frame_averaging
+            .enabled = true;
+        combined_config
+            .peak_detection
+            .averaging
+            .coherent_integration_enabled = true;
+        combined_config
+            .peak_detection
+            .averaging
+            .moving_average
+            .enabled = true;
+        combined_config.peak_detection.cfar.enabled = true;
+        combined_config.peak_detection.windowing.enabled = false;
+        combined_config.peak_detection.multi_frame.enabled = false;
 
         let combined_peaks = collect_peaks_from_source(&combined_config, &mut combined_generator)
             .expect("Failed to collect combined peaks");

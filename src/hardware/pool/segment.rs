@@ -77,7 +77,7 @@ impl Segment {
         shutdown_token: CancellationToken,
     ) -> Result<Self> {
         // Create broadcast channel for samples (same pattern as SoapySdrManager)
-        let buffer_size_packets = 524288 / config.packet_size;
+        let buffer_size_packets = 524288 / config.signal_processing.packet_size;
         let (audio_sender, _) = tokio::sync::broadcast::channel(buffer_size_packets);
 
         // Create rustradio graph
@@ -90,8 +90,11 @@ impl Segment {
         )?;
 
         // Add BroadcastSink to send samples to broadcast channel
-        let broadcast_sink =
-            crate::broadcast::BroadcastSink::new(stream, audio_sender.clone(), config.packet_size);
+        let broadcast_sink = crate::broadcast::BroadcastSink::new(
+            stream,
+            audio_sender.clone(),
+            config.signal_processing.packet_size,
+        );
         graph.add(Box::new(broadcast_sink));
 
         // Get cancellation token from graph

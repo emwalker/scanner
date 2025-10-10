@@ -14,12 +14,10 @@ fn test_band_scan_frequency_detection() {
     let (mut file_source, metadata) =
         scanner::testing::load_iq_fixture(iq_filename).expect("Failed to load I/Q fixture");
 
-    let config = ScanningConfig {
-        fft_size: metadata.fft_size,
-        peak_detection_threshold: metadata.peak_detection_threshold,
-        samp_rate: metadata.sample_rate,
-        ..Default::default()
-    };
+    let mut config = ScanningConfig::default();
+    config.peak_detection.fft_size = metadata.fft_size;
+    config.peak_detection.threshold = metadata.peak_detection_threshold;
+    config.samp_rate = metadata.sample_rate;
 
     let peaks = scanner::signal::peaks::collect_peaks_from_source(&config, &mut file_source)
         .expect("Failed to collect peaks from I/Q file");

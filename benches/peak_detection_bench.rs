@@ -234,7 +234,7 @@ fn create_test_config() -> ScanningConfig {
         disable_squelch: false,
         squelch_threshold: scanner::audio_quality::AudioQuality::Moderate,
         disable_if_agc: false,
-        audio_analyzer: scanner::audio_quality::AudioAnalyzer::mock(),
+        audio_analyzer: scanner::audio_quality::AudioAnalyzer::pass_through(),
         // Signal averaging defaults
         enable_exponential_smoothing: false,
         smoothing_alpha: 0.3,

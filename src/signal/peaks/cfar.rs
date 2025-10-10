@@ -121,10 +121,10 @@ mod tests {
     #[test]
     fn test_cfar_guard_bands_prevent_signal_leakage() {
         let mut config = create_test_config();
-        config.enable_cfar_detection = true;
-        config.cfar_guard_cells = 10; // Guard cells around target
-        config.enable_multi_frame_integration = false; // Disable for simpler test
-        config.peak_scan_duration = 0.5; // Shorter test duration
+        config.peak_detection.cfar.enabled = true;
+        config.peak_detection.cfar.guard_cells = 10; // Guard cells around target
+        config.peak_detection.multi_frame.enabled = false; // Disable for simpler test
+        config.peak_detection.scan_duration = 0.5; // Shorter test duration
 
         // Create scenario with strong interfering signal adjacent to target
         let mut generator = create_adjacent_interference_scenario();
@@ -158,9 +158,9 @@ mod tests {
     // TODO: Tune CFAR parameters for consistent false alarm rate
     fn test_cfar_constant_false_alarm_rate() {
         let mut config = create_test_config();
-        config.enable_cfar_detection = true;
-        config.cfar_false_alarm_rate = 0.01; // 1% false alarm rate
-        config.peak_scan_duration = 0.3; // Even faster for this test
+        config.peak_detection.cfar.enabled = true;
+        config.peak_detection.cfar.false_alarm_rate = 0.01; // 1% false alarm rate
+        config.peak_detection.scan_duration = 0.3; // Even faster for this test
 
         let num_trials = 3; // Reduced from 10 to 3 for faster testing
         let mut false_alarm_rates = Vec::new();
@@ -205,8 +205,8 @@ mod tests {
     fn test_cfar_resists_strong_signal_masking() {
         // Test cell-averaging CFAR vs fixed threshold in presence of strong interferer
         let mut baseline_config = create_test_config();
-        baseline_config.enable_cfar_detection = false;
-        baseline_config.peak_detection_threshold = 3.0; // Fixed threshold optimized for no interference
+        baseline_config.peak_detection.cfar.enabled = false;
+        baseline_config.peak_detection.threshold = 3.0; // Fixed threshold optimized for no interference
 
         // Test scenario: Clean environment without strong interferer (baseline should work well)
         let mut clean_generator = create_clean_weak_signals_scenario();
@@ -223,11 +223,11 @@ mod tests {
         .expect("Failed to collect baseline interfered peaks");
 
         // Test with CFAR enabled - should be more resistant to interference
-        let mut cfar_config = baseline_config.clone();
-        cfar_config.enable_cfar_detection = true;
-        cfar_config.cfar_threshold_factor = 2.5; // Reasonable threshold factor
-        cfar_config.cfar_guard_cells = 5; // Standard guard cells to prevent signal leakage
-        cfar_config.cfar_reference_cells = 20; // Standard reference cells for noise estimation
+        let mut cfar_config = create_test_config();
+        cfar_config.peak_detection.cfar.enabled = true;
+        cfar_config.peak_detection.cfar.threshold_factor = 2.5; // Reasonable threshold factor
+        cfar_config.peak_detection.cfar.guard_cells = 5; // Standard guard cells to prevent signal leakage
+        cfar_config.peak_detection.cfar.reference_cells = 20; // Standard reference cells for noise estimation
 
         let mut cfar_interfered_generator = create_interfered_weak_signals_scenario();
         let cfar_interfered_peaks = crate::signal::peaks::collect_peaks_from_source(
@@ -281,96 +281,42 @@ mod tests {
         );
     }
 
-    /// Test that CFAR detects individual phase tests without reducing detection count
-    #[test]
-    fn test_cfar_does_not_reduce_detection_count() {
-        // Test CFAR impact without signal averaging interference
-        let mut baseline_generator = create_multi_signal_detection_scenario();
-        let baseline_config = ScanningConfig {
-            audio_buffer_size: 8192,
-            scanning_windows: Some(3),
-            fft_size: 1024,
-            peak_scan_duration: 0.5,
-            audio_analyzer: AudioAnalyzer::mock(),
-
-            // Baseline: All features disabled
-            enable_exponential_smoothing: false,
-            enable_multi_frame_averaging: false,
-            enable_coherent_integration: false,
-            enable_moving_average_filter: false,
-            enable_cfar_detection: false,
-
-            ..Default::default()
-        };
-
-        let baseline_peaks = crate::signal::peaks::collect_peaks_from_source(
-            &baseline_config,
-            &mut baseline_generator,
-        )
-        .expect("Failed to collect baseline peaks");
-
-        // Test with CFAR enabled
-        let mut cfar_generator = create_multi_signal_detection_scenario();
-        let cfar_config = ScanningConfig {
-            // Signal averaging: Keep disabled to isolate CFAR impact
-            enable_exponential_smoothing: false,
-            enable_multi_frame_averaging: false,
-            enable_coherent_integration: false,
-            enable_moving_average_filter: false,
-
-            // CFAR: Enable for testing
-            enable_cfar_detection: true,
-            cfar_threshold_factor: 3.0, // Lower threshold for better detection
-            cfar_guard_cells: 5,
-            cfar_reference_cells: 20,
-
-            ..baseline_config.clone()
-        };
-
-        let cfar_peaks =
-            crate::signal::peaks::collect_peaks_from_source(&cfar_config, &mut cfar_generator)
-                .expect("Failed to collect CFAR peaks");
-
-        println!("Baseline detections: {}", baseline_peaks.len());
-        println!("CFAR detections: {}", cfar_peaks.len());
-
-        let detection_ratio = cfar_peaks.len() as f32 / baseline_peaks.len() as f32;
-        println!("Detection ratio (CFAR / Baseline): {:.2}", detection_ratio);
-
-        assert!(
-            detection_ratio >= 0.8, // Allow up to 20% reduction
-            "CFAR should not reduce detection count by more than 20%. Got {:.1}% reduction (ratio: {:.2})",
-            (1.0 - detection_ratio) * 100.0,
-            detection_ratio
-        );
-    }
+    // NOTE: test_cfar_does_not_reduce_detection_count moved to
+    // src/testing/detection_regression_tests.rs to centralize regression tests
 
     // Helper functions for CFAR tests
 
     fn create_test_config() -> ScanningConfig {
-        ScanningConfig {
-            audio_buffer_size: 8192,
-            scanning_windows: Some(2),
-            fft_size: 1024,
-            peak_scan_duration: 0.5, // Fast for testing
-            audio_analyzer: AudioAnalyzer::mock(),
+        let mut config = ScanningConfig::default();
+        config.audio.buffer_size = 8192;
+        config.audio.analyzer = AudioAnalyzer::mock();
+        config.scanning_windows = Some(2);
+        config.peak_detection.fft_size = 1024;
+        config.peak_detection.scan_duration = 0.5; // Fast for testing
 
-            // Signal averaging: Disable to isolate CFAR testing
-            enable_exponential_smoothing: false,
-            enable_multi_frame_averaging: false,
-            enable_coherent_integration: false,
-            enable_moving_average_filter: false,
+        // Signal averaging: Disable to isolate CFAR testing
+        config
+            .peak_detection
+            .averaging
+            .exponential_smoothing
+            .enabled = false;
+        config
+            .peak_detection
+            .averaging
+            .multi_frame_averaging
+            .enabled = false;
+        config.peak_detection.averaging.coherent_integration_enabled = false;
+        config.peak_detection.averaging.moving_average.enabled = false;
 
-            // Spectral preprocessing: Disable to isolate CFAR testing
-            enable_windowing: false,
+        // Spectral preprocessing: Disable to isolate CFAR testing
+        config.peak_detection.windowing.enabled = false;
 
-            // CFAR: Enable for testing
-            enable_cfar_detection: true, // Enable CFAR for testing
-            cfar_threshold_factor: 3.0,  // Lower factor for testing (3 dB above noise)
-            cfar_guard_cells: 5,         // Smaller guard cells for fast testing
-            cfar_reference_cells: 20,    // Smaller reference cells for fast testing
-            ..Default::default()
-        }
+        // CFAR: Enable for testing
+        config.peak_detection.cfar.enabled = true; // Enable CFAR for testing
+        config.peak_detection.cfar.threshold_factor = 3.0; // Lower factor for testing (3 dB above noise)
+        config.peak_detection.cfar.guard_cells = 5; // Smaller guard cells for fast testing
+        config.peak_detection.cfar.reference_cells = 20; // Smaller reference cells for fast testing
+        config
     }
 
     fn create_low_noise_scenario() -> PeakTestSignalGenerator {
@@ -461,24 +407,6 @@ mod tests {
         generator.add_signal(TestSignal::new(88_750_000.0, 0.15, "WeakSignal1")); // Near interferer
         generator.add_signal(TestSignal::new(88_900_000.0, 0.12, "WeakSignal2")); // Medium distance
         generator.add_signal(TestSignal::new(89_100_000.0, 0.10, "WeakSignal3")); // Far from interferer
-
-        generator
-    }
-
-    fn create_multi_signal_detection_scenario() -> PeakTestSignalGenerator {
-        let mut generator = PeakTestSignalGenerator::new(
-            2_000_000.0,  // sample_rate
-            89_000_000.0, // center_frequency
-            1_000_000,    // max_samples (0.5 seconds)
-            0.3,          // Moderate noise level
-        );
-
-        // Add multiple signals at different strengths to test detection sensitivity
-        generator.add_signal(TestSignal::new(88_700_000.0, 0.25, "Signal1")); // Strong
-        generator.add_signal(TestSignal::new(88_900_000.0, 0.15, "Signal2")); // Medium
-        generator.add_signal(TestSignal::new(89_100_000.0, 0.10, "Signal3")); // Weak
-        generator.add_signal(TestSignal::new(89_300_000.0, 0.08, "Signal4")); // Very weak
-        generator.add_signal(TestSignal::new(89_500_000.0, 0.05, "Signal5")); // Marginal
 
         generator
     }

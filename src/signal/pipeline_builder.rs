@@ -89,7 +89,7 @@ impl FmPipelineBuilder {
         config: &ScanningConfig,
         stage_name: &str,
     ) -> rustradio::Result<ReadStream<Float>> {
-        let target_audio_rate = config.audio_sample_rate as f32;
+        let target_audio_rate = config.audio.sample_rate as f32;
         let resampling_ratio = target_audio_rate / quad_rate;
 
         debug!(

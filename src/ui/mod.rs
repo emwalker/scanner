@@ -7,6 +7,7 @@ pub mod display;
 pub mod tracking;
 pub mod tui;
 
+#[cfg(test)]
 use std::sync::{Arc, Mutex};
 
 /// Trait for reporting progress events during scanning operations
@@ -107,17 +108,20 @@ impl ProgressReporter for ChannelProgressReporter {
 }
 
 /// Mock progress reporter for testing that captures events
+#[cfg(test)]
 #[derive(Clone)]
 pub struct MockProgressReporter {
     events: Arc<Mutex<Vec<ProgressEvent>>>,
 }
 
+#[cfg(test)]
 impl Default for MockProgressReporter {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl MockProgressReporter {
     pub fn new() -> Self {
         Self {
@@ -146,6 +150,7 @@ impl MockProgressReporter {
     }
 }
 
+#[cfg(test)]
 impl ProgressReporter for MockProgressReporter {
     fn report(&self, event: ProgressEvent) {
         if let Ok(mut events) = self.events.lock() {

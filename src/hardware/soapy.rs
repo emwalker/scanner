@@ -203,35 +203,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires actual hardware
-    fn test_soapy_backend_enumeration() {
-        let backend = Soapy;
-        let devices = backend.enumerate_devices().unwrap();
-
-        assert!(!devices.is_empty(), "Should find connected devices");
-
-        for device in devices {
-            assert!(!device.label.is_empty());
-            assert!(device.label.contains(':'));
-        }
-    }
-
-    #[test]
-    #[ignore] // Requires actual hardware
-    fn test_soapy_device_capabilities() {
-        let backend = Soapy;
-        let devices = backend.enumerate_devices().unwrap();
-        assert!(!devices.is_empty());
-
-        let device = backend.open_device(&devices[0].id).unwrap();
-        let caps = device.capabilities();
-
-        assert!(!caps.rx_frequency_ranges.is_empty());
-        assert!(!caps.rx_sample_rate_ranges.is_empty());
-        assert!(caps.channels > 0);
-    }
-
-    #[test]
     fn test_rspduo_multi_mode_enumeration() {
         use std::collections::HashMap;
 

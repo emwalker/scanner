@@ -67,9 +67,10 @@ impl Write for &TestWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match &self.mode {
             WriterMode::Buffered(buffer) => {
-                let mut buffer = buffer.0.lock().map_err(|_| {
-                    io::Error::other("Log buffer mutex poisoned")
-                })?;
+                let mut buffer = buffer
+                    .0
+                    .lock()
+                    .map_err(|_| io::Error::other("Log buffer mutex poisoned"))?;
                 buffer.extend_from_slice(buf);
             }
             WriterMode::File(file) => {
@@ -110,9 +111,10 @@ impl Write for TestWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match &self.mode {
             WriterMode::Buffered(buffer) => {
-                let mut buffer = buffer.0.lock().map_err(|_| {
-                    io::Error::other("Log buffer mutex poisoned")
-                })?;
+                let mut buffer = buffer
+                    .0
+                    .lock()
+                    .map_err(|_| io::Error::other("Log buffer mutex poisoned"))?;
                 buffer.extend_from_slice(buf);
             }
             WriterMode::File(file) => {

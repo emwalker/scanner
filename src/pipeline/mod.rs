@@ -96,7 +96,7 @@ fn refine_frequency(
     config: &ScanningConfig,
     sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
 ) -> Result<f64> {
-    let refined_frequency = if config.disable_frequency_tracking {
+    let refined_frequency = if config.signal_processing.frequency_tracking.disabled {
         tracing::debug!(
             freq_mhz = frequency_hz / 1e6,
             "Frequency tracking disabled, using FFT estimate"
@@ -164,22 +164,21 @@ fn run_detection_analysis(
     candidate_id: &str,
     context: &AnalysisContext,
 ) -> Result<()> {
-    let station_name = format!("{:.1}FM", refined_frequency / 1e6);
-    let audio_analyzer = context.config.audio_analyzer.clone();
+    let audio_analyzer = context.config.audio.analyzer.clone();
 
     // Create detection graph
-    let (detection_graph, decision_state) = crate::signal::create_detection_graph(
-        sdr_rx,
-        context.config.samp_rate,
-        station_name,
-        context.config,
-        context.center_freq,
-        refined_frequency,
-        Some(signal_tx),
+    let graph_config = crate::signal::DetectionGraphConfig {
+        source_receiver: sdr_rx,
+        samp_rate: context.config.samp_rate,
+        config: context.config,
+        center_freq: context.center_freq,
+        tune_freq: refined_frequency,
+        signal_tx: Some(signal_tx),
         audio_analyzer,
-        Some(context.progress_reporter.clone()),
-        context.metadata.window_id,
-    )?;
+        progress_reporter: Some(context.progress_reporter.clone()),
+        window_id: context.metadata.window_id,
+    };
+    let (detection_graph, decision_state) = crate::signal::create_detection_graph(graph_config)?;
 
     let detection_cancel_token = detection_graph.cancel_token();
 
@@ -198,7 +197,7 @@ fn run_detection_analysis(
 
     let timer_handle = spawn_squelch_monitoring_thread(
         SquelchMonitoringParams {
-            squelch_learning_duration: context.config.squelch_learning_duration,
+            squelch_learning_duration: context.config.audio.squelch.learning_duration,
             refined_frequency,
             original_frequency_hz,
             candidate_id: candidate_id.to_string(),
@@ -240,14 +239,75 @@ fn spawn_detection_graph_thread(
 }
 
 /// Spawn squelch monitoring and decision thread
+fn create_progress_event(
+    event_type: crate::ui::ProgressEventType,
+    params: &SquelchMonitoringParams,
+) -> crate::ui::ProgressEvent {
+    crate::ui::ProgressEvent {
+        event_type,
+        frequency_hz: params.original_frequency_hz,
+        metadata: params.metadata,
+        candidate_id: Some(params.candidate_id.clone()),
+        audio_quality: None,
+        signal_strength: None,
+        timestamp: std::time::Instant::now(),
+        tuner_id: params.tuner_id.clone(),
+    }
+}
+
+fn handle_noise_decision(
+    params: &SquelchMonitoringParams,
+    rejection_sender: &std::sync::mpsc::Sender<crate::ui::ProgressEvent>,
+    detection_cancel_token: &rustradio::graph::CancellationToken,
+) {
+    tracing::debug!("Squelch detected noise, exiting early");
+
+    let event = create_progress_event(crate::ui::ProgressEventType::CandidateRejected, params);
+    let _ = rejection_sender.send(event);
+    detection_cancel_token.cancel();
+}
+
+fn handle_audio_decision(
+    params: &SquelchMonitoringParams,
+    rejection_sender: &std::sync::mpsc::Sender<crate::ui::ProgressEvent>,
+    detection_cancel_token: &rustradio::graph::CancellationToken,
+) {
+    tracing::debug!(
+        "squelch detected audio at {:.1} MHz",
+        params.original_frequency_hz / 1e6
+    );
+    let frequency_khz = (params.refined_frequency / 1000.0) as u64;
+    mark_frequency_as_processed(frequency_khz);
+
+    let event = create_progress_event(crate::ui::ProgressEventType::AudioAnalysisCompleted, params);
+    let _ = rejection_sender.send(event);
+
+    tracing::debug!("Audio detected, terminating detection graph");
+    detection_cancel_token.cancel();
+}
+
+fn handle_timeout(
+    params: &SquelchMonitoringParams,
+    rejection_sender: &std::sync::mpsc::Sender<crate::ui::ProgressEvent>,
+    detection_cancel_token: &rustradio::graph::CancellationToken,
+    max_wait_time: f64,
+) {
+    tracing::debug!(
+        "Squelch did not complete analysis after {:.1} seconds, moving to next candidate",
+        max_wait_time
+    );
+
+    let event = create_progress_event(crate::ui::ProgressEventType::AudioAnalysisCompleted, params);
+    let _ = rejection_sender.send(event);
+    detection_cancel_token.cancel();
+}
+
 fn spawn_squelch_monitoring_thread(
     params: SquelchMonitoringParams,
     decision_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
     detection_cancel_token: rustradio::graph::CancellationToken,
     rejection_sender: std::sync::mpsc::Sender<crate::ui::ProgressEvent>,
 ) -> std::thread::JoinHandle<()> {
-    let frequency_khz = (params.refined_frequency / 1000.0) as u64;
-
     std::thread::spawn(move || {
         let check_interval = std::time::Duration::from_millis(100);
         let max_wait_time = params.squelch_learning_duration + 1.0;
@@ -262,44 +322,11 @@ fn spawn_squelch_monitoring_thread(
 
             match current_decision {
                 crate::signal::squelch::Decision::Noise => {
-                    tracing::debug!("Squelch detected noise, exiting early");
-
-                    // Report candidate rejection
-                    let _ = rejection_sender.send(crate::ui::ProgressEvent {
-                        event_type: crate::ui::ProgressEventType::CandidateRejected,
-                        frequency_hz: params.original_frequency_hz,
-                        metadata: params.metadata,
-                        candidate_id: Some(params.candidate_id.clone()),
-                        audio_quality: None,
-                        signal_strength: None,
-                        timestamp: std::time::Instant::now(),
-                        tuner_id: params.tuner_id.clone(),
-                    });
-
-                    detection_cancel_token.cancel();
+                    handle_noise_decision(&params, &rejection_sender, &detection_cancel_token);
                     return;
                 }
                 crate::signal::squelch::Decision::Audio => {
-                    tracing::debug!(
-                        "squelch detected audio at {:.1} MHz",
-                        params.original_frequency_hz / 1e6
-                    );
-                    mark_frequency_as_processed(frequency_khz);
-
-                    // Report audio analysis completion
-                    let _ = rejection_sender.send(crate::ui::ProgressEvent {
-                        event_type: crate::ui::ProgressEventType::AudioAnalysisCompleted,
-                        frequency_hz: params.original_frequency_hz,
-                        metadata: params.metadata,
-                        candidate_id: Some(params.candidate_id.clone()),
-                        audio_quality: None,
-                        signal_strength: None,
-                        timestamp: std::time::Instant::now(),
-                        tuner_id: params.tuner_id.clone(),
-                    });
-
-                    tracing::debug!("Audio detected, terminating detection graph");
-                    detection_cancel_token.cancel();
+                    handle_audio_decision(&params, &rejection_sender, &detection_cancel_token);
                     return;
                 }
                 crate::signal::squelch::Decision::Learning => {
@@ -308,24 +335,12 @@ fn spawn_squelch_monitoring_thread(
             }
         }
 
-        tracing::debug!(
-            "Squelch did not complete analysis after {:.1} seconds, moving to next candidate",
-            max_wait_time
+        handle_timeout(
+            &params,
+            &rejection_sender,
+            &detection_cancel_token,
+            max_wait_time as f64,
         );
-
-        // Report audio analysis completion (timeout case)
-        let _ = rejection_sender.send(crate::ui::ProgressEvent {
-            event_type: crate::ui::ProgressEventType::AudioAnalysisCompleted,
-            frequency_hz: params.original_frequency_hz,
-            metadata: params.metadata,
-            candidate_id: Some(params.candidate_id.clone()),
-            audio_quality: None,
-            signal_strength: None,
-            timestamp: std::time::Instant::now(),
-            tuner_id: params.tuner_id.clone(),
-        });
-
-        detection_cancel_token.cancel();
     })
 }
 
@@ -409,36 +424,79 @@ fn wait_for_threads_completion(
     Ok(())
 }
 
+fn parse_tracking_method(
+    config: &ScanningConfig,
+) -> crate::signal::frequency_tracking::TrackingMethod {
+    use crate::signal::frequency_tracking::TrackingMethod;
+
+    match config
+        .signal_processing
+        .frequency_tracking
+        .method
+        .parse::<TrackingMethod>()
+    {
+        Ok(method) => method,
+        Err(e) => {
+            tracing::debug!(error = %e, "Invalid frequency tracking method, falling back to PLL");
+            TrackingMethod::Pll
+        }
+    }
+}
+
+fn create_tracking_config(
+    config: &ScanningConfig,
+    tracking_method: crate::signal::frequency_tracking::TrackingMethod,
+) -> crate::signal::frequency_tracking::TrackingConfig {
+    use crate::signal::frequency_tracking::TrackingConfig;
+
+    TrackingConfig {
+        method: tracking_method,
+        convergence_threshold: config.signal_processing.frequency_tracking.accuracy,
+        timeout_samples: (config.samp_rate * config.audio.squelch.learning_duration as f64 * 0.5)
+            as usize,
+        search_window: 200_000.0,
+        min_samples_for_convergence: (config.samp_rate * 0.01) as usize,
+    }
+}
+
+fn handle_tracking_state(
+    state: &crate::signal::frequency_tracking::TrackingState,
+    tracker: &dyn crate::signal::frequency_tracking::FrequencyTracker,
+) -> Option<f64> {
+    use crate::signal::frequency_tracking::TrackingState;
+
+    match state {
+        TrackingState::Converged(freq) => {
+            tracing::debug!(
+                refined_freq_mhz = freq / 1e6,
+                confidence = tracker.confidence(),
+                "Frequency tracking converged"
+            );
+            Some(*freq)
+        }
+        TrackingState::Failed => {
+            tracing::debug!("Frequency tracking failed to converge");
+            None
+        }
+        TrackingState::Timeout => {
+            tracing::debug!("Frequency tracking timed out");
+            None
+        }
+        TrackingState::Converging => None,
+    }
+}
+
 /// Run frequency tracking to refine the FFT-based frequency estimate
 fn run_frequency_tracking(
     frequency_hz: f64,
     config: &ScanningConfig,
     mut sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
 ) -> Option<f64> {
-    use crate::signal::frequency_tracking::{
-        TrackingConfig, TrackingMethod, TrackingState, create_tracker,
-    };
+    use crate::signal::frequency_tracking::create_tracker;
 
-    // Parse tracking method
-    let tracking_method = match config.frequency_tracking_method.parse::<TrackingMethod>() {
-        Ok(method) => method,
-        Err(e) => {
-            tracing::debug!(error = %e, "Invalid frequency tracking method, falling back to PLL");
-            TrackingMethod::Pll
-        }
-    };
+    let tracking_method = parse_tracking_method(config);
+    let tracking_config = create_tracking_config(config, tracking_method);
 
-    // Create tracking configuration
-    let tracking_config = TrackingConfig {
-        method: tracking_method,
-        convergence_threshold: config.tracking_accuracy,
-        timeout_samples: (config.samp_rate * config.squelch_learning_duration as f64 * 0.5)
-            as usize,
-        search_window: 200_000.0, // ±200 kHz search window for FM
-        min_samples_for_convergence: (config.samp_rate * 0.01) as usize, // 10ms minimum
-    };
-
-    // Create frequency tracker
     let mut tracker = create_tracker(
         tracking_method,
         frequency_hz,
@@ -449,7 +507,7 @@ fn run_frequency_tracking(
     tracing::debug!(
         initial_freq_mhz = frequency_hz / 1e6,
         method = format!("{:?}", tracking_method),
-        accuracy_hz = config.tracking_accuracy,
+        accuracy_hz = config.signal_processing.frequency_tracking.accuracy,
         timeout_ms = tracking_config.timeout_samples as f64 / config.samp_rate * 1000.0,
         "Starting frequency tracking"
     );
@@ -459,36 +517,24 @@ fn run_frequency_tracking(
         match sdr_rx.try_recv() {
             Ok(packet) => {
                 for &sample in packet.as_slice() {
-                    match tracker.process_sample(sample) {
-                        TrackingState::Converged(freq) => {
-                            tracing::debug!(
-                                refined_freq_mhz = freq / 1e6,
-                                confidence = tracker.confidence(),
-                                "Frequency tracking converged"
-                            );
-                            return Some(freq);
-                        }
-                        TrackingState::Failed => {
-                            tracing::debug!("Frequency tracking failed to converge");
-                            return None;
-                        }
-                        TrackingState::Timeout => {
-                            tracing::debug!("Frequency tracking timed out");
-                            return None;
-                        }
-                        TrackingState::Converging => {
-                            // Continue processing
-                        }
+                    let state = tracker.process_sample(sample);
+                    if let Some(freq) = handle_tracking_state(&state, tracker.as_ref()) {
+                        return Some(freq);
+                    }
+                    if matches!(
+                        state,
+                        crate::signal::frequency_tracking::TrackingState::Failed
+                            | crate::signal::frequency_tracking::TrackingState::Timeout
+                    ) {
+                        return None;
                     }
                 }
             }
             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
-                // No data available, continue waiting
                 std::thread::sleep(std::time::Duration::from_micros(100));
             }
             Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
                 tracing::debug!("Frequency tracking lagged behind SDR stream");
-                // Continue with next sample
             }
             Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
                 tracing::debug!("SDR stream closed during frequency tracking");
@@ -509,13 +555,12 @@ mod tests {
 
     /// Create a mock ScanningConfig for testing
     fn create_test_config() -> ScanningConfig {
-        ScanningConfig {
-            disable_frequency_tracking: true, // Disable to avoid complex tracking logic in tests
-            audio_analyzer: AudioAnalyzer::mock(),
-            squelch_learning_duration: 0.1, // Short duration for fast tests
-            samp_rate: 1_000_000.0,
-            ..Default::default()
-        }
+        let mut config = ScanningConfig::default();
+        config.signal_processing.frequency_tracking.disabled = true; // Disable to avoid complex tracking logic in tests
+        config.audio.analyzer = AudioAnalyzer::mock();
+        config.audio.squelch.learning_duration = 0.1; // Short duration for fast tests
+        config.samp_rate = 1_000_000.0;
+        config
     }
 
     /// Create a mock SDR broadcast channel with test data

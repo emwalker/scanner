@@ -85,7 +85,7 @@ impl PeakTestSignalGenerator {
     }
 }
 
-impl super::test_helpers::SampleSource for PeakTestSignalGenerator {
+impl super::helpers::SampleSource for PeakTestSignalGenerator {
     fn read_samples(&mut self, buffer: &mut [Complex]) -> Result<usize> {
         use rand::Rng;
 

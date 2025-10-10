@@ -74,7 +74,7 @@ pub fn collect_peaks(
     center_freq: f64,
 ) -> Result<Vec<Peak>> {
     debug!(
-        peak_scan_seconds = config.peak_scan_duration,
+        peak_scan_seconds = config.peak_detection.scan_duration,
         center_freq_mhz = center_freq / 1e6,
         "Starting unified peak detection scan"
     );
@@ -84,11 +84,72 @@ pub fn collect_peaks(
         sdr_rx,
         config.samp_rate,
         center_freq,
-        config.peak_scan_duration,
+        config.peak_detection.scan_duration,
     );
 
     // Use the unified peak detection implementation
     crate::signal::peaks::collect_peaks_from_source(config, &mut sdr_source)
+}
+
+fn calculate_peak_density_score(peak_count: usize, freq_span_khz: f64) -> (f64, &'static str) {
+    let peak_density = peak_count as f64 / freq_span_khz.max(1.0);
+    if peak_density > 20.0 && peak_density < 200.0 {
+        (0.3, "Good peak density")
+    } else if peak_density > 200.0 {
+        (-0.2, "High peak density (interference?)")
+    } else {
+        (0.0, "")
+    }
+}
+
+fn calculate_frequency_span_score(freq_span_khz: f64) -> (f64, &'static str) {
+    if freq_span_khz > 80.0 && freq_span_khz < 250.0 {
+        (0.3, "Appropriate spectral width")
+    } else if freq_span_khz < 15.0 {
+        (-0.3, "Narrow spectral width (sidelobe?)")
+    } else {
+        (0.0, "")
+    }
+}
+
+fn calculate_signal_consistency_score(
+    max_magnitude: f32,
+    avg_magnitude: f32,
+) -> (f64, &'static str) {
+    let magnitude_ratio = max_magnitude / avg_magnitude.max(1.0);
+    if magnitude_ratio < 3.0 {
+        (0.2, "Consistent energy")
+    } else if magnitude_ratio > 10.0 {
+        (-0.1, "Sharp peak (possible sidelobe)")
+    } else {
+        (0.0, "")
+    }
+}
+
+fn calculate_center_proximity_score(
+    target_freq_mhz: f64,
+    center_freq_mhz: f64,
+) -> (f64, &'static str) {
+    let dist_from_center_mhz = (target_freq_mhz - center_freq_mhz).abs();
+    if dist_from_center_mhz <= 0.1 {
+        (0.4, "Near center freq")
+    } else if dist_from_center_mhz <= 0.3 {
+        (0.1, "")
+    } else if dist_from_center_mhz > 0.4 {
+        (-0.2, "Far from center")
+    } else {
+        (0.0, "")
+    }
+}
+
+fn calculate_signal_strength_score(max_magnitude: f32) -> (f64, &'static str) {
+    if max_magnitude > 500.0 {
+        (0.2, "Strong signal")
+    } else if max_magnitude < 100.0 {
+        (-0.1, "Weak signal")
+    } else {
+        (0.0, "")
+    }
 }
 
 /// Analyze spectral characteristics around a frequency to determine if it's a main lobe or sidelobe
@@ -165,61 +226,49 @@ fn analyze_spectral_characteristics(
     let mut analysis_notes = Vec::new();
 
     // 1. Peak density analysis (main lobes have consistent energy distribution)
-    let peak_density = peak_count as f64 / freq_span_khz.max(1.0);
-    if peak_density > 20.0 && peak_density < 200.0 {
-        score += 0.3;
-        analysis_notes.push("Good peak density");
-    } else if peak_density > 200.0 {
-        score -= 0.2; // Too many peaks suggests broadband interference
-        analysis_notes.push("High peak density (interference?)");
+    let (density_score, density_note) = calculate_peak_density_score(peak_count, freq_span_khz);
+    score += density_score;
+    if !density_note.is_empty() {
+        analysis_notes.push(density_note);
     }
 
     // 2. Frequency span analysis (main lobes have characteristic widths)
-    // FM broadcast stations typically show energy across 150-200 kHz
-    if freq_span_khz > 80.0 && freq_span_khz < 250.0 {
-        score += 0.3;
-        analysis_notes.push("Appropriate spectral width");
-    } else if freq_span_khz < 15.0 {
-        score -= 0.3; // Too narrow suggests sidelobe
-        analysis_notes.push("Narrow spectral width (sidelobe?)");
+    let (span_score, span_note) = calculate_frequency_span_score(freq_span_khz);
+    score += span_score;
+    if !span_note.is_empty() {
+        analysis_notes.push(span_note);
     }
 
     // 3. Signal strength and consistency
-    let magnitude_ratio = max_magnitude / avg_magnitude.max(1.0);
-    if magnitude_ratio < 3.0 {
-        score += 0.2; // Consistent energy suggests main lobe
-        analysis_notes.push("Consistent energy");
-    } else if magnitude_ratio > 10.0 {
-        score -= 0.1; // Single spike suggests sidelobe
-        analysis_notes.push("Sharp peak (possible sidelobe)");
+    let (consistency_score, consistency_note) =
+        calculate_signal_consistency_score(max_magnitude, avg_magnitude);
+    score += consistency_score;
+    if !consistency_note.is_empty() {
+        analysis_notes.push(consistency_note);
     }
 
     // 4. Distance from center frequency (closer = more likely to be legitimate)
     let center_freq_mhz = center_freq / 1e6;
-    let dist_from_center_mhz = (target_freq_mhz - center_freq_mhz).abs();
-    if dist_from_center_mhz <= 0.1 {
-        score += 0.4; // Strong bonus for center frequency
-        analysis_notes.push("Near center freq");
-    } else if dist_from_center_mhz <= 0.3 {
-        score += 0.1; // Moderate bonus for nearby frequencies
-    } else if dist_from_center_mhz > 0.4 {
-        score -= 0.2; // Penalty for distant frequencies
-        analysis_notes.push("Far from center");
+    let (proximity_score, proximity_note) =
+        calculate_center_proximity_score(target_freq_mhz, center_freq_mhz);
+    score += proximity_score;
+    if !proximity_note.is_empty() {
+        analysis_notes.push(proximity_note);
     }
 
     // 5. Absolute signal strength
-    if max_magnitude > 500.0 {
-        score += 0.2;
-        analysis_notes.push("Strong signal");
-    } else if max_magnitude < 100.0 {
-        score -= 0.1;
-        analysis_notes.push("Weak signal");
+    let (strength_score, strength_note) = calculate_signal_strength_score(max_magnitude);
+    score += strength_score;
+    if !strength_note.is_empty() {
+        analysis_notes.push(strength_note);
     }
 
     let analysis_summary = analysis_notes.join(", ");
 
     // Additional debug for 88.9 MHz
     if (target_freq_mhz - 88.9).abs() < 0.01 {
+        let magnitude_ratio = max_magnitude / avg_magnitude.max(1.0);
+        let peak_density = peak_count as f64 / freq_span_khz.max(1.0);
         debug!(
             "88.9 MHz detailed analysis: peak_count={}, freq_span_khz={:.1}, max_mag={:.3}, avg_mag={:.3}, mag_ratio={:.2}, peak_density={:.1}, final_score={:.3}",
             peak_count,
@@ -326,7 +375,7 @@ pub fn find_candidates(
         debug!("score: {:.3} ({})", spectral_score, analysis_summary);
 
         // Only consider frequencies with significant spectral score
-        if spectral_score >= config.spectral_threshold {
+        if spectral_score >= config.peak_detection.spectral_threshold {
             candidates.push(create_fm_candidate(fm_freq, peaks, spectral_score));
         }
 
@@ -336,20 +385,34 @@ pub fn find_candidates(
     candidates
 }
 
+/// Configuration for creating a detection graph
+pub struct DetectionGraphConfig<'a> {
+    pub source_receiver: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
+    pub samp_rate: f64,
+    pub config: &'a ScanningConfig,
+    pub center_freq: f64,
+    pub tune_freq: f64,
+    pub signal_tx: Option<SyncSender<crate::core::types::Signal>>,
+    pub audio_analyzer: crate::audio::quality::AudioAnalyzer,
+    pub progress_reporter: Option<std::sync::Arc<dyn crate::ui::ProgressReporter + Send + Sync>>,
+    pub window_id: usize,
+}
+
 // Create rustradio detection graph for signal analysis with frequency translating filter
-#[allow(clippy::too_many_arguments)]
 pub fn create_detection_graph(
-    source_receiver: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
-    samp_rate: f64,
-    _channel_name: String,
-    config: &ScanningConfig,
-    center_freq: f64,
-    tune_freq: f64,
-    signal_tx: Option<SyncSender<crate::core::types::Signal>>,
-    audio_analyzer: crate::audio::quality::AudioAnalyzer,
-    progress_reporter: Option<std::sync::Arc<dyn crate::ui::ProgressReporter + Send + Sync>>,
-    window_id: usize,
+    graph_config: DetectionGraphConfig,
 ) -> rustradio::Result<(Graph, std::sync::Arc<std::sync::atomic::AtomicU8>)> {
+    let DetectionGraphConfig {
+        source_receiver,
+        samp_rate,
+        config,
+        center_freq,
+        tune_freq,
+        signal_tx,
+        audio_analyzer,
+        progress_reporter,
+        window_id,
+    } = graph_config;
     let mut graph = Graph::new();
 
     // MPSC Source
@@ -394,15 +457,15 @@ pub fn create_detection_graph(
     )?;
 
     // Use actual resampled rate for squelch analysis
-    let analysis_rate = config.audio_sample_rate as f32; // Now matches audio pipeline exactly
+    let analysis_rate = config.audio.sample_rate as f32; // Now matches audio pipeline exactly
 
     // Audio capture block (captures samples while passing them through)
     // Create audio capturer if requested - needed for test fixture generation
-    let audio_capturer = if let Some(ref capture_dir) = config.capture_audio {
+    let audio_capturer = if let Some(ref capture_dir) = config.capture.audio_path {
         let audio_config = crate::file::AudioCaptureConfig {
             output_dir: capture_dir.clone(),
             sample_rate: analysis_rate,
-            capture_duration: config.capture_audio_duration,
+            capture_duration: config.capture.audio_duration,
             frequency_hz: tune_freq,
             modulation_type: crate::core::types::ModulationType::WFM,
         };
@@ -424,13 +487,13 @@ pub fn create_detection_graph(
     use crate::signal::squelch::SquelchConfig;
     let squelch_config = SquelchConfig {
         sample_rate: analysis_rate, // Use current rate instead of resampled audio rate
-        learning_duration: config.squelch_learning_duration,
+        learning_duration: config.audio.squelch.learning_duration,
         signal_tx,
         frequency_hz: tune_freq,
         center_freq,
-        squelch_disabled: config.disable_squelch,
-        threshold: config.squelch_threshold,
-        fft_size: config.fft_size,
+        squelch_disabled: config.audio.squelch.disabled,
+        threshold: config.audio.squelch.threshold,
+        fft_size: config.peak_detection.fft_size,
         audio_analyzer,
         audio_capturer,
         progress_reporter,
@@ -455,7 +518,7 @@ mod tests {
 
         let config = ScanningConfig::default();
         let band = Band::Fm;
-        let windows = band.windows(config.samp_rate, config.window_overlap);
+        let windows = band.windows(config.samp_rate, config.signal_processing.window_overlap);
 
         println!("\n=== FM Band Window Analysis ===");
         println!("Sample rate: {} MHz", config.samp_rate / 1e6);
@@ -487,27 +550,32 @@ mod tests {
 
     #[test]
     fn test_collect_peaks_from_mock_source() {
-        let config = ScanningConfig {
-            duration: 1,
-            fft_size: 1024,
-            peak_detection_threshold: 0.01, // Low threshold for testing
-            peak_scan_duration: 0.1,        // Short duration for testing
-            samp_rate: 1000000.0,
-            disable_frequency_tracking: true, // Disable for test to keep existing behavior
-            audio_analyzer: AudioAnalyzer::mock(),
+        let mut config = ScanningConfig::default();
+        config.duration = 1;
+        config.peak_detection.fft_size = 1024;
+        config.peak_detection.threshold = 0.01; // Low threshold for testing
+        config.peak_detection.scan_duration = 0.1; // Short duration for testing
+        config.samp_rate = 1000000.0;
+        config.signal_processing.frequency_tracking.disabled = true; // Disable for test to keep existing behavior
+        config.audio.analyzer = AudioAnalyzer::mock();
 
-            // Disable signal averaging and CFAR features for baseline test behavior
-            enable_exponential_smoothing: false,
-            enable_multi_frame_averaging: false,
-            enable_coherent_integration: false,
-            enable_moving_average_filter: false,
-            enable_cfar_detection: false,
+        // Disable signal averaging and CFAR features for baseline test behavior
+        config
+            .peak_detection
+            .averaging
+            .exponential_smoothing
+            .enabled = false;
+        config
+            .peak_detection
+            .averaging
+            .multi_frame_averaging
+            .enabled = false;
+        config.peak_detection.averaging.coherent_integration_enabled = false;
+        config.peak_detection.averaging.moving_average.enabled = false;
+        config.peak_detection.cfar.enabled = false;
 
-            // Disable spectral preprocessing for baseline test behavior
-            enable_windowing: false,
-
-            ..Default::default()
-        };
+        // Disable spectral preprocessing for baseline test behavior
+        config.peak_detection.windowing.enabled = false;
 
         // Create mock source with a signal at +100kHz offset from center
         let mut mock_source = MockSampleSource::new(

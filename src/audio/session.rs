@@ -27,10 +27,10 @@ impl AudioSession {
         let (audio_tx, audio_rx) =
             std::sync::mpsc::sync_channel::<crate::mpsc::AudioPacket>(audio_buffer_packets);
 
-        let (audio_device, supported_config) = setup_audio_device(config.audio_sample_rate)?;
+        let (audio_device, supported_config) = setup_audio_device(config.audio.sample_rate)?;
         let sample_format = supported_config.sample_format();
         let mut stream_config: StreamConfig = supported_config.into();
-        stream_config.buffer_size = BufferSize::Fixed(config.audio_buffer_size);
+        stream_config.buffer_size = BufferSize::Fixed(config.audio.buffer_size);
 
         let stream = match sample_format {
             SampleFormat::F32 => create_audio_stream(&audio_device, &stream_config, audio_rx)?,
@@ -218,7 +218,7 @@ mod tests {
             signal_strength: 0.8,
             bandwidth_hz: 200_000.0,
             modulation: crate::core::types::ModulationType::WFM,
-            audio_sample_rate: config.audio_sample_rate,
+            audio_sample_rate: config.audio.sample_rate,
             detected_at: SystemTime::now(),
             analysis_duration_ms: 100,
             detection_center_freq: 88_900_000.0,
@@ -255,7 +255,7 @@ mod tests {
             signal_strength: 0.7,
             bandwidth_hz: 200_000.0,
             modulation: crate::core::types::ModulationType::WFM,
-            audio_sample_rate: config.audio_sample_rate,
+            audio_sample_rate: config.audio.sample_rate,
             detected_at: SystemTime::now(),
             analysis_duration_ms: 100,
             detection_center_freq: 90_800_000.0,

@@ -1925,6 +1925,7 @@ dependencies = [
  "log",
  "loom",
  "nix 0.29.0",
+ "num",
  "phf",
  "proptest",
  "rand 0.8.5",

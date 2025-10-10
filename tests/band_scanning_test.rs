@@ -7,13 +7,11 @@ use tracing::debug;
 /// Test the band scanning window calculation logic in isolation
 #[test]
 fn test_band_scanning_window_calculation() {
-    let config = ScanningConfig {
-        samp_rate: 1_000_000.0, // 1 MHz
-        ..Default::default()
-    };
+    let mut config = ScanningConfig::default();
+    config.samp_rate = 1_000_000.0; // 1 MHz
 
     let band = Band::Fm;
-    let windows = band.windows(config.samp_rate, config.window_overlap);
+    let windows = band.windows(config.samp_rate, config.signal_processing.window_overlap);
 
     debug!("=== Band Scanning Window Analysis ===");
     debug!("Sample rate: {:.1} MHz", config.samp_rate / 1e6);
@@ -218,20 +216,26 @@ fn test_peak_detection_with_synthetic_signal() {
     );
 
     // Create config with explicit values to avoid any default changes
-    let config = ScanningConfig {
-        samp_rate: sample_source.sample_rate(),
-        fft_size: 1024,
-        peak_detection_threshold: 0.3, // Signal at 89.1 MHz has magnitude ~0.304
-        enable_exponential_smoothing: false,
-        enable_multi_frame_averaging: false,
-        enable_coherent_integration: false,
-        enable_moving_average_filter: false,
-        enable_cfar_detection: false,
-        enable_windowing: false,
-        zero_padding_factor: 1,
-        enable_multi_frame_integration: false,
-        ..Default::default()
-    };
+    let mut config = ScanningConfig::default();
+    config.samp_rate = sample_source.sample_rate();
+    config.peak_detection.fft_size = 1024;
+    config.peak_detection.threshold = 0.3; // Signal at 89.1 MHz has magnitude ~0.304
+    config
+        .peak_detection
+        .averaging
+        .exponential_smoothing
+        .enabled = false;
+    config
+        .peak_detection
+        .averaging
+        .multi_frame_averaging
+        .enabled = false;
+    config.peak_detection.averaging.coherent_integration_enabled = false;
+    config.peak_detection.averaging.moving_average.enabled = false;
+    config.peak_detection.cfar.enabled = false;
+    config.peak_detection.windowing.enabled = false;
+    config.peak_detection.windowing.zero_padding_factor = 1;
+    config.peak_detection.multi_frame.enabled = false;
 
     // Process samples and find peaks
     let peaks = scanner::signal::peaks::collect_peaks_from_source(&config, &mut sample_source)

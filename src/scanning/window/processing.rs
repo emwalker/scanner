@@ -44,7 +44,7 @@ pub(super) fn debug_peaks(
     config: &ScanningConfig,
     peaks: &[crate::core::types::Peak],
 ) {
-    if config.debug_pipeline {
+    if config.debug.pipeline {
         debug!(
             message = "Band scanning window analysis",
             window_number = window_num,
@@ -117,7 +117,7 @@ pub(super) fn candidates_from_peaks(
             continue;
         }
 
-        if config.debug_pipeline {
+        if config.debug.pipeline {
             let frequency_offset = candidate_freq - center_freq;
             debug!(
                 message = "Candidate created",
@@ -151,7 +151,7 @@ pub(super) fn process_candidates(
     let (signal_tx, signal_rx) = std::sync::mpsc::sync_channel::<crate::core::types::Signal>(100);
 
     for candidate in candidates.into_iter() {
-        if ctx.config.print_candidates {
+        if ctx.config.debug.print_candidates {
             tracing::info!(
                 "candidate found at {:.1} MHz",
                 candidate.frequency_hz() / 1e6

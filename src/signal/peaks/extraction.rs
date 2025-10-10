@@ -124,23 +124,28 @@ mod tests {
     /// Test peak extraction with real signal generator
     #[test]
     fn test_extract_peaks_with_signal_generator() {
-        let config = ScanningConfig {
-            audio_buffer_size: 8192,
-            scanning_windows: Some(2),
-            fft_size: 1024,
-            peak_scan_duration: 0.5,
-            peak_detection_threshold: 1.0,
-            audio_analyzer: AudioAnalyzer::mock(),
+        let mut config = ScanningConfig::default();
+        config.audio.buffer_size = 8192;
+        config.audio.analyzer = AudioAnalyzer::mock();
+        config.scanning_windows = Some(2);
+        config.peak_detection.fft_size = 1024;
+        config.peak_detection.scan_duration = 0.5;
+        config.peak_detection.threshold = 1.0;
 
-            // Use basic extraction (no CFAR, no averaging)
-            enable_exponential_smoothing: false,
-            enable_multi_frame_averaging: false,
-            enable_coherent_integration: false,
-            enable_moving_average_filter: false,
-            enable_cfar_detection: false,
-
-            ..Default::default()
-        };
+        // Use basic extraction (no CFAR, no averaging)
+        config
+            .peak_detection
+            .averaging
+            .exponential_smoothing
+            .enabled = false;
+        config
+            .peak_detection
+            .averaging
+            .multi_frame_averaging
+            .enabled = false;
+        config.peak_detection.averaging.coherent_integration_enabled = false;
+        config.peak_detection.averaging.moving_average.enabled = false;
+        config.peak_detection.cfar.enabled = false;
 
         let mut generator = create_test_signal_scenario();
         let peaks = crate::signal::peaks::collect_peaks_from_source(&config, &mut generator)
