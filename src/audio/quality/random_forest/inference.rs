@@ -18,11 +18,10 @@ impl crate::audio::quality::Classifier for Classifier {
         let features = self.extract_features(samples)?;
 
         // Check if model is trained
-        let model = self.model.as_ref().ok_or_else(|| {
-            crate::core::types::ScannerError::ModelError(
-                "Random Forest model not trained".to_string(),
-            )
-        })?;
+        let model = self
+            .model
+            .as_ref()
+            .ok_or(crate::core::types::ScannerError::ModelNotTrained)?;
 
         // Prepare features for prediction
         let feature_vector = vec![

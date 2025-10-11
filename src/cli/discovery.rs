@@ -36,10 +36,7 @@ pub fn initialize_pool_with_device(
             );
         }
         AddDeviceResult::FilteredOut { device_id, reason } => {
-            return Err(ScannerError::HardwareNotAvailable(format!(
-                "Selected device {:?} was filtered out: {}",
-                device_id, reason
-            )));
+            return Err(ScannerError::DeviceFilteredOut { device_id, reason });
         }
         AddDeviceResult::ShutdownMode => {
             return Err(ScannerError::PoolShutdown);

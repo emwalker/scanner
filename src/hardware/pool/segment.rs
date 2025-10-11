@@ -135,9 +135,10 @@ impl Segment {
                 debug!("Pool-based SDR graph ready");
             }
             Err(_) => {
-                return Err(ScannerError::InitializationTimeout(
-                    "Pool-based SDR graph failed to initialize within 5 seconds".to_string(),
-                ));
+                return Err(ScannerError::GraphInitTimeout {
+                    component: "pool-based SDR graph".to_string(),
+                    timeout_secs: 5,
+                });
             }
         }
 

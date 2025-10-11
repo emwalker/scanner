@@ -78,24 +78,124 @@ pub enum WindowState {
     },
 }
 
+/// State: Actively scanning through windows
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scanning;
+
+impl Scanning {
+    /// Transition to Paused state
+    pub fn pause(self, at_window: usize) -> Paused {
+        Paused {
+            paused_at_window: at_window,
+        }
+    }
+
+    /// Transition to ScanComplete state
+    pub fn complete(self, windows_processed: usize) -> ScanComplete {
+        ScanComplete { windows_processed }
+    }
+}
+
+/// State: Paused at a specific window, browsing previous results
+#[derive(Debug, Clone, PartialEq)]
+pub struct Paused {
+    pub paused_at_window: usize,
+}
+
+impl Paused {
+    /// Transition to Scanning state, returning the window to resume from
+    pub fn resume(self) -> (Scanning, usize) {
+        (Scanning, self.paused_at_window)
+    }
+
+    /// Transition to Listening state
+    pub fn tune(self) -> Listening {
+        Listening {
+            paused_at_window: self.paused_at_window,
+            listening_start: Instant::now(),
+        }
+    }
+
+    /// Transition to ScanCompletePaused state
+    pub fn complete(self, windows_processed: usize) -> ScanCompletePaused {
+        ScanCompletePaused { windows_processed }
+    }
+}
+
+/// State: Listening to a specific station
+#[derive(Debug, Clone, PartialEq)]
+pub struct Listening {
+    pub paused_at_window: usize,
+    pub listening_start: Instant,
+}
+
+impl Listening {
+    /// Transition back to Paused state
+    pub fn stop_listening(self) -> Paused {
+        Paused {
+            paused_at_window: self.paused_at_window,
+        }
+    }
+
+    /// Get the duration we've been listening
+    pub fn duration(&self) -> std::time::Duration {
+        self.listening_start.elapsed()
+    }
+}
+
+/// State: Scan complete, waiting for further commands
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScanComplete {
+    pub windows_processed: usize,
+}
+
+impl ScanComplete {
+    /// Transition to ScanCompletePaused state
+    pub fn pause(self) -> ScanCompletePaused {
+        ScanCompletePaused {
+            windows_processed: self.windows_processed,
+        }
+    }
+}
+
+/// State: Scan complete and paused (browsing results)
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScanCompletePaused {
+    pub windows_processed: usize,
+}
+
+impl ScanCompletePaused {
+    /// Transition back to ScanComplete state
+    pub fn resume(self) -> ScanComplete {
+        ScanComplete {
+            windows_processed: self.windows_processed,
+        }
+    }
+}
+
+/// State: Shutting down - cleanup in progress
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShuttingDown;
+
 /// Operating mode of the scanner
+///
+/// This enum wraps typestate structs, allowing compile-time type safety
+/// for state transitions while maintaining runtime flexibility for
+/// dynamic event handling.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScanMode {
     /// Actively scanning through windows
-    Scanning,
+    Scanning(Scanning),
     /// Paused at a specific window, browsing previous results
-    Paused { paused_at_window: usize },
+    Paused(Paused),
     /// Listening to a specific station
-    Listening {
-        paused_at_window: usize,
-        listening_start: Instant,
-    },
+    Listening(Listening),
     /// Scan complete, waiting for further commands
-    ScanComplete { windows_processed: usize },
+    ScanComplete(ScanComplete),
     /// Scan complete and paused (browsing results)
-    ScanCompletePaused { windows_processed: usize },
+    ScanCompletePaused(ScanCompletePaused),
     /// Shutting down - cleanup in progress
-    ShuttingDown,
+    ShuttingDown(ShuttingDown),
 }
 
 /// Scanner state machine for managing scan/pause/resume operations
@@ -119,7 +219,7 @@ impl ScannerState {
     /// Create a new scanner state in Scanning mode
     pub fn new() -> Self {
         Self {
-            mode: ScanMode::Scanning,
+            mode: ScanMode::Scanning(Scanning),
             current_window: 0,
             window_states: HashMap::new(),
         }
@@ -156,43 +256,42 @@ impl ScannerState {
                 .insert(at_window, WindowState::NotStarted);
         }
 
-        self.mode = ScanMode::Paused {
+        self.mode = ScanMode::Paused(Paused {
             paused_at_window: at_window,
-        };
+        });
     }
 
     /// Handle resume command - returns the window to process next
     pub fn handle_resume(&mut self) -> usize {
-        let next_window = if let ScanMode::Paused { paused_at_window } = self.mode {
+        let next_window = if let ScanMode::Paused(ref paused) = self.mode {
             // Check if paused window was completed
-            match self.window_states.get(&paused_at_window) {
-                Some(WindowState::Completed { .. }) => paused_at_window + 1,
-                _ => paused_at_window, // Resume from paused window
+            match self.window_states.get(&paused.paused_at_window) {
+                Some(WindowState::Completed { .. }) => paused.paused_at_window + 1,
+                _ => paused.paused_at_window, // Resume from paused window
             }
         } else {
             self.current_window
         };
 
-        self.mode = ScanMode::Scanning;
+        self.mode = ScanMode::Scanning(Scanning);
         self.current_window = next_window;
         next_window
     }
 
     /// Handle tune to station command - transitions to Listening mode
     pub fn handle_tune(&mut self, paused_at_window: usize) {
-        self.mode = ScanMode::Listening {
+        self.mode = ScanMode::Listening(Listening {
             paused_at_window,
             listening_start: Instant::now(),
-        };
+        });
     }
 
     /// Handle stop listening command - returns to Paused mode
     pub fn handle_stop_listening(&mut self) {
-        if let ScanMode::Listening {
-            paused_at_window, ..
-        } = self.mode
-        {
-            self.mode = ScanMode::Paused { paused_at_window };
+        if let ScanMode::Listening(ref listening) = self.mode {
+            self.mode = ScanMode::Paused(Paused {
+                paused_at_window: listening.paused_at_window,
+            });
         }
     }
 
@@ -200,41 +299,41 @@ impl ScannerState {
     pub fn is_paused(&self) -> bool {
         matches!(
             self.mode,
-            ScanMode::Paused { .. } | ScanMode::ScanCompletePaused { .. }
+            ScanMode::Paused(_) | ScanMode::ScanCompletePaused(_)
         )
     }
 
     /// Check if currently listening
     pub fn is_listening(&self) -> bool {
-        matches!(self.mode, ScanMode::Listening { .. })
+        matches!(self.mode, ScanMode::Listening(_))
     }
 
     /// Check if currently scanning
     pub fn is_scanning(&self) -> bool {
-        matches!(self.mode, ScanMode::Scanning)
+        matches!(self.mode, ScanMode::Scanning(_))
     }
 
     /// Check if scan is complete
     pub fn is_scan_complete(&self) -> bool {
         matches!(
             self.mode,
-            ScanMode::ScanComplete { .. } | ScanMode::ScanCompletePaused { .. }
+            ScanMode::ScanComplete(_) | ScanMode::ScanCompletePaused(_)
         )
     }
 
     /// Check if shutting down
     pub fn is_shutting_down(&self) -> bool {
-        matches!(self.mode, ScanMode::ShuttingDown)
+        matches!(self.mode, ScanMode::ShuttingDown(_))
     }
 
     /// Mark scan as complete
     pub fn mark_scan_complete(&mut self, windows_processed: usize) {
         match self.mode {
-            ScanMode::Scanning => {
-                self.mode = ScanMode::ScanComplete { windows_processed };
+            ScanMode::Scanning(_) => {
+                self.mode = ScanMode::ScanComplete(ScanComplete { windows_processed });
             }
-            ScanMode::Paused { .. } => {
-                self.mode = ScanMode::ScanCompletePaused { windows_processed };
+            ScanMode::Paused(_) => {
+                self.mode = ScanMode::ScanCompletePaused(ScanCompletePaused { windows_processed });
             }
             _ => {}
         }
@@ -242,7 +341,7 @@ impl ScannerState {
 
     /// Transition to shutting down state
     pub fn shutdown(&mut self) {
-        self.mode = ScanMode::ShuttingDown;
+        self.mode = ScanMode::ShuttingDown(ShuttingDown);
     }
 
     /// Centralized state transition function
@@ -257,71 +356,63 @@ impl ScannerState {
         match (&self.mode, &event) {
             // Shutdown can happen from any state
             (_, ScannerEvent::Shutdown) => {
-                self.mode = ScanMode::ShuttingDown;
+                self.mode = ScanMode::ShuttingDown(ShuttingDown);
                 None
             }
 
             // Scanning -> Paused
-            (ScanMode::Scanning, ScannerEvent::Pause { at_window }) => {
+            (ScanMode::Scanning(_), ScannerEvent::Pause { at_window }) => {
                 self.handle_pause(*at_window);
                 None
             }
 
             // Paused -> Scanning
-            (ScanMode::Paused { .. }, ScannerEvent::Resume) => {
+            (ScanMode::Paused(_), ScannerEvent::Resume) => {
                 let next_window = self.handle_resume();
                 Some(next_window)
             }
 
             // Paused -> Listening
-            (
-                ScanMode::Paused {
-                    paused_at_window: _,
-                },
-                ScannerEvent::TuneToStation { at_window },
-            ) => {
+            (ScanMode::Paused(_), ScannerEvent::TuneToStation { at_window }) => {
                 self.handle_tune(*at_window);
                 None
             }
 
             // Listening -> Paused
-            (ScanMode::Listening { .. }, ScannerEvent::StopListening) => {
+            (ScanMode::Listening(_), ScannerEvent::StopListening) => {
                 self.handle_stop_listening();
                 None
             }
 
             // Scanning -> ScanComplete
-            (ScanMode::Scanning, ScannerEvent::ScanComplete { windows_processed }) => {
-                self.mode = ScanMode::ScanComplete {
+            (ScanMode::Scanning(_), ScannerEvent::ScanComplete { windows_processed }) => {
+                self.mode = ScanMode::ScanComplete(ScanComplete {
                     windows_processed: *windows_processed,
-                };
+                });
                 None
             }
 
             // Paused -> ScanCompletePaused
-            (ScanMode::Paused { .. }, ScannerEvent::ScanComplete { windows_processed }) => {
-                self.mode = ScanMode::ScanCompletePaused {
+            (ScanMode::Paused(_), ScannerEvent::ScanComplete { windows_processed }) => {
+                self.mode = ScanMode::ScanCompletePaused(ScanCompletePaused {
                     windows_processed: *windows_processed,
-                };
+                });
                 None
             }
 
             // ScanComplete -> Paused (when user pauses after scan)
-            (
-                ScanMode::ScanComplete { windows_processed },
-                ScannerEvent::Pause { at_window: _ },
-            ) => {
-                self.mode = ScanMode::ScanCompletePaused {
-                    windows_processed: *windows_processed,
-                };
+            (ScanMode::ScanComplete(complete), ScannerEvent::Pause { at_window: _ }) => {
+                self.mode = ScanMode::ScanCompletePaused(ScanCompletePaused {
+                    windows_processed: complete.windows_processed,
+                });
                 None
             }
 
             // ScanCompletePaused -> ScanComplete (when user resumes)
-            (ScanMode::ScanCompletePaused { windows_processed }, ScannerEvent::Resume) => {
-                self.mode = ScanMode::ScanComplete {
-                    windows_processed: *windows_processed,
-                };
+            (ScanMode::ScanCompletePaused(paused), ScannerEvent::Resume) => {
+                self.mode = ScanMode::ScanComplete(ScanComplete {
+                    windows_processed: paused.windows_processed,
+                });
                 None
             }
 
@@ -338,20 +429,20 @@ mod tests {
     #[test]
     fn test_transition_shutdown_from_any_state() {
         let states = vec![
-            ScanMode::Scanning,
-            ScanMode::Paused {
+            ScanMode::Scanning(Scanning),
+            ScanMode::Paused(Paused {
                 paused_at_window: 5,
-            },
-            ScanMode::Listening {
+            }),
+            ScanMode::Listening(Listening {
                 paused_at_window: 5,
                 listening_start: Instant::now(),
-            },
-            ScanMode::ScanComplete {
+            }),
+            ScanMode::ScanComplete(ScanComplete {
                 windows_processed: 10,
-            },
-            ScanMode::ScanCompletePaused {
+            }),
+            ScanMode::ScanCompletePaused(ScanCompletePaused {
                 windows_processed: 10,
-            },
+            }),
         ];
 
         for initial_state in states {
@@ -361,7 +452,7 @@ mod tests {
             state.transition(ScannerEvent::Shutdown);
 
             assert!(
-                matches!(state.mode, ScanMode::ShuttingDown),
+                matches!(state.mode, ScanMode::ShuttingDown(_)),
                 "Shutdown should work from {:?}",
                 initial_state
             );
@@ -371,16 +462,11 @@ mod tests {
     #[test]
     fn test_transition_scanning_to_paused() {
         let mut state = ScannerState::new();
-        assert!(matches!(state.mode, ScanMode::Scanning));
+        assert!(matches!(state.mode, ScanMode::Scanning(_)));
 
         state.transition(ScannerEvent::Pause { at_window: 5 });
 
-        assert!(matches!(
-            state.mode,
-            ScanMode::Paused {
-                paused_at_window: 5
-            }
-        ));
+        assert!(matches!(state.mode, ScanMode::Paused(p) if p.paused_at_window == 5));
     }
 
     #[test]
@@ -405,10 +491,10 @@ mod tests {
         assert!(state.is_listening());
         assert!(matches!(
             state.mode,
-            ScanMode::Listening {
+            ScanMode::Listening(Listening {
                 paused_at_window: 5,
                 ..
-            }
+            })
         ));
     }
 
@@ -422,12 +508,7 @@ mod tests {
         state.transition(ScannerEvent::StopListening);
 
         assert!(state.is_paused());
-        assert!(matches!(
-            state.mode,
-            ScanMode::Paused {
-                paused_at_window: 5
-            }
-        ));
+        assert!(matches!(state.mode, ScanMode::Paused(p) if p.paused_at_window == 5));
     }
 
     #[test]
@@ -440,12 +521,7 @@ mod tests {
         });
 
         assert!(state.is_scan_complete());
-        assert!(matches!(
-            state.mode,
-            ScanMode::ScanComplete {
-                windows_processed: 100
-            }
-        ));
+        assert!(matches!(state.mode, ScanMode::ScanComplete(sc) if sc.windows_processed == 100));
     }
 
     #[test]
@@ -459,55 +535,44 @@ mod tests {
 
         assert!(state.is_scan_complete());
         assert!(state.is_paused());
-        assert!(matches!(
-            state.mode,
-            ScanMode::ScanCompletePaused {
-                windows_processed: 100
-            }
-        ));
+        assert!(
+            matches!(state.mode, ScanMode::ScanCompletePaused(scp) if scp.windows_processed == 100)
+        );
     }
 
     #[test]
     fn test_transition_scan_complete_to_paused() {
         let mut state = ScannerState::new();
-        state.mode = ScanMode::ScanComplete {
+        state.mode = ScanMode::ScanComplete(ScanComplete {
             windows_processed: 100,
-        };
+        });
 
         state.transition(ScannerEvent::Pause { at_window: 50 });
 
         assert!(state.is_paused());
-        assert!(matches!(
-            state.mode,
-            ScanMode::ScanCompletePaused {
-                windows_processed: 100
-            }
-        ));
+        assert!(
+            matches!(state.mode, ScanMode::ScanCompletePaused(scp) if scp.windows_processed == 100)
+        );
     }
 
     #[test]
     fn test_transition_scan_complete_paused_to_scan_complete() {
         let mut state = ScannerState::new();
-        state.mode = ScanMode::ScanCompletePaused {
+        state.mode = ScanMode::ScanCompletePaused(ScanCompletePaused {
             windows_processed: 100,
-        };
+        });
 
         state.transition(ScannerEvent::Resume);
 
         assert!(state.is_scan_complete());
         assert!(!state.is_paused());
-        assert!(matches!(
-            state.mode,
-            ScanMode::ScanComplete {
-                windows_processed: 100
-            }
-        ));
+        assert!(matches!(state.mode, ScanMode::ScanComplete(sc) if sc.windows_processed == 100));
     }
 
     #[test]
     fn test_transition_invalid_transitions_ignored() {
         let mut state = ScannerState::new();
-        state.mode = ScanMode::Scanning;
+        state.mode = ScanMode::Scanning(Scanning);
 
         state.transition(ScannerEvent::StopListening);
 
@@ -577,12 +642,7 @@ mod tests {
 
         assert!(state.is_paused());
         assert_eq!(state.window_states.get(&5), Some(&WindowState::NotStarted));
-        assert!(matches!(
-            state.mode,
-            ScanMode::Paused {
-                paused_at_window: 5
-            }
-        ));
+        assert!(matches!(state.mode, ScanMode::Paused(p) if p.paused_at_window == 5));
     }
 
     #[test]
@@ -625,21 +685,16 @@ mod tests {
         assert!(state.is_listening());
         assert!(matches!(
             state.mode,
-            ScanMode::Listening {
+            ScanMode::Listening(Listening {
                 paused_at_window: 3,
                 ..
-            }
+            })
         ));
 
         state.handle_stop_listening();
 
         assert!(state.is_paused());
-        assert!(matches!(
-            state.mode,
-            ScanMode::Paused {
-                paused_at_window: 3
-            }
-        ));
+        assert!(matches!(state.mode, ScanMode::Paused(p) if p.paused_at_window == 3));
     }
 
     #[test]

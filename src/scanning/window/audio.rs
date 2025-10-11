@@ -16,18 +16,21 @@ pub fn setup_audio_device(
     let host = cpal::default_host();
     let audio_device = host
         .default_output_device()
-        .expect("no output device available");
+        .ok_or_else(|| ScannerError::Custom("No audio output device available".to_string()))?;
 
-    let supported_configs_range = audio_device
-        .supported_output_configs()
-        .expect("error while querying configs");
+    let supported_configs_range = audio_device.supported_output_configs()?;
 
     let supported_config = supported_configs_range
         .filter(|d| d.sample_format() == SampleFormat::F32)
         .find(|d| {
             d.min_sample_rate().0 <= audio_sample_rate && d.max_sample_rate().0 >= audio_sample_rate
         })
-        .expect("no supported config found")
+        .ok_or_else(|| {
+            ScannerError::UnsupportedAudioFormat(format!(
+                "No F32 audio config found for sample rate {}",
+                audio_sample_rate
+            ))
+        })?
         .with_sample_rate(cpal::SampleRate(audio_sample_rate));
 
     Ok((audio_device, supported_config))

@@ -45,12 +45,7 @@ fn test_scanner_state_pause_marks_incomplete_window() {
 
     // Window should be marked as NotStarted for idempotent resume
     assert_eq!(state.window_states.get(&5), Some(&WindowState::NotStarted));
-    assert!(matches!(
-        state.mode,
-        ScanMode::Paused {
-            paused_at_window: 5
-        }
-    ));
+    assert!(matches!(state.mode, ScanMode::Paused(ref p) if p.paused_at_window == 5));
 }
 
 #[test]
@@ -213,38 +208,25 @@ fn test_scanner_state_mode_invariants() {
     let mut state = ScannerState::new();
 
     // Start in Scanning mode
-    assert!(matches!(state.mode, ScanMode::Scanning));
+    assert!(matches!(state.mode, ScanMode::Scanning(_)));
 
     // Pause transitions to Paused
     state.start_window(1);
     state.handle_pause(1);
-    assert!(matches!(
-        state.mode,
-        ScanMode::Paused {
-            paused_at_window: 1
-        }
-    ));
+    assert!(matches!(state.mode, ScanMode::Paused(ref p) if p.paused_at_window == 1));
 
     // Tune transitions to Listening
     state.handle_tune(1);
     assert!(matches!(
         state.mode,
-        ScanMode::Listening {
-            paused_at_window: 1,
-            ..
-        }
+        ScanMode::Listening(ref l) if l.paused_at_window == 1
     ));
 
     // StopListening returns to Paused
     state.handle_stop_listening();
-    assert!(matches!(
-        state.mode,
-        ScanMode::Paused {
-            paused_at_window: 1
-        }
-    ));
+    assert!(matches!(state.mode, ScanMode::Paused(ref p) if p.paused_at_window == 1));
 
     // Resume returns to Scanning
     state.handle_resume();
-    assert!(matches!(state.mode, ScanMode::Scanning));
+    assert!(matches!(state.mode, ScanMode::Scanning(_)));
 }

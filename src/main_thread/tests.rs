@@ -86,7 +86,7 @@ fn test_main_thread_creation() {
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
     let main_thread = MainThread::new(
-        config,
+        Arc::new(config),
         console_writer,
         logger,
         backend,
@@ -105,7 +105,7 @@ fn test_main_thread_run_with_mock_tuner() {
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
     let _main_thread = MainThread::new(
-        config,
+        Arc::new(config),
         console_writer,
         logger,
         backend,
@@ -128,7 +128,7 @@ fn test_console_output() {
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
     let main_thread = MainThread::new(
-        config,
+        Arc::new(config),
         console_writer,
         logger,
         backend,
@@ -153,7 +153,7 @@ fn test_parse_stations() {
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
     let main_thread = MainThread::new(
-        config,
+        Arc::new(config),
         console_writer,
         logger,
         backend,
@@ -177,7 +177,7 @@ fn test_parse_stations_invalid() {
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
     let main_thread = MainThread::new(
-        config,
+        Arc::new(config),
         console_writer,
         logger,
         backend,
@@ -199,7 +199,7 @@ fn test_pool_initialization() {
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
     let main_thread = MainThread::new(
-        config,
+        Arc::new(config),
         console_writer,
         logger,
         backend,
@@ -225,7 +225,7 @@ fn test_pool_shutdown_on_drop() {
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
     let main_thread = MainThread::new(
-        config,
+        Arc::new(config),
         console_writer,
         logger,
         backend,

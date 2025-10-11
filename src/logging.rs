@@ -1,4 +1,4 @@
-use crate::core::types::{Format, Logger, Result, ScannerError};
+use crate::core::types::{Format, Logger, Result};
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use tracing::Level;
@@ -256,10 +256,7 @@ impl Logger for DefaultLogger {
                 .create(true)
                 .write(true)
                 .truncate(true)
-                .open(log_file_path)
-                .map_err(|e| {
-                    ScannerError::ConfigurationError(format!("Failed to open log file: {}", e))
-                })?;
+                .open(log_file_path)?;
             let file_writer = FileWriter::new(file);
 
             match self.format {
@@ -269,8 +266,7 @@ impl Logger for DefaultLogger {
                         .with_max_level(level)
                         .with_writer(file_writer)
                         .finish();
-                    tracing::subscriber::set_global_default(subscriber)
-                        .expect("setting default subscriber failed");
+                    tracing::subscriber::set_global_default(subscriber)?;
                 }
                 Format::Text => {
                     let subscriber = FmtSubscriber::builder()
@@ -280,8 +276,7 @@ impl Logger for DefaultLogger {
                         .with_target(false)
                         .with_level(false)
                         .finish();
-                    tracing::subscriber::set_global_default(subscriber)
-                        .expect("setting default subscriber failed");
+                    tracing::subscriber::set_global_default(subscriber)?;
                 }
                 Format::Log => {
                     let subscriber = FmtSubscriber::builder()
@@ -289,8 +284,7 @@ impl Logger for DefaultLogger {
                         .with_writer(file_writer)
                         .with_target(false)
                         .finish();
-                    tracing::subscriber::set_global_default(subscriber)
-                        .expect("setting default subscriber failed");
+                    tracing::subscriber::set_global_default(subscriber)?;
                 }
             }
         } else {
@@ -303,8 +297,7 @@ impl Logger for DefaultLogger {
                         .with_max_level(level)
                         .with_writer(immediate_writer)
                         .finish();
-                    tracing::subscriber::set_global_default(subscriber)
-                        .expect("setting default subscriber failed");
+                    tracing::subscriber::set_global_default(subscriber)?;
                 }
                 Format::Text => {
                     let subscriber = FmtSubscriber::builder()
@@ -314,8 +307,7 @@ impl Logger for DefaultLogger {
                         .with_target(false)
                         .with_level(false)
                         .finish();
-                    tracing::subscriber::set_global_default(subscriber)
-                        .expect("setting default subscriber failed");
+                    tracing::subscriber::set_global_default(subscriber)?;
                 }
                 Format::Log => {
                     let subscriber = FmtSubscriber::builder()
@@ -323,8 +315,7 @@ impl Logger for DefaultLogger {
                         .with_writer(immediate_writer)
                         .with_target(false)
                         .finish();
-                    tracing::subscriber::set_global_default(subscriber)
-                        .expect("setting default subscriber failed");
+                    tracing::subscriber::set_global_default(subscriber)?;
                 }
             }
         }

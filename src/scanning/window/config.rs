@@ -16,7 +16,7 @@ pub struct WindowConfig {
     pub window_num: usize,
     pub total_windows: usize,
     pub tuner_provider: Arc<dyn TunerProvider>,
-    pub config: ScanningConfig,
+    pub config: Arc<ScanningConfig>,
     pub progress_reporter: Arc<dyn ProgressReporter>,
     pub shutdown_coordinator: Arc<ShutdownCoordinator>,
     pub pause_signal: Option<PauseSignal>,

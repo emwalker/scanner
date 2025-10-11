@@ -30,7 +30,7 @@ pub fn run_headless(
     let backend = Arc::new(crate::hardware::Soapy);
 
     let main_thread = MainThread::new(
-        config,
+        Arc::new(config),
         console_writer,
         logger,
         backend,

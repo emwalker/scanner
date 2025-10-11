@@ -15,7 +15,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use tracing::{debug, info};
 
 pub struct MainThread {
-    config: ScanningConfig,
+    config: Arc<ScanningConfig>,
     console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
     _logger: Arc<dyn Logger + Send + Sync>,
     _backend: Arc<dyn crate::hardware::Backend>,
@@ -31,7 +31,7 @@ pub struct MainThread {
 
 impl MainThread {
     pub fn new(
-        config: ScanningConfig,
+        config: Arc<ScanningConfig>,
         console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
         logger: Arc<dyn Logger + Send + Sync>,
         backend: Arc<dyn crate::hardware::Backend>,
@@ -59,7 +59,7 @@ impl MainThread {
     }
 
     pub fn new_with_progress(
-        config: ScanningConfig,
+        config: Arc<ScanningConfig>,
         console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
         logger: Arc<dyn Logger + Send + Sync>,
         backend: Arc<dyn crate::hardware::Backend>,

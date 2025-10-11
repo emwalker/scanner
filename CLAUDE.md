@@ -41,6 +41,9 @@ This ensures we avoid any licensing concerns while still learning from the broad
     - Exception: `use super::*;` is acceptable in test modules (`#[cfg(test)]`)
   - Exception: For enum variants, prefer keeping the enum name (e.g., `Status::Success` not `Success`)
 - Return results instead of panicking, even in "impossible" code paths
+- **Error handling with unwrap/expect:**
+  - ✅ **In tests**: `unwrap()` and `expect()` are acceptable and idiomatic - tests should fail fast on unexpected conditions
+  - ❌ **In runtime/production code**: Don't use `unwrap()` or `expect()` - use proper error handling with `Result`/`Option` and the `?` operator
 
 ### Shutdown Safety
 

@@ -1,6 +1,5 @@
 use super::MainThread;
 use super::state_manager;
-use crate::audio::session::AudioSession;
 use crate::core::types::{Result, ScannerError};
 use crate::scanning::window::Window;
 use crate::signal;
@@ -67,90 +66,15 @@ impl MainThread {
             None => window_centers.len(),
         };
 
-        let mut i: usize = 0;
-        let mut audio_session: Option<AudioSession> = None;
+        let mut context = state_manager::ScanContext::new(self, window_centers, windows_to_process);
 
         loop {
-            if self.shutdown_coordinator.is_shutdown() {
-                self.scanner_state.shutdown();
-            }
-
-            let control = match &self.scanner_state.mode {
-                crate::scanner_state::ScanMode::ShuttingDown => {
-                    debug!("Shutdown requested, stopping band scanning");
-                    state_manager::LoopControl::Break
-                }
-                crate::scanner_state::ScanMode::ScanComplete { .. } => {
-                    self.check_and_handle_command(windows_to_process, &mut audio_session)?;
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    state_manager::LoopControl::Continue
-                }
-                crate::scanner_state::ScanMode::ScanCompletePaused { .. } => {
-                    self.process_commands(
-                        windows_to_process,
-                        window_centers.len(),
-                        &mut audio_session,
-                    )?;
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    state_manager::LoopControl::Continue
-                }
-                crate::scanner_state::ScanMode::Paused { .. } => {
-                    if !i.is_multiple_of(50) {
-                        debug!(
-                            iteration = i,
-                            total = windows_to_process,
-                            "Paused - waiting for commands"
-                        );
-                    }
-                    self.process_commands(i + 1, window_centers.len(), &mut audio_session)?;
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    state_manager::LoopControl::Continue
-                }
-                crate::scanner_state::ScanMode::Listening { .. } => {
-                    self.process_commands(i + 1, window_centers.len(), &mut audio_session)?;
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    state_manager::LoopControl::Continue
-                }
-                crate::scanner_state::ScanMode::Scanning => {
-                    if i >= windows_to_process {
-                        debug!("Scan band complete - all windows processed");
-                        self.scanner_state.mark_scan_complete(windows_to_process);
-                        state_manager::LoopControl::Continue
-                    } else {
-                        debug!(
-                            iteration = i,
-                            total = windows_to_process,
-                            "Start of scan loop iteration"
-                        );
-
-                        if self.process_commands_with_pause_check(
-                            i + 1,
-                            window_centers.len(),
-                            &mut audio_session,
-                        )? {
-                            state_manager::LoopControl::Continue
-                        } else {
-                            let center_freq = window_centers[i];
-                            self.process_window(i + 1, center_freq, window_centers.len())?;
-                            self.process_commands(i + 1, window_centers.len(), &mut audio_session)?;
-
-                            debug!(
-                                completed_window = i + 1,
-                                next_window = i + 2,
-                                remaining = windows_to_process - i - 1,
-                                "Window complete, advancing to next"
-                            );
-
-                            state_manager::LoopControl::Advance
-                        }
-                    }
-                }
-            };
+            let control = context.determine_next_action()?;
 
             match control {
                 state_manager::LoopControl::Break => break,
                 state_manager::LoopControl::Continue => continue,
-                state_manager::LoopControl::Advance => i += 1,
+                state_manager::LoopControl::Advance => context.advance(),
             }
         }
 

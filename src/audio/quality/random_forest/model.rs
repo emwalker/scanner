@@ -50,17 +50,18 @@ impl Classifier {
         let saved: SavedClassifier = bincode::deserialize_from(reader)?;
 
         if saved.serializable_data.is_none() {
-            return Err(crate::core::types::ScannerError::ModelError(
-                "Loaded model file contains no training data".to_string(),
-            ));
+            return Err(crate::core::types::ScannerError::InvalidModelFile {
+                path: std::path::PathBuf::from(model_path),
+                reason: "Model file contains no training data".to_string(),
+            });
         }
 
         // Validate model compatibility
         if saved.feature_count != 11 {
-            return Err(crate::core::types::ScannerError::ModelError(format!(
-                "Model feature count mismatch: expected 11, got {}",
-                saved.feature_count
-            )));
+            return Err(crate::core::types::ScannerError::ModelFeatureMismatch {
+                expected: 11,
+                actual: saved.feature_count,
+            });
         }
 
         debug!(
@@ -96,9 +97,9 @@ impl Classifier {
         use std::io::BufWriter;
 
         if self.serializable_data.is_none() {
-            return Err(crate::core::types::ScannerError::ModelError(
-                "Cannot save model: no training data available".to_string(),
-            ));
+            return Err(crate::core::types::ScannerError::ModelSaveFailed {
+                reason: "No training data available".to_string(),
+            });
         }
 
         debug!(model_path = %model_path, "Saving trained Random Forest model");
@@ -116,9 +117,9 @@ impl Classifier {
         }
 
         let serializable_data = self.serializable_data.as_ref().ok_or_else(|| {
-            crate::core::types::ScannerError::ModelError(
-                "Internal error: serializable_data missing after validation".to_string(),
-            )
+            crate::core::types::ScannerError::ModelSaveFailed {
+                reason: "Internal error: serializable_data missing after validation".to_string(),
+            }
         })?;
         let current_time = chrono::Utc::now().to_rfc3339();
 
@@ -150,9 +151,10 @@ impl Classifier {
     /// Rebuild model from serializable data
     pub(super) fn rebuild_model(&mut self) -> crate::core::types::Result<()> {
         let serializable_data = self.serializable_data.as_ref().ok_or_else(|| {
-            crate::core::types::ScannerError::ModelError(
-                "No training data available to rebuild model".to_string(),
-            )
+            crate::core::types::ScannerError::InsufficientTrainingData {
+                samples: 0,
+                required: 1,
+            }
         })?;
 
         debug!("Rebuilding Random Forest model from serialized training data");
@@ -185,9 +187,7 @@ impl Classifier {
         samples: &[f32],
     ) -> crate::core::types::Result<crate::audio::quality::AudioFeatures> {
         if samples.is_empty() {
-            return Err(crate::core::types::ScannerError::SignalProcessingFailed(
-                "Empty audio samples".to_string(),
-            ));
+            return Err(crate::core::types::ScannerError::EmptyAudioBuffer { min_samples: 1 });
         }
 
         // 1. Energy-based features

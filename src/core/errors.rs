@@ -40,8 +40,6 @@ pub enum ScannerError {
     Hound(#[from] hound::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    #[error("I/Q capture error: {0}")]
-    IqCapture(String),
     #[error(transparent)]
     Log(#[from] log::SetLoggerError),
     #[error(transparent)]
@@ -78,6 +76,50 @@ pub enum ScannerError {
     ThreadJoin(Box<dyn std::any::Any + Send>),
     #[error("Failed to set tracing subscriber")]
     TracingSubscriber(#[from] tracing::subscriber::SetGlobalDefaultError),
+    // Hardware discovery and configuration errors
+    #[error("No SDR devices found (backends tried: {backends:?})")]
+    NoSdrDevicesFound { backends: Vec<String> },
+    #[error("Device {device_id:?} filtered out: {reason}")]
+    DeviceFilteredOut {
+        device_id: crate::hardware::DeviceId,
+        reason: String,
+    },
+    #[error("Backend '{backend}' does not support device ID format {device_format}")]
+    UnsupportedDeviceIdFormat {
+        backend: String,
+        device_format: String,
+    },
+    #[error("Invalid squelch threshold '{value}'. Valid values: {valid_values}")]
+    InvalidSquelchThreshold {
+        value: String,
+        valid_values: &'static str,
+    },
+    #[error("Invalid theme '{theme}': {reason}")]
+    InvalidTheme { theme: String, reason: String },
+    #[error("I/Q capture limit reached: {count} files for {frequency} Hz (max: 999)")]
+    IqCaptureMaxFiles { frequency: f64, count: usize },
+    // ML model errors
+    #[error("ML model not trained - call train() before using")]
+    ModelNotTrained,
+    #[error("Insufficient training data: {samples} samples found, need at least {required}")]
+    InsufficientTrainingData { samples: usize, required: usize },
+    #[error("Model file {path} is invalid: {reason}")]
+    InvalidModelFile {
+        path: std::path::PathBuf,
+        reason: String,
+    },
+    #[error("Model incompatible: expected {expected} features, got {actual}")]
+    ModelFeatureMismatch { expected: usize, actual: usize },
+    #[error("Model save failed: {reason}")]
+    ModelSaveFailed { reason: String },
+    // Initialization and validation errors
+    #[error("Graph initialization timeout after {timeout_secs}s (component: {component})")]
+    GraphInitTimeout {
+        component: String,
+        timeout_secs: u64,
+    },
+    #[error("Audio buffer is empty (expected at least {min_samples} samples)")]
+    EmptyAudioBuffer { min_samples: usize },
 }
 
 pub type Result<T> = std::result::Result<T, ScannerError>;

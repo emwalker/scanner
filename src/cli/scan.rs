@@ -27,16 +27,16 @@ pub fn handle_scan_command(args: ScanArgs) -> Result<()> {
     let discovered_devices = crate::discovery::enumerate_once(&backends, driver_filter)?;
 
     if discovered_devices.is_empty() {
-        return Err(ScannerError::HardwareNotAvailable(
-            "No SDR devices found".to_string(),
-        ));
+        return Err(ScannerError::NoSdrDevicesFound {
+            backends: vec!["sdrplay".to_string()],
+        });
     }
 
     let selected_device = &discovered_devices[0];
     let selected_tuner_id = selected_device.id.clone();
 
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
-    setup_signal_handler(shutdown_coordinator.clone());
+    setup_signal_handler(shutdown_coordinator.clone())?;
 
     if !args.headless {
         run_tui_mode(&args, config, shutdown_coordinator, selected_tuner_id)
@@ -64,7 +64,10 @@ fn run_tui_mode(
     let theme_name = args
         .theme
         .parse::<ThemeName>()
-        .map_err(|e| ScannerError::ConfigurationError(format!("Invalid theme: {}", e)))?;
+        .map_err(|e| ScannerError::InvalidTheme {
+            theme: args.theme.clone(),
+            reason: e.to_string(),
+        })?;
 
     let (command_sender, command_receiver) = std::sync::mpsc::channel();
     tui_context.command_receiver = command_receiver;

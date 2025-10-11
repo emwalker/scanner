@@ -1,9 +1,10 @@
+use crate::core::types::Result;
 use crate::hardware::soapy;
 use crate::shutdown::ShutdownCoordinator;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub fn setup_signal_handler(shutdown_coordinator: Arc<ShutdownCoordinator>) {
+pub fn setup_signal_handler(shutdown_coordinator: Arc<ShutdownCoordinator>) -> Result<()> {
     static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
     #[allow(clippy::print_stderr)]
@@ -19,5 +20,8 @@ pub fn setup_signal_handler(shutdown_coordinator: Arc<ShutdownCoordinator>) {
             shutdown_coordinator.shutdown();
         }
     })
-    .expect("Failed to set signal handler");
+    .map_err(|e| {
+        crate::core::types::ScannerError::Custom(format!("Failed to set signal handler: {}", e))
+    })?;
+    Ok(())
 }

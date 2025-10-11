@@ -106,7 +106,7 @@ pub fn run_with_tui(
     let backend = Arc::new(crate::hardware::Soapy);
 
     let main_thread = MainThread::new_with_progress(
-        config,
+        Arc::new(config),
         console_writer,
         logger,
         backend,

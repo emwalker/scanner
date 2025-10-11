@@ -26,7 +26,7 @@ pub struct Window {
     total_windows: usize,
     station_mode: bool,
     tuner_provider: Arc<dyn TunerProvider>,
-    config: ScanningConfig,
+    config: Arc<ScanningConfig>,
     progress_reporter: Arc<dyn ProgressReporter>,
     shutdown_token: CancellationToken,
     metadata: WindowMetadata,
@@ -57,7 +57,7 @@ impl Window {
         window_num: usize,
         total_windows: usize,
         tuner_provider: Arc<dyn TunerProvider>,
-        config: ScanningConfig,
+        config: Arc<ScanningConfig>,
         progress_reporter: Arc<dyn ProgressReporter>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
     ) -> Self {

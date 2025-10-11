@@ -56,9 +56,10 @@ impl Classifier {
         }
 
         if features_matrix.is_empty() {
-            return Err(crate::core::types::ScannerError::ModelError(
-                "No training data available".to_string(),
-            ));
+            return Err(crate::core::types::ScannerError::InsufficientTrainingData {
+                samples: 0,
+                required: 1,
+            });
         }
 
         // Convert to DenseMatrix format
