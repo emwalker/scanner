@@ -61,11 +61,11 @@ impl MultiEnumerator {
     }
 }
 
-pub struct BackendEnumerator {
+pub struct DirectEnumerator {
     pub backends: Vec<Box<dyn hardware::Backend>>,
 }
 
-impl DeviceEnumerator for BackendEnumerator {
+impl DeviceEnumerator for DirectEnumerator {
     fn enumerate(&self) -> Result<Vec<hardware::DeviceInfo>, Box<dyn std::error::Error>> {
         let mut devices = Vec::new();
         for backend in &self.backends {
@@ -77,7 +77,111 @@ impl DeviceEnumerator for BackendEnumerator {
     }
 
     fn name(&self) -> &str {
-        "backend"
+        "direct"
+    }
+}
+
+pub struct SubprocessEnumerator {
+    backend_name: String,
+}
+
+impl SubprocessEnumerator {
+    pub fn new(backend_name: String) -> Self {
+        Self { backend_name }
+    }
+
+    fn spawn_and_enumerate(&self) -> Result<Vec<hardware::DeviceInfo>, Box<dyn std::error::Error>> {
+        use crate::ipc::{ControlChannel, ControlMessage, UnixControlChannel};
+        use std::env;
+        use std::os::unix::net::UnixStream;
+        use std::path::Path;
+        use std::process::{Command, Stdio};
+        use std::thread;
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+        debug!(backend = %self.backend_name, "Starting subprocess enumeration");
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let socket_path = format!(
+            "/tmp/scanner-enum-{}-{}-{}.sock",
+            self.backend_name,
+            std::process::id(),
+            timestamp
+        );
+
+        debug!(socket_path = %socket_path, "Generated socket path");
+
+        let mut cmd = Command::new(env::current_exe()?);
+        cmd.arg("worker")
+            .arg("enumerate")
+            .arg("--backend")
+            .arg(&self.backend_name)
+            .arg("--socket-path")
+            .arg(&socket_path);
+
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        debug!("Spawning worker subprocess");
+        let mut child = cmd.spawn()?;
+        debug!(pid = %child.id(), "Worker subprocess spawned");
+
+        let start = Instant::now();
+        while !Path::new(&socket_path).exists() {
+            if start.elapsed() > Duration::from_secs(5) {
+                let _ = child.kill();
+                return Err(format!(
+                    "Socket creation timeout for backend '{}'",
+                    self.backend_name
+                )
+                .into());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        debug!("Connecting to worker socket");
+        let stream = UnixStream::connect(&socket_path)?;
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let mut channel = UnixControlChannel::new(stream);
+
+        debug!("Waiting for response from worker");
+        let message = channel.recv()?;
+
+        match message {
+            ControlMessage::DeviceList { devices } => {
+                debug!(device_count = devices.len(), "Received device list");
+                let _ = child.wait();
+                Ok(devices)
+            }
+            ControlMessage::Error { message, .. } => {
+                debug!(error = %message, "Received error from worker");
+                let _ = child.wait();
+                Err(format!(
+                    "Enumeration error from '{}': {}",
+                    self.backend_name, message
+                )
+                .into())
+            }
+            _ => {
+                debug!("Received unexpected message type");
+                let _ = child.kill();
+                Err(format!("Unexpected message from '{}' worker", self.backend_name).into())
+            }
+        }
+    }
+}
+
+impl DeviceEnumerator for SubprocessEnumerator {
+    fn enumerate(&self) -> Result<Vec<hardware::DeviceInfo>, Box<dyn std::error::Error>> {
+        self.spawn_and_enumerate()
+    }
+
+    fn name(&self) -> &str {
+        &self.backend_name
     }
 }
 
@@ -183,13 +287,13 @@ mod tests {
     use crate::hardware::Mock;
 
     #[test]
-    fn test_backend_enumerator() {
+    fn test_direct_enumerator() {
         let backends: Vec<Box<dyn crate::hardware::Backend>> = vec![Box::new(Mock)];
-        let enumerator = BackendEnumerator { backends };
+        let enumerator = DirectEnumerator { backends };
 
         let devices = enumerator.enumerate().unwrap();
         assert_eq!(devices.len(), 2);
-        assert_eq!(enumerator.name(), "backend");
+        assert_eq!(enumerator.name(), "direct");
     }
 
     #[test]
@@ -197,7 +301,7 @@ mod tests {
         let backends: Vec<Box<dyn crate::hardware::Backend>> = vec![Box::new(Mock)];
         let enumerator = MultiEnumerator {
             enumerators: vec![(
-                Box::new(BackendEnumerator { backends }),
+                Box::new(DirectEnumerator { backends }),
                 SourcePriority::Backend,
             )],
         };
@@ -214,11 +318,11 @@ mod tests {
         let enumerator = MultiEnumerator {
             enumerators: vec![
                 (
-                    Box::new(BackendEnumerator { backends: mock1 }),
+                    Box::new(DirectEnumerator { backends: mock1 }),
                     SourcePriority::UsbInspection,
                 ),
                 (
-                    Box::new(BackendEnumerator { backends: mock2 }),
+                    Box::new(DirectEnumerator { backends: mock2 }),
                     SourcePriority::Backend,
                 ),
             ],
@@ -233,7 +337,7 @@ mod tests {
         let backends: Vec<Box<dyn crate::hardware::Backend>> = vec![Box::new(Mock)];
         let enumerator = MultiEnumerator {
             enumerators: vec![(
-                Box::new(BackendEnumerator { backends }),
+                Box::new(DirectEnumerator { backends }),
                 SourcePriority::Backend,
             )],
         };

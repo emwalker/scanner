@@ -49,12 +49,22 @@ pub fn initialize_pool_with_device(
     Ok(pool)
 }
 
+/// Start discovery service with pre-enumerated devices
+///
+/// SDRplay driver limitation: Opening an SDRplay device prevents subsequent enumerations
+/// from seeing any SDRplay devices, even in separate processes. To work around this:
+/// 1. Enumerate all devices once at startup before opening any devices
+/// 2. Send those cached devices to the TUI immediately
+/// 3. Discovery service continues monitoring for USB hotplug events for other device types
+///
+/// See docs/research/2025-10-process-safety.md for details.
 pub fn start_discovery_service(
     tui_event_sender: mpsc::Sender<TuiEvent>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
+    initial_devices: Vec<crate::hardware::DeviceInfo>,
 ) -> Result<DiscoverySetup> {
-    let backends: Vec<Box<dyn Backend>> = vec![Box::new(crate::hardware::Soapy)];
-    let mut discovery_service = discovery::create(backends, DiscoveryMode::Auto);
+    let backend_names = vec!["soapy".to_string()];
+    let mut discovery_service = discovery::create(backend_names, DiscoveryMode::Auto);
 
     let (discovery_sender, discovery_receiver) = mpsc::channel();
 
@@ -63,6 +73,19 @@ pub fn start_discovery_service(
         let shutdown = shutdown_coordinator.clone();
 
         thread::spawn(move || {
+            // Send pre-enumerated devices immediately (workaround for SDRplay limitation)
+            for device in initial_devices {
+                if shutdown.is_shutdown() {
+                    return;
+                }
+
+                let tui_event = TuiEvent::TunerAdded(device);
+                if tui_sender.send(tui_event).is_err() {
+                    return;
+                }
+            }
+
+            // Continue monitoring for hotplug events
             while let Ok(event) = discovery_receiver.recv() {
                 if shutdown.is_shutdown() {
                     return;
@@ -70,22 +93,12 @@ pub fn start_discovery_service(
 
                 match &event {
                     discovery::Event::Added(device_info) => {
-                        tracing::debug!(
-                            device_id = ?device_info.id,
-                            "Discovery event: device detected (not added to pool - hot-plug not yet implemented)"
-                        );
-
                         let tui_event = TuiEvent::TunerAdded(device_info.clone());
                         if tui_sender.send(tui_event).is_err() {
                             return;
                         }
                     }
                     discovery::Event::Removed(device_id) => {
-                        tracing::debug!(
-                            device_id = ?device_id,
-                            "Discovery event: device removed (hot-unplug not yet implemented)"
-                        );
-
                         let tui_event = TuiEvent::TunerRemoved(device_id.clone());
                         if tui_sender.send(tui_event).is_err() {
                             return;

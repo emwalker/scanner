@@ -5,6 +5,7 @@ pub mod core;
 pub mod discovery;
 pub mod file;
 pub mod hardware;
+pub mod ipc;
 pub mod logging;
 pub mod main_thread;
 pub mod mpsc;

@@ -21,13 +21,18 @@ pub enum DiscoveryMode {
     ForceUdev,
 }
 
-pub fn create(backends: Vec<Box<dyn hardware::Backend>>, mode: DiscoveryMode) -> Box<dyn Service> {
-    use enumerator::{BackendEnumerator, MultiEnumerator, SourcePriority};
+pub fn create(backend_names: Vec<String>, mode: DiscoveryMode) -> Box<dyn Service> {
+    use enumerator::{MultiEnumerator, SourcePriority, SubprocessEnumerator};
 
-    let mut enumerators: Vec<(Box<dyn DeviceEnumerator>, SourcePriority)> = vec![(
-        Box::new(BackendEnumerator { backends }),
-        SourcePriority::Backend,
-    )];
+    let mut enumerators: Vec<(Box<dyn DeviceEnumerator>, SourcePriority)> = backend_names
+        .into_iter()
+        .map(|name| {
+            (
+                Box::new(SubprocessEnumerator::new(name)) as Box<dyn DeviceEnumerator>,
+                SourcePriority::Backend,
+            )
+        })
+        .collect();
 
     #[cfg(target_os = "linux")]
     {
@@ -67,10 +72,10 @@ pub fn create_for_testing(
     backends: Vec<Box<dyn hardware::Backend>>,
     mode: DiscoveryMode,
 ) -> Box<dyn Service> {
-    use enumerator::{BackendEnumerator, MultiEnumerator, SourcePriority};
+    use enumerator::{DirectEnumerator, MultiEnumerator, SourcePriority};
 
     let enumerators: Vec<(Box<dyn DeviceEnumerator>, SourcePriority)> = vec![(
-        Box::new(BackendEnumerator { backends }),
+        Box::new(DirectEnumerator { backends }),
         SourcePriority::Backend,
     )];
 
@@ -92,6 +97,58 @@ pub fn create_for_testing(
                 Box::new(polling::Polling::new(enumerator, Duration::from_secs(3)))
             }
         }
+    }
+}
+
+/// Synchronously enumerate devices via subprocess worker matching an optional filter
+///
+/// This provides a one-time synchronous device enumeration using subprocess isolation,
+/// useful for initial device selection before starting the async discovery service.
+///
+/// # Arguments
+/// * `backend_names` - List of backend names to query (e.g., ["soapy"])
+/// * `filter` - Optional driver filter (e.g., "driver=sdrplay")
+///
+/// # Returns
+/// List of discovered devices matching the filter
+pub fn enumerate_once_subprocess(
+    backend_names: &[String],
+    filter: Option<&str>,
+) -> Result<Vec<hardware::DeviceInfo>> {
+    use enumerator::{MultiEnumerator, SourcePriority, SubprocessEnumerator};
+
+    let backend_enumerators: Vec<(Box<dyn DeviceEnumerator>, SourcePriority)> = backend_names
+        .iter()
+        .map(|name| {
+            (
+                Box::new(SubprocessEnumerator::new(name.clone())) as Box<dyn DeviceEnumerator>,
+                SourcePriority::Backend,
+            )
+        })
+        .collect();
+
+    let enumerator = MultiEnumerator {
+        enumerators: backend_enumerators,
+    };
+
+    let all_devices = enumerator.enumerate();
+
+    // Apply filter if provided
+    if let Some(filter_str) = filter {
+        // Parse filter format: "key=value"
+        if let Some((key, value)) = filter_str.split_once('=') {
+            Ok(all_devices
+                .into_iter()
+                .filter(|device| match (&device.id, key) {
+                    (hardware::DeviceId::Backend { backend, .. }, "driver") => backend == value,
+                    _ => false,
+                })
+                .collect())
+        } else {
+            Ok(all_devices)
+        }
+    } else {
+        Ok(all_devices)
     }
 }
 

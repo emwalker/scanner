@@ -7,6 +7,7 @@
 pub mod backend;
 pub mod device;
 pub mod pool;
+pub mod streaming;
 pub mod types;
 
 // Backend implementations
@@ -26,6 +27,7 @@ pub mod sample_source;
 // Re-export commonly used types
 pub use backend::Backend;
 pub use device::DeviceTrait;
+pub use streaming::{ActualConfig, StreamingDevice};
 pub use types::{Capabilities, DeviceError, DeviceErrorKind, DeviceId, DeviceInfo};
 
 // Re-export backend implementations

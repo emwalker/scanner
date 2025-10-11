@@ -1,10 +1,11 @@
 //! Common types for SDR backend abstraction
 
 use crate::core::types::Result;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Device information returned by enumeration
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeviceInfo {
     /// Stable device identifier
     pub id: DeviceId,
@@ -16,7 +17,7 @@ pub struct DeviceInfo {
 ///
 /// Identifies a physical SDR device. Multi-tuner devices (like SDRplay RSPduo)
 /// have a single DeviceId but multiple tuners (channels) within that device.
-#[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DeviceId {
     /// Backend-based identification (SoapySDR, etc.)
     Backend { backend: String, serial: String },
@@ -49,6 +50,14 @@ impl DeviceId {
         Self::Backend {
             backend: Self::normalize_driver(backend),
             serial: serial.to_string(),
+        }
+    }
+
+    /// Get backend name from device ID
+    pub fn backend(&self) -> &str {
+        match self {
+            DeviceId::Backend { backend, .. } => backend.as_str(),
+            DeviceId::Usb { .. } => "usb",
         }
     }
 
@@ -305,6 +314,20 @@ mod tests {
             }
             _ => panic!("Expected Backend variant"),
         }
+    }
+
+    #[test]
+    fn test_device_id_backend() {
+        let id = DeviceId::from_serial("sdrplay", "12345");
+        assert_eq!(id.backend(), "sdrplay");
+
+        let usb_id = DeviceId::Usb {
+            vid: 0x0bda,
+            pid: 0x2838,
+            serial: "00000001".to_string(),
+            bus_port: "1-2".to_string(),
+        };
+        assert_eq!(usb_id.backend(), "usb");
     }
 
     #[test]

@@ -310,7 +310,7 @@ impl Pool {
         };
 
         let backend_name = device_entry.backend_name.clone();
-        let model = format!("{:?}", device_entry.capabilities.device_id);
+        let model = device_entry.capabilities.device_id.to_string();
         let device = Arc::clone(&device_entry.device);
 
         inner.allocated_tuners.insert(
@@ -439,7 +439,7 @@ impl Pool {
                 let device = inner.devices.get(&entry.device_id)?;
                 Some(TunerStatus {
                     id: id.clone(),
-                    model: format!("{:?}", device.capabilities.device_id),
+                    model: device.capabilities.device_id.to_string(),
                     backend: device.backend_name.clone(),
                     channel_index: entry.channel_index,
                     state: TunerState::Available,

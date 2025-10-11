@@ -24,6 +24,9 @@ pub enum Commands {
     Scan(Box<ScanArgs>),
     /// Train audio quality machine learning model
     Train(TrainArgs),
+    /// Internal worker subprocesses (hidden from help)
+    #[command(hide = true, subcommand)]
+    Worker(WorkerCommand),
 }
 
 #[derive(Parser, Debug)]
@@ -116,7 +119,7 @@ pub struct ScanArgs {
     pub log: bool,
 
     /// Write debug logs to file (useful with TUI to capture diagnostics)
-    #[arg(long)]
+    #[arg(long, default_value = "/tmp/scanner.log")]
     pub log_file: Option<String>,
 
     /// Path to pre-trained model file (if not specified, auto-discovers latest)
@@ -185,4 +188,38 @@ pub struct TrainArgs {
 
     #[arg(long)]
     pub verbose: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WorkerCommand {
+    /// Enumerate devices for a specific backend (internal use only)
+    Enumerate {
+        /// Backend to enumerate ("soapy", "seify", "rtlsdr")
+        #[arg(long)]
+        backend: String,
+        /// Unix socket path for IPC communication
+        #[arg(long)]
+        socket_path: String,
+        /// Optional log file path
+        #[arg(long)]
+        log_file: Option<String>,
+    },
+    /// Stream I/Q from device (internal use only)
+    Device {
+        /// Serialized DeviceId (will be parsed in worker)
+        #[arg(long)]
+        device_id_str: String,
+
+        /// Unix socket path for control messages (bidirectional)
+        #[arg(long)]
+        control_socket_path: String,
+
+        /// Unix socket path for data streaming (unidirectional)
+        #[arg(long)]
+        data_socket_path: String,
+
+        /// Optional log file path
+        #[arg(long)]
+        log_file: Option<String>,
+    },
 }

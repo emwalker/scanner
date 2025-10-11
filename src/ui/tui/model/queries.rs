@@ -141,8 +141,6 @@ impl Model {
 
     /// Get the window_id, center frequency, and candidate frequency for the currently selected candidate
     pub fn selected_candidate_info(&self) -> Option<SelectedCandidateInfo> {
-        use tracing::debug;
-
         if !self.selection_mode() {
             return None;
         }
@@ -154,15 +152,7 @@ impl Model {
             return None;
         }
 
-        let (window_id, candidate) = candidates[selected_idx];
-
-        debug!(
-            window_id = window_id,
-            frequency_mhz = candidate.frequency_hz / 1e6,
-            signal_strength = ?candidate.signal_strength,
-            audio_quality = ?candidate.audio_quality,
-            "Selected candidate info"
-        );
+        let (_window_id, candidate) = candidates[selected_idx];
 
         Some(SelectedCandidateInfo {
             candidate_id: candidate.candidate_id.clone(),

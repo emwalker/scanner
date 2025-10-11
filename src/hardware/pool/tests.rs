@@ -889,4 +889,55 @@ mod tests {
             "Third callback should fire on acquire and release"
         );
     }
+
+    #[test]
+    fn test_tuner_status_model_uses_display_not_debug() {
+        let pool = Pool::new_unfiltered();
+
+        let device_id = hardware::DeviceId::from_serial("sdrplay", "2301034E34:ST");
+        let device = create_mock_device(&device_id);
+        pool.add_device(device, "sdrplay".to_string()).unwrap();
+
+        let status = pool.status();
+        assert_eq!(status.tuners.len(), 1, "Should have one tuner");
+
+        let tuner = &status.tuners[0];
+        assert!(
+            !tuner.model.contains("Backend {"),
+            "Model should not contain Debug-formatted struct output, got: {}",
+            tuner.model
+        );
+        assert!(
+            !tuner.model.contains("backend:"),
+            "Model should not contain Debug field names, got: {}",
+            tuner.model
+        );
+        assert_eq!(
+            tuner.model, "sdrplay:2301034E34:ST",
+            "Model should use Display format"
+        );
+
+        let requirements = TaskRequirements {
+            frequency_hz: 88.9e6,
+            bandwidth_hz: 200e3,
+            required_sample_rate: 2.4e6,
+            priority: TaskPriority::Normal,
+        };
+
+        let _tuner = pool
+            .try_acquire(&requirements, TunerActivity::Listening)
+            .unwrap();
+
+        let status_allocated = pool.status();
+        let allocated_tuner = &status_allocated.tuners[0];
+        assert!(
+            !allocated_tuner.model.contains("Backend {"),
+            "Allocated tuner model should not contain Debug format, got: {}",
+            allocated_tuner.model
+        );
+        assert_eq!(
+            allocated_tuner.model, "sdrplay:2301034E34:ST",
+            "Allocated tuner model should use Display format"
+        );
+    }
 }

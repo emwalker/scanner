@@ -122,6 +122,17 @@ pub enum ScannerError {
     EmptyAudioBuffer { min_samples: usize },
     #[error("Invalid state transition: expected {expected}, found {actual}")]
     InvalidState { expected: String, actual: String },
+    // IPC and subprocess errors
+    #[error("IPC serialization failed: {0}")]
+    IpcSerializationError(String),
+    #[error("IPC communication failed: {0}")]
+    IpcCommunicationError(String),
+    #[error("Subprocess spawn failed: {0}")]
+    SubprocessSpawnFailed(String),
+    #[error("Subprocess operation timed out: {0}")]
+    SubprocessTimeout(String),
+    #[error(transparent)]
+    Postcard(#[from] postcard::Error),
 }
 
 pub type Result<T> = std::result::Result<T, ScannerError>;

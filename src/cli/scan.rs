@@ -1,5 +1,4 @@
 use crate::core::types::{Result, ScannerError};
-use crate::hardware::Backend;
 use crate::hardware::soapy;
 use crate::shutdown::ShutdownCoordinator;
 use crate::ui::tui::themes::ThemeName;
@@ -22,9 +21,10 @@ pub fn handle_scan_command(args: ScanArgs) -> Result<()> {
 
     soapy::reset_soapysdr_state();
 
-    let backends: Vec<Box<dyn Backend>> = vec![Box::new(crate::hardware::Soapy)];
+    let backend_names = vec!["soapy".to_string()];
     let driver_filter = args.device_args.as_deref().or(Some(DEFAULT_DRIVER));
-    let discovered_devices = crate::discovery::enumerate_once(&backends, driver_filter)?;
+    let discovered_devices =
+        crate::discovery::enumerate_once_subprocess(&backend_names, driver_filter)?;
 
     if discovered_devices.is_empty() {
         return Err(ScannerError::NoSdrDevicesFound {
@@ -39,7 +39,13 @@ pub fn handle_scan_command(args: ScanArgs) -> Result<()> {
     setup_signal_handler(shutdown_coordinator.clone())?;
 
     if !args.headless {
-        run_tui_mode(&args, config, shutdown_coordinator, selected_tuner_id)
+        run_tui_mode(
+            &args,
+            config,
+            shutdown_coordinator,
+            selected_tuner_id,
+            discovered_devices,
+        )
     } else {
         run_headless(
             config,
@@ -58,6 +64,7 @@ fn run_tui_mode(
     config: crate::core::types::ScanningConfig,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
     selected_tuner_id: crate::hardware::DeviceId,
+    discovered_devices: Vec<crate::hardware::DeviceInfo>,
 ) -> Result<()> {
     let (mut tui_context, tui_event_receiver) = setup_tui_channels();
 
@@ -78,6 +85,7 @@ fn run_tui_mode(
     let discovery_setup = start_discovery_service(
         tui_context.tui_event_sender.clone(),
         shutdown_coordinator.clone(),
+        discovered_devices,
     )?;
 
     let tui_handle = start_tui(

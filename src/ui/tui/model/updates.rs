@@ -60,26 +60,6 @@ impl Model {
                     );
                 }
 
-                // Sync tuner list with pool status to ensure device IDs match
-                // The pool may have different device IDs than discovery service
-                for pool_tuner in &status.tuners {
-                    let device_id = pool_tuner.id.device_id.clone();
-
-                    // Add tuner if not already in list
-                    if !self.tuners.iter().any(|t| t.id == device_id) {
-                        debug!(
-                            device_id = ?device_id,
-                            model = %pool_tuner.model,
-                            backend = %pool_tuner.backend,
-                            "Adding tuner from pool status"
-                        );
-                        self.tuners.push(crate::hardware::DeviceInfo {
-                            id: device_id.clone(),
-                            label: format!("{} ({})", pool_tuner.model, pool_tuner.backend),
-                        });
-                    }
-                }
-
                 self.pool_status = Some(status);
             }
         }
