@@ -63,7 +63,7 @@ pub struct SquelchBlock {
     threshold: AudioQuality,
 
     // Audio file coordination
-    audio_capturer: Option<crate::file::AudioCaptureSink>,
+    audio_capturer: Option<crate::file::AudioCaptureSinkState>,
 
     // Progress reporting
     progress_reporter: Option<std::sync::Arc<dyn crate::ui::ProgressReporter + Send + Sync>>,
@@ -82,7 +82,7 @@ pub struct SquelchConfig {
     pub threshold: AudioQuality,
     pub fft_size: usize,
     pub audio_analyzer: AudioAnalyzer,
-    pub audio_capturer: Option<crate::file::AudioCaptureSink>,
+    pub audio_capturer: Option<crate::file::AudioCaptureSink<crate::file::Buffering>>,
     pub progress_reporter: Option<std::sync::Arc<dyn crate::ui::ProgressReporter + Send + Sync>>,
     pub window_id: usize,
     pub tuner_id: Option<crate::hardware::DeviceId>,
@@ -115,7 +115,9 @@ impl SquelchBlock {
             audio_analyzer: config.audio_analyzer,
             squelch_disabled: config.squelch_disabled,
             threshold: config.threshold,
-            audio_capturer: config.audio_capturer,
+            audio_capturer: config
+                .audio_capturer
+                .map(crate::file::AudioCaptureSinkState::Buffering),
             progress_reporter: config.progress_reporter,
             metadata: crate::scanning::window::WindowMetadata {
                 center_frequency_hz: config.center_freq,
@@ -191,29 +193,50 @@ impl SquelchBlock {
     }
 
     fn handle_audio_file_passed(&mut self) {
-        if let Some(ref mut capturer) = self.audio_capturer {
-            if let Err(e) = capturer.create_file_and_flush_buffer() {
-                debug!(
-                    frequency_mhz = self.frequency_hz / 1e6,
-                    error = %e,
-                    "Failed to create audio file after squelch pass"
-                );
-            } else {
-                debug!(
-                    frequency_mhz = self.frequency_hz / 1e6,
-                    "Squelch passed - created audio file and flushed buffer"
-                );
+        if let Some(capturer) = self.audio_capturer.take() {
+            match capturer {
+                crate::file::AudioCaptureSinkState::Buffering(buffering) => {
+                    match buffering.start_recording() {
+                        Ok(recording) => {
+                            debug!(
+                                frequency_mhz = self.frequency_hz / 1e6,
+                                "Squelch passed - created audio file and flushed buffer"
+                            );
+                            self.audio_capturer =
+                                Some(crate::file::AudioCaptureSinkState::Recording(recording));
+                        }
+                        Err(e) => {
+                            debug!(
+                                frequency_mhz = self.frequency_hz / 1e6,
+                                error = %e,
+                                "Failed to create audio file after squelch pass"
+                            );
+                        }
+                    }
+                }
+                other => {
+                    self.audio_capturer = Some(other);
+                }
             }
         }
     }
 
     fn handle_audio_file_failed(&mut self) {
-        if let Some(ref mut capturer) = self.audio_capturer {
-            capturer.discard_buffer();
-            debug!(
-                frequency_mhz = self.frequency_hz / 1e6,
-                "Squelch failed - discarded audio buffer"
-            );
+        if let Some(capturer) = self.audio_capturer.take() {
+            match capturer {
+                crate::file::AudioCaptureSinkState::Buffering(buffering) => {
+                    let completed = buffering.discard();
+                    debug!(
+                        frequency_mhz = self.frequency_hz / 1e6,
+                        "Squelch failed - discarded audio buffer"
+                    );
+                    self.audio_capturer =
+                        Some(crate::file::AudioCaptureSinkState::Completed(completed));
+                }
+                other => {
+                    self.audio_capturer = Some(other);
+                }
+            }
         }
     }
 

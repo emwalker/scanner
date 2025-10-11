@@ -129,6 +129,23 @@ impl Pool {
         let capabilities = device.capabilities().clone();
         let num_tuners = capabilities.channels;
 
+        match self.state.try_lock() {
+            Ok(state_guard) => {
+                if !matches!(
+                    *state_guard,
+                    crate::hardware::pool::state::PoolState::Active(_)
+                ) {
+                    debug!(device_id = ?device_id, "Add device rejected - pool not in Active state");
+                    return AddDeviceResult::ShutdownMode;
+                }
+                drop(state_guard);
+            }
+            Err(_) => {
+                debug!(device_id = ?device_id, "Add device skipped - state lock contention");
+                return AddDeviceResult::PoolBusy;
+            }
+        }
+
         if self.shutdown_mode.load(Ordering::SeqCst) {
             debug!(device_id = ?device_id, "Add device skipped - pool in shutdown mode");
             return AddDeviceResult::ShutdownMode;
@@ -327,6 +344,23 @@ impl Pool {
         requirements: &TaskRequirements,
         activity: TunerActivity,
     ) -> Option<Tuner> {
+        match self.state.try_lock() {
+            Ok(state_guard) => {
+                if !matches!(
+                    *state_guard,
+                    crate::hardware::pool::state::PoolState::Active(_)
+                ) {
+                    debug!("Acquire rejected - pool not in Active state");
+                    return None;
+                }
+                drop(state_guard);
+            }
+            Err(_) => {
+                debug!("Acquire rejected - state lock contention");
+                return None;
+            }
+        }
+
         if self.shutdown_mode.load(Ordering::SeqCst) {
             debug!("Acquire rejected - pool in shutdown mode");
             return None;

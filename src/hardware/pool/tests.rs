@@ -668,4 +668,106 @@ mod tests {
             "Should not allocate second tuner in SingleTuner mode"
         );
     }
+
+    #[test]
+    fn test_initial_state_is_active() {
+        let pool = Pool::new_unfiltered();
+        assert!(pool.is_active());
+        assert!(!pool.is_shutting_down());
+    }
+
+    #[test]
+    fn test_state_transitions() {
+        let pool = Pool::new_unfiltered();
+
+        assert!(pool.is_active());
+        assert!(!pool.is_shutting_down());
+
+        pool.shutdown();
+
+        assert!(!pool.is_active());
+        assert!(pool.is_shutting_down());
+    }
+
+    #[test]
+    fn test_add_device_only_allowed_in_active_state() {
+        let pool = Pool::new_unfiltered();
+
+        let device1_id = hardware::DeviceId::from_serial("mock", "test024");
+        let device1 = Box::new(hardware::mock::MockDevice::new(device1_id.clone(), false));
+        let result1 = pool.add_device(device1, "mock".to_string());
+        assert!(
+            matches!(result1, AddDeviceResult::Added { .. }),
+            "Should add device in Active state"
+        );
+
+        pool.shutdown();
+
+        let device2_id = hardware::DeviceId::from_serial("mock", "test025");
+        let device2 = Box::new(hardware::mock::MockDevice::new(device2_id.clone(), false));
+        let result2 = pool.add_device(device2, "mock".to_string());
+        assert!(
+            matches!(result2, AddDeviceResult::ShutdownMode),
+            "Should not add device in ShuttingDown state"
+        );
+    }
+
+    #[test]
+    fn test_acquire_only_allowed_in_active_state() {
+        let pool = Pool::new_unfiltered();
+
+        let device_id = hardware::DeviceId::from_serial("mock", "test026");
+        let device = Box::new(hardware::mock::MockDevice::new(device_id.clone(), false));
+        pool.add_device(device, "mock".to_string()).unwrap();
+
+        let requirements = TaskRequirements {
+            frequency_hz: 88.9e6,
+            bandwidth_hz: 200e3,
+            required_sample_rate: 2.4e6,
+            priority: TaskPriority::Normal,
+        };
+
+        let tuner1 = pool.try_acquire(&requirements, TunerActivity::Scanning);
+        assert!(tuner1.is_some(), "Should acquire in Active state");
+        drop(tuner1);
+
+        pool.shutdown();
+
+        let tuner2 = pool.try_acquire(&requirements, TunerActivity::Scanning);
+        assert!(tuner2.is_none(), "Should not acquire in ShuttingDown state");
+    }
+
+    #[test]
+    fn test_shutdown_idempotent() {
+        let pool = Pool::new_unfiltered();
+
+        pool.shutdown();
+        assert!(pool.is_shutting_down());
+
+        pool.shutdown();
+        assert!(pool.is_shutting_down());
+    }
+
+    #[test]
+    fn test_status_works_in_any_state() {
+        let pool = Pool::new_unfiltered();
+
+        let device_id = hardware::DeviceId::from_serial("mock", "test027");
+        let device = Box::new(hardware::mock::MockDevice::new(device_id.clone(), false));
+        pool.add_device(device, "mock".to_string()).unwrap();
+
+        let status1 = pool.status();
+        assert_eq!(
+            status1.device_count, 1,
+            "Status should work in Active state"
+        );
+
+        pool.shutdown();
+
+        let status2 = pool.status();
+        assert_eq!(
+            status2.device_count, 0,
+            "Status returns empty during shutdown"
+        );
+    }
 }

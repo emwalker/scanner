@@ -120,6 +120,8 @@ pub enum ScannerError {
     },
     #[error("Audio buffer is empty (expected at least {min_samples} samples)")]
     EmptyAudioBuffer { min_samples: usize },
+    #[error("Invalid state transition: expected {expected}, found {actual}")]
+    InvalidState { expected: String, actual: String },
 }
 
 pub type Result<T> = std::result::Result<T, ScannerError>;

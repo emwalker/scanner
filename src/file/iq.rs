@@ -65,17 +65,34 @@ pub struct AudioCaptureConfig {
     pub modulation_type: ModulationType,
 }
 
-/// Capturing wrapper for audio samples - buffers samples and creates WAV file only after squelch passes
-pub struct AudioCaptureSink {
-    samples_captured: usize,
-    max_samples: usize,
-    writer: Option<crate::file::wave::BufWriter>,
-    config: AudioCaptureConfig,
+/// State: Buffering samples in memory before recording decision
+pub struct Buffering {
     buffer: Vec<f32>,
-    file_created: bool,
+    samples_captured: usize,
 }
 
-impl AudioCaptureSink {
+/// State: Recording samples directly to file
+pub struct Recording {
+    writer: crate::file::wave::BufWriter,
+    samples_captured: usize,
+}
+
+/// State: Recording completed and file finalized
+pub struct Completed;
+
+/// Capturing wrapper for audio samples - buffers samples and creates WAV file only after squelch passes
+///
+/// Uses typestate pattern to enforce capture workflow at compile time:
+/// - Buffering: Collect samples in memory
+/// - Recording: Write samples directly to file
+/// - Completed: File finalized
+pub struct AudioCaptureSink<State> {
+    config: AudioCaptureConfig,
+    max_samples: usize,
+    state: State,
+}
+
+impl AudioCaptureSink<Buffering> {
     /// Create a new buffered audio capture sink
     pub fn new(config: AudioCaptureConfig) -> crate::core::types::Result<Self> {
         let max_samples = (config.sample_rate * config.capture_duration as f32) as usize;
@@ -89,12 +106,12 @@ impl AudioCaptureSink {
         );
 
         Ok(Self {
-            samples_captured: 0,
-            max_samples,
-            writer: None,
             config,
-            buffer: Vec::with_capacity(max_samples),
-            file_created: false,
+            max_samples,
+            state: Buffering {
+                buffer: Vec::with_capacity(max_samples),
+                samples_captured: 0,
+            },
         })
     }
 
@@ -155,36 +172,27 @@ impl AudioCaptureSink {
     }
 
     /// Buffer audio samples in memory
-    pub fn capture_samples(&mut self, samples: &[f32]) -> crate::core::types::Result<()> {
-        if self.samples_captured >= self.max_samples {
+    pub fn add_samples(&mut self, samples: &[f32]) -> crate::core::types::Result<()> {
+        if self.state.samples_captured >= self.max_samples {
             return Ok(()); // Already captured enough samples
         }
 
-        let samples_to_capture = (self.max_samples - self.samples_captured).min(samples.len());
+        let samples_to_capture =
+            (self.max_samples - self.state.samples_captured).min(samples.len());
 
-        if self.file_created {
-            // File already created, write directly
-            if let Some(ref mut writer) = self.writer {
-                for sample in samples.iter().take(samples_to_capture) {
-                    writer.write_all(&sample.to_le_bytes())?;
-                }
-            }
-        } else {
-            // Buffer samples in memory
-            self.buffer
-                .extend_from_slice(&samples[..samples_to_capture]);
-        }
+        // Buffer samples in memory
+        self.state
+            .buffer
+            .extend_from_slice(&samples[..samples_to_capture]);
+        self.state.samples_captured += samples_to_capture;
 
-        self.samples_captured += samples_to_capture;
         Ok(())
     }
 
-    /// Create the WAV file and write buffered samples - call when squelch analysis passes
-    pub fn create_file_and_flush_buffer(&mut self) -> crate::core::types::Result<()> {
-        if self.file_created {
-            return Ok(()); // File already created
-        }
-
+    /// Create the WAV file and write buffered samples - transitions to Recording state
+    ///
+    /// Consumes self and returns AudioCaptureSink<Recording>
+    pub fn start_recording(self) -> crate::core::types::Result<AudioCaptureSink<Recording>> {
         // Generate filename
         let output_file = Self::generate_filename(
             &self.config.output_dir,
@@ -204,59 +212,92 @@ impl AudioCaptureSink {
         writer.write_header(self.config.sample_rate, self.max_samples)?;
 
         // Write all buffered samples
-        for sample in &self.buffer {
+        for sample in &self.state.buffer {
             writer.write_all(&sample.to_le_bytes())?;
         }
 
         debug!(
             message = "Created WAV file and wrote buffered samples",
             output_file = output_file,
-            buffered_samples = self.buffer.len(),
+            buffered_samples = self.state.buffer.len(),
             frequency_mhz = self.config.frequency_hz / 1e6
         );
 
-        self.writer = Some(writer);
-        self.file_created = true;
-
-        // Clear buffer to save memory
-        self.buffer.clear();
-        self.buffer.shrink_to_fit();
-
-        Ok(())
+        Ok(AudioCaptureSink {
+            config: self.config,
+            max_samples: self.max_samples,
+            state: Recording {
+                writer,
+                samples_captured: self.state.samples_captured,
+            },
+        })
     }
 
-    /// Discard buffered samples without creating file - call when squelch analysis fails
-    pub fn discard_buffer(&mut self) {
-        if !self.file_created {
-            debug!(
-                message = "Discarding buffered audio samples - squelch failed",
-                discarded_samples = self.buffer.len(),
-                frequency_mhz = self.config.frequency_hz / 1e6
-            );
-            self.buffer.clear();
-            self.buffer.shrink_to_fit();
+    /// Discard buffered samples without creating file - transitions to Completed state
+    ///
+    /// Consumes self and returns AudioCaptureSink<Completed>
+    pub fn discard(self) -> AudioCaptureSink<Completed> {
+        debug!(
+            message = "Discarding buffered audio samples - squelch failed",
+            discarded_samples = self.state.buffer.len(),
+            frequency_mhz = self.config.frequency_hz / 1e6
+        );
+
+        AudioCaptureSink {
+            config: self.config,
+            max_samples: self.max_samples,
+            state: Completed,
         }
-    }
-
-    /// Check if file has been created
-    pub fn is_file_created(&self) -> bool {
-        self.file_created
     }
 }
 
-impl Drop for AudioCaptureSink {
-    fn drop(&mut self) {
-        if !self.buffer.is_empty() && !self.file_created {
-            debug!(
-                "Dropping buffered audio capture with {} unsaved samples",
-                self.buffer.len()
-            );
+impl AudioCaptureSink<Recording> {
+    /// Write audio samples directly to file
+    pub fn write_samples(&mut self, samples: &[f32]) -> crate::core::types::Result<()> {
+        if self.state.samples_captured >= self.max_samples {
+            return Ok(()); // Already captured enough samples
         }
-        if let Some(writer) = self.writer.take() {
-            debug!("Finalizing WAV file");
-            if let Err(e) = writer.into_inner() {
-                tracing::error!("Failed to flush audio capture file on drop: {}", e);
-            }
+
+        let samples_to_capture =
+            (self.max_samples - self.state.samples_captured).min(samples.len());
+
+        for sample in samples.iter().take(samples_to_capture) {
+            self.state.writer.write_all(&sample.to_le_bytes())?;
+        }
+
+        self.state.samples_captured += samples_to_capture;
+        Ok(())
+    }
+
+    /// Finalize recording - transitions to Completed state
+    ///
+    /// Consumes self and returns AudioCaptureSink<Completed>
+    pub fn finalize(self) -> crate::core::types::Result<AudioCaptureSink<Completed>> {
+        debug!("Finalizing WAV file");
+        self.state.writer.into_inner()?;
+
+        Ok(AudioCaptureSink {
+            config: self.config,
+            max_samples: self.max_samples,
+            state: Completed,
+        })
+    }
+}
+
+/// Enum wrapper for AudioCaptureSink to allow runtime state changes
+pub enum AudioCaptureSinkState {
+    Buffering(AudioCaptureSink<Buffering>),
+    Recording(AudioCaptureSink<Recording>),
+    Completed(AudioCaptureSink<Completed>),
+}
+
+impl AudioCaptureSinkState {
+    /// Capture samples in the appropriate state
+    pub fn capture_samples(&mut self, samples: &[f32]) -> crate::core::types::Result<()> {
+        match self {
+            AudioCaptureSinkState::Buffering(sink) => sink.add_samples(samples),
+            AudioCaptureSinkState::Recording(sink) => sink.write_samples(samples),
+            AudioCaptureSinkState::Completed(_) => Ok(()), // No-op in completed state
         }
     }
 }
@@ -265,27 +306,27 @@ impl Drop for AudioCaptureSink {
 pub struct AudioCaptureBlock {
     input: rustradio::stream::ReadStream<rustradio::Float>,
     output: rustradio::stream::WriteStream<rustradio::Float>,
-    audio_capturer: Option<AudioCaptureSink>,
+    audio_capturer: Option<AudioCaptureSinkState>,
 }
 
 impl AudioCaptureBlock {
     pub fn new(
         input: rustradio::stream::ReadStream<rustradio::Float>,
-        audio_capturer: Option<AudioCaptureSink>,
+        audio_capturer: Option<AudioCaptureSink<Buffering>>,
     ) -> (Self, rustradio::stream::ReadStream<rustradio::Float>) {
         let (output, output_stream) = rustradio::stream::WriteStream::new();
 
         let block = Self {
             input,
             output,
-            audio_capturer,
+            audio_capturer: audio_capturer.map(AudioCaptureSinkState::Buffering),
         };
 
         (block, output_stream)
     }
 
     /// Get mutable reference to the audio capturer for external coordination
-    pub fn audio_capturer_mut(&mut self) -> Option<&mut AudioCaptureSink> {
+    pub fn audio_capturer_mut(&mut self) -> Option<&mut AudioCaptureSinkState> {
         self.audio_capturer.as_mut()
     }
 }
@@ -354,23 +395,14 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config(temp_dir.path().to_str().unwrap());
 
-        let mut sink = AudioCaptureSink::new(config)?;
-
-        // Initially no file should be created
-        assert!(!sink.is_file_created());
+        let mut buffering = AudioCaptureSink::new(config)?;
 
         // Buffer some samples
         let samples = vec![0.1, 0.2, 0.3, 0.4, 0.5];
-        sink.capture_samples(&samples)?;
-
-        // Still no file created
-        assert!(!sink.is_file_created());
+        buffering.add_samples(&samples)?;
 
         // Create file and flush buffer (simulating squelch pass)
-        sink.create_file_and_flush_buffer()?;
-
-        // Now file should be created
-        assert!(sink.is_file_created());
+        let recording = buffering.start_recording()?;
 
         // Check that file exists
         let files: Vec<_> = fs::read_dir(temp_dir.path()).unwrap().collect();
@@ -380,6 +412,9 @@ mod tests {
         assert!(file_path.to_str().unwrap().contains("000.088.900.000Hz"));
         assert!(file_path.to_str().unwrap().ends_with(".wav"));
 
+        // Finalize to clean up
+        let _completed = recording.finalize()?;
+
         Ok(())
     }
 
@@ -388,17 +423,14 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config(temp_dir.path().to_str().unwrap());
 
-        let mut sink = AudioCaptureSink::new(config)?;
+        let mut buffering = AudioCaptureSink::new(config)?;
 
         // Buffer some samples
         let samples = vec![0.1, 0.2, 0.3, 0.4, 0.5];
-        sink.capture_samples(&samples)?;
+        buffering.add_samples(&samples)?;
 
         // Discard buffer (simulating squelch fail)
-        sink.discard_buffer();
-
-        // No file should be created
-        assert!(!sink.is_file_created());
+        let _completed = buffering.discard();
 
         // Check that no files exist
         let files: Vec<_> = fs::read_dir(temp_dir.path()).unwrap().collect();
@@ -412,21 +444,21 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config(temp_dir.path().to_str().unwrap());
 
-        let mut sink = AudioCaptureSink::new(config)?;
+        let mut buffering = AudioCaptureSink::new(config)?;
 
         // Buffer some samples
         let samples1 = vec![0.1, 0.2];
-        sink.capture_samples(&samples1)?;
+        buffering.add_samples(&samples1)?;
 
         // Create file and flush buffer
-        sink.create_file_and_flush_buffer()?;
+        let mut recording = buffering.start_recording()?;
 
         // Add more samples after file creation (should write directly)
         let samples2 = vec![0.3, 0.4];
-        sink.capture_samples(&samples2)?;
+        recording.write_samples(&samples2)?;
 
-        // File should still exist
-        assert!(sink.is_file_created());
+        // Finalize to clean up
+        let _completed = recording.finalize()?;
 
         Ok(())
     }

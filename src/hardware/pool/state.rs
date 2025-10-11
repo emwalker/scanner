@@ -8,6 +8,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::debug;
 
+/// State: Pool is active and can allocate tuners
+#[derive(Debug, Clone, PartialEq)]
+pub struct Active;
+
+/// State: Pool is shutting down, no new allocations allowed
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShuttingDown;
+
+/// Pool lifecycle state
+///
+/// This enum wraps typestate structs, allowing compile-time type safety
+/// for state transitions while maintaining runtime flexibility for
+/// dynamic event handling.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PoolState {
+    /// Pool is active and can allocate tuners
+    Active(Active),
+    /// Pool is shutting down, no new allocations allowed
+    ShuttingDown(ShuttingDown),
+}
+
 /// Internal state (needed for Arc<Mutex<>> pattern)
 pub struct PoolInner {
     /// Devices (physical hardware)
@@ -46,13 +67,16 @@ impl PoolInner {
 
 /// Dynamic inventory of available tuners
 pub struct Pool {
+    /// Current lifecycle state
+    pub(crate) state: Mutex<PoolState>,
+
     /// Internal state (Arc<Mutex<>> for thread-safe sharing with Tuner)
     pub(crate) pool_ref: Arc<Mutex<PoolInner>>,
 
     /// Filter controlling which tuners can be allocated
     pub(crate) filter: Arc<PoolFilter>,
 
-    /// Shutdown mode flag (atomic for lock-free access)
+    /// Shutdown mode flag (atomic for lock-free access in hot paths and Drop)
     pub(crate) shutdown_mode: Arc<AtomicBool>,
 }
 
@@ -66,6 +90,7 @@ impl Pool {
         };
 
         Self {
+            state: Mutex::new(PoolState::Active(Active)),
             pool_ref: Arc::new(Mutex::new(inner)),
             filter: Arc::new(filter),
             shutdown_mode: Arc::new(AtomicBool::new(false)),
@@ -78,7 +103,16 @@ impl Pool {
     }
 
     /// Enter shutdown mode (makes pool reject all future operations)
+    ///
+    /// Transitions from Active → ShuttingDown. Idempotent if already shutting down.
     pub fn shutdown(&self) {
+        if let Ok(mut state) = self.state.lock()
+            && matches!(*state, PoolState::Active(_))
+        {
+            *state = PoolState::ShuttingDown(ShuttingDown);
+            debug!("Pool state transitioned to ShuttingDown");
+        }
+
         self.shutdown_mode.store(true, Ordering::SeqCst);
         debug!("Pool entered shutdown mode");
     }
@@ -86,5 +120,21 @@ impl Pool {
     /// Check if pool is in shutdown mode
     pub fn is_shutdown(&self) -> bool {
         self.shutdown_mode.load(Ordering::SeqCst)
+    }
+
+    /// Check if pool is in Active state
+    pub fn is_active(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| matches!(*state, PoolState::Active(_)))
+            .unwrap_or(false)
+    }
+
+    /// Check if pool is in ShuttingDown state
+    pub fn is_shutting_down(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| matches!(*state, PoolState::ShuttingDown(_)))
+            .unwrap_or(false)
     }
 }

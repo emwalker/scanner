@@ -5,11 +5,47 @@
 //! - Shutdown propagates to all components via a single cancellation token
 //! - All threads are properly joined during cleanup
 //! - It's architecturally impossible to forget shutdown checks
+//!
+//! ## Lifecycle State Machine
+//!
+//! The coordinator enforces a strict lifecycle using typestate:
+//! - **Active**: Can spawn threads, can transition to ShuttingDown
+//! - **ShuttingDown**: Cannot spawn threads, can transition to Terminated via `wait()`
+//! - **Terminated**: All threads joined, no further operations allowed
+//!
+//! State transitions are enforced at runtime, preventing operations in invalid states.
 
 use crate::core::types::{Result, ScannerError};
 use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
+
+/// State: Coordinator is active and can spawn threads
+#[derive(Debug, Clone, PartialEq)]
+pub struct Active;
+
+/// State: Shutdown initiated, no more threads can be spawned
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShuttingDown;
+
+/// State: All threads have been joined, coordinator is terminated
+#[derive(Debug, Clone, PartialEq)]
+pub struct Terminated;
+
+/// Coordinator lifecycle state
+///
+/// This enum wraps typestate structs, allowing compile-time type safety
+/// for state transitions while maintaining runtime flexibility for
+/// dynamic event handling.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CoordinatorState {
+    /// Coordinator is active and can spawn threads
+    Active(Active),
+    /// Shutdown initiated, no more threads can be spawned
+    ShuttingDown(ShuttingDown),
+    /// All threads have been joined, coordinator is terminated
+    Terminated(Terminated),
+}
 
 /// Centralized shutdown coordination for multi-SDR scanner
 ///
@@ -36,6 +72,9 @@ use tracing::debug;
 /// ```
 #[derive(Debug)]
 pub struct ShutdownCoordinator {
+    /// Current lifecycle state
+    state: Mutex<CoordinatorState>,
+
     /// Root cancellation token - cancelling this cancels all child tokens
     token: CancellationToken,
 
@@ -47,6 +86,7 @@ impl ShutdownCoordinator {
     /// Create a new shutdown coordinator
     pub fn new() -> Self {
         Self {
+            state: Mutex::new(CoordinatorState::Active(Active)),
             token: CancellationToken::new(),
             thread_handles: Mutex::new(Vec::new()),
         }
@@ -83,8 +123,21 @@ impl ShutdownCoordinator {
     where
         F: FnOnce(CancellationToken) + Send + 'static,
     {
-        if self.is_shutdown() {
-            return Err(ScannerError::PoolShutdown);
+        match self.state.try_lock() {
+            Ok(state_guard) => {
+                if !matches!(*state_guard, CoordinatorState::Active(_)) {
+                    return Err(ScannerError::PoolShutdown);
+                }
+                drop(state_guard);
+            }
+            Err(std::sync::TryLockError::Poisoned(e)) => {
+                return Err(ScannerError::MutexPoisoned {
+                    context: format!("Failed to lock coordinator state: {}", e),
+                });
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(ScannerError::PoolShutdown);
+            }
         }
 
         let cancel_token = self.token();
@@ -109,8 +162,18 @@ impl ShutdownCoordinator {
     /// This cancels the root token, which automatically propagates to all
     /// child tokens. All spawned threads should detect the cancellation
     /// and begin cleanup.
+    ///
+    /// Transitions from Active → ShuttingDown. Idempotent if already shutting down.
     pub fn shutdown(&self) {
         debug!("ShutdownCoordinator: Initiating shutdown");
+
+        if let Ok(mut state) = self.state.lock()
+            && matches!(*state, CoordinatorState::Active(_))
+        {
+            *state = CoordinatorState::ShuttingDown(ShuttingDown);
+            debug!("ShutdownCoordinator: Transitioned to ShuttingDown state");
+        }
+
         self.token.cancel();
     }
 
@@ -119,25 +182,75 @@ impl ShutdownCoordinator {
         self.token.is_cancelled()
     }
 
+    /// Check if coordinator is in Active state
+    pub fn is_active(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| matches!(*state, CoordinatorState::Active(_)))
+            .unwrap_or(false)
+    }
+
+    /// Check if coordinator is in ShuttingDown state
+    pub fn is_shutting_down(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| matches!(*state, CoordinatorState::ShuttingDown(_)))
+            .unwrap_or(false)
+    }
+
+    /// Check if coordinator is in Terminated state
+    pub fn is_terminated(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| matches!(*state, CoordinatorState::Terminated(_)))
+            .unwrap_or(false)
+    }
+
     /// Wait for all spawned threads to complete
     ///
     /// This should be called after `shutdown()` to ensure all threads
     /// have properly joined before the process exits.
     ///
+    /// Transitions from ShuttingDown → Terminated. Returns an error if called
+    /// when not in ShuttingDown state.
+    ///
     /// # Returns
     ///
-    /// Returns an error if any thread panicked during execution.
-    pub fn wait(self) -> Result<()> {
+    /// Returns an error if any thread panicked during execution or if called
+    /// in the wrong state.
+    pub fn wait(&self) -> Result<()> {
         debug!("ShutdownCoordinator: Waiting for all threads to complete");
 
-        let handles =
-            self.thread_handles
-                .into_inner()
-                .map_err(|e| ScannerError::MutexPoisoned {
-                    context: format!("Failed to unwrap thread_handles: {}", e),
-                })?;
-        let total_threads = handles.len();
+        match self.state.try_lock() {
+            Ok(state_guard) => {
+                if !matches!(*state_guard, CoordinatorState::ShuttingDown(_)) {
+                    return Err(ScannerError::InvalidState {
+                        expected: "ShuttingDown".to_string(),
+                        actual: format!("{:?}", *state_guard),
+                    });
+                }
+                drop(state_guard);
+            }
+            Err(std::sync::TryLockError::Poisoned(e)) => {
+                return Err(ScannerError::MutexPoisoned {
+                    context: format!("Failed to lock coordinator state: {}", e),
+                });
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(ScannerError::PoolShutdown);
+            }
+        }
 
+        let mut handles_guard =
+            self.thread_handles
+                .lock()
+                .map_err(|e| ScannerError::MutexPoisoned {
+                    context: format!("Failed to lock thread_handles: {}", e),
+                })?;
+        let handles: Vec<_> = handles_guard.drain(..).collect();
+        drop(handles_guard);
+
+        let total_threads = handles.len();
         debug!(
             thread_count = total_threads,
             "ShutdownCoordinator: Joining threads"
@@ -164,6 +277,11 @@ impl ShutdownCoordinator {
                     ));
                 }
             }
+        }
+
+        if let Ok(mut state) = self.state.lock() {
+            *state = CoordinatorState::Terminated(Terminated);
+            debug!("ShutdownCoordinator: Transitioned to Terminated state");
         }
 
         debug!("ShutdownCoordinator: All threads joined successfully");
@@ -316,5 +434,94 @@ mod tests {
             spawn_result.is_err(),
             "Spawning during shutdown should fail"
         );
+    }
+
+    #[test]
+    fn test_initial_state_is_active() {
+        let coordinator = ShutdownCoordinator::new();
+        assert!(coordinator.is_active());
+        assert!(!coordinator.is_shutting_down());
+        assert!(!coordinator.is_terminated());
+    }
+
+    #[test]
+    fn test_state_transitions_through_lifecycle() {
+        let coordinator = ShutdownCoordinator::new();
+
+        assert!(coordinator.is_active());
+
+        coordinator.shutdown();
+        assert!(!coordinator.is_active());
+        assert!(coordinator.is_shutting_down());
+        assert!(!coordinator.is_terminated());
+
+        coordinator.wait().unwrap();
+        assert!(!coordinator.is_active());
+        assert!(!coordinator.is_shutting_down());
+        assert!(coordinator.is_terminated());
+    }
+
+    #[test]
+    fn test_spawn_only_allowed_in_active_state() {
+        let coordinator = ShutdownCoordinator::new();
+
+        let result1 = coordinator.spawn_sdr_thread(|_cancel| {});
+        assert!(result1.is_ok(), "Should spawn in Active state");
+
+        coordinator.shutdown();
+        let result2 = coordinator.spawn_sdr_thread(|_cancel| {});
+        assert!(result2.is_err(), "Should not spawn in ShuttingDown state");
+
+        coordinator.wait().unwrap();
+        let result3 = coordinator.spawn_sdr_thread(|_cancel| {});
+        assert!(result3.is_err(), "Should not spawn in Terminated state");
+    }
+
+    #[test]
+    fn test_wait_requires_shutting_down_state() {
+        let coordinator = ShutdownCoordinator::new();
+
+        let result = coordinator.wait();
+        assert!(
+            result.is_err(),
+            "Wait should fail when not in ShuttingDown state"
+        );
+        assert!(matches!(result, Err(ScannerError::InvalidState { .. })));
+    }
+
+    #[test]
+    fn test_shutdown_idempotent() {
+        let coordinator = ShutdownCoordinator::new();
+
+        coordinator.shutdown();
+        assert!(coordinator.is_shutting_down());
+
+        coordinator.shutdown();
+        assert!(coordinator.is_shutting_down());
+    }
+
+    #[test]
+    fn test_state_transitions_with_threads() {
+        let coordinator = ShutdownCoordinator::new();
+        let executed = Arc::new(AtomicBool::new(false));
+        let executed_clone = executed.clone();
+
+        assert!(coordinator.is_active());
+
+        coordinator
+            .spawn_sdr_thread(move |cancel_token| {
+                while !cancel_token.is_cancelled() {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                executed_clone.store(true, Ordering::SeqCst);
+            })
+            .unwrap();
+
+        coordinator.shutdown();
+        assert!(coordinator.is_shutting_down());
+
+        coordinator.wait().unwrap();
+        assert!(coordinator.is_terminated());
+        assert!(executed.load(Ordering::SeqCst));
     }
 }
