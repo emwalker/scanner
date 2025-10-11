@@ -1,8 +1,10 @@
 use super::MainThread;
 use super::state_manager;
 use crate::core::types::{Result, ScannerError};
+use crate::hardware::pool::TunerProvider;
 use crate::scanning::window::Window;
 use crate::signal;
+use std::sync::Arc;
 use tracing::debug;
 
 impl MainThread {
@@ -35,7 +37,7 @@ impl MainThread {
                 station_freq,
                 station_idx + 1,
                 _total_stations,
-                self.pool.clone(),
+                Arc::clone(&self.pool) as Arc<dyn TunerProvider>,
                 self.config.clone(),
                 self.progress_reporter.clone(),
                 self.shutdown_coordinator.clone(),

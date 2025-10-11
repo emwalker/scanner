@@ -182,4 +182,20 @@ impl Model {
         let candidate_count = self.selectable_candidate_count();
         self.selected_candidate_index() == Some(candidate_count)
     }
+
+    /// Get display states for all tuners
+    /// This view model function makes the state-to-label mapping explicit and testable
+    pub fn tuner_display_states(&self) -> Vec<super::TunerDisplayState> {
+        self.tuners
+            .iter()
+            .map(|tuner| {
+                let state = self.tuner_state(&tuner.id);
+                super::TunerDisplayState {
+                    device_id: tuner.id.clone(),
+                    label: tuner.label.clone(),
+                    status_label: state.display(),
+                }
+            })
+            .collect()
+    }
 }

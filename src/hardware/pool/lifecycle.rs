@@ -326,10 +326,30 @@ impl Pool {
 
         debug!(tuner_id = ?tuner_id, "Tuner acquired from pool");
 
+        let on_state_change = Arc::clone(&self.on_state_change);
+        let pool_ref = Arc::clone(&self.pool_ref);
+        let shutdown_mode_clone = Arc::clone(&self.shutdown_mode);
+
         Some(Tuner {
             tuner_id: tuner_id.clone(),
             device,
-            pool: Arc::clone(&self.pool_ref),
+            pool_inner: Arc::clone(&self.pool_ref),
+            on_return: Box::new(move || {
+                if shutdown_mode_clone.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                let status = match pool_ref.try_lock() {
+                    Ok(inner) => crate::hardware::pool::Pool::build_status_from_inner(&inner),
+                    Err(_) => return,
+                };
+
+                if let Ok(callbacks) = on_state_change.lock() {
+                    for callback in callbacks.iter() {
+                        callback(status.clone());
+                    }
+                }
+            }),
             shutdown_mode: Arc::clone(&self.shutdown_mode),
         })
     }
@@ -383,7 +403,7 @@ impl Pool {
             "Pool acquire: checking available tuners"
         );
 
-        match self.find_best_matching_tuner(&inner, requirements, allocated_count) {
+        let tuner = match self.find_best_matching_tuner(&inner, requirements, allocated_count) {
             Some((tuner_id, _)) => {
                 let tuner_id = tuner_id.clone();
                 self.allocate_tuner(&mut inner, &tuner_id, activity)
@@ -392,7 +412,14 @@ impl Pool {
                 debug!(requirements = ?requirements, "No tuner available");
                 None
             }
+        };
+
+        if tuner.is_some() {
+            drop(inner);
+            self.notify_state_change();
         }
+
+        tuner
     }
 
     fn create_empty_pool_status() -> PoolStatus {
@@ -430,6 +457,16 @@ impl Pool {
             .collect()
     }
 
+    /// Build PoolStatus from PoolInner (helper for status computation)
+    pub(crate) fn build_status_from_inner(inner: &PoolInner) -> PoolStatus {
+        PoolStatus {
+            available_tuner_count: inner.available_tuners.len(),
+            allocated_tuner_count: inner.allocated_tuners.len(),
+            device_count: inner.devices.len(),
+            tuners: Self::collect_tuner_statuses(inner),
+        }
+    }
+
     /// Get pool status (for TUI display)
     ///
     /// Returns empty status if in shutdown mode or if pool is locked.
@@ -441,12 +478,7 @@ impl Pool {
         }
 
         match self.pool_ref.try_lock() {
-            Ok(inner) => PoolStatus {
-                available_tuner_count: inner.available_tuners.len(),
-                allocated_tuner_count: inner.allocated_tuners.len(),
-                device_count: inner.devices.len(),
-                tuners: Self::collect_tuner_statuses(&inner),
-            },
+            Ok(inner) => Self::build_status_from_inner(&inner),
             Err(_) => {
                 debug!("Pool status requested but pool is locked - returning empty");
                 Self::create_empty_pool_status()

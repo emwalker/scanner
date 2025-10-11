@@ -29,6 +29,7 @@ This ensures we avoid any licensing concerns while still learning from the broad
 
 ### Rust code
 
+- This is a greenfield project, so we don't need to maintain backwards compatability.
 - Add mimimal comments. Infrequent comments are ok, but in general we don't need them.
 - Don't include development-specific comments that wouldn't make sense to people not involved in the development process (e.g., "changed this to that", "increased width of such-and-such", or other references to previous iterations)
 - When adding or modifying a debug! log statement, use the json key value style: `debug!(key1 = value1, key2 = value2, ...)`
@@ -90,16 +91,12 @@ impl Drop for Resource {
 See `src/pool/mod.rs` for reference implementation of shutdown-safe patterns.
 
 ### Building and Checking
-- `cargo check` - Check for syntax errors and basic correctness (feel free to use anytime)
+- `make lint` - Check for syntax errors and basic correctness (feel free to use anytime)
 - `cargo build` - Build the project
-- `cargo run -- scan --stations 88.9e6 --duration 1 --json` - Run tuned to specific frequency (88.9 MHz)
+- `cargo run - scan --stations 88.9e6 --duration 1 --json` - Run tuned to specific frequency (88.9 MHz)
 - When checking `--band fm`, use a timeout command with a suitable timeout
-- When troubleshooting a test, add `let _ = tracing_subscriber::fmt::try_init();` and use the `debug!` output if it's already available.
 
 ### Testing and Code Quality
-- The user will use the `/fix` when they want to run the tests and fix linting issues
-- Do NOT proactively run `cargo test` or `make lint` - wait for the user to run `/fix` at the appropriate time
-- The `/fix` command will handle both testing and linting comprehensively
 - **Dead code warnings are NOT acceptable** - remove all unused functions, constants, fields, and imports
   - Use `#[allow(dead_code)]` only if the code will be used soon or is intentionally kept for future use
   - When in doubt, remove the dead code rather than suppressing the warning

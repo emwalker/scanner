@@ -166,3 +166,12 @@ pub enum UiMode {
         playing_candidate_id: String,
     },
 }
+
+/// View model for tuner display state
+/// Makes the state-to-label mapping explicit and testable
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TunerDisplayState {
+    pub device_id: crate::hardware::DeviceId,
+    pub label: String,
+    pub status_label: &'static str,
+}

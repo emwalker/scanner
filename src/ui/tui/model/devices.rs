@@ -31,7 +31,7 @@ impl Model {
         if let Some(ref status) = self.pool_status {
             for tuner in &status.tuners {
                 if &tuner.id.device_id == tuner_id {
-                    return match (&tuner.state, &tuner.activity) {
+                    let result = match (&tuner.state, &tuner.activity) {
                         (crate::hardware::pool::TunerState::Available, _) => TunerState::Available,
                         (crate::hardware::pool::TunerState::Allocated, Some(activity)) => {
                             match activity {
@@ -50,9 +50,21 @@ impl Model {
                             TunerState::Available
                         }
                     };
+                    debug!(
+                        tuner_id = ?tuner_id,
+                        pool_state = ?tuner.state,
+                        pool_activity = ?tuner.activity,
+                        ui_state = ?result,
+                        "tuner_state() returning"
+                    );
+                    return result;
                 }
             }
         }
+        debug!(
+            tuner_id = ?tuner_id,
+            "tuner_state() fallback: no pool_status or tuner not found"
+        );
         self.tuner_states
             .get(tuner_id)
             .cloned()

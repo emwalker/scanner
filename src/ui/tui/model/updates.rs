@@ -33,8 +33,53 @@ impl Model {
                         .iter()
                         .filter(|t| t.state == crate::hardware::pool::TunerState::Allocated)
                         .count(),
+                    scanning_count = status
+                        .tuners
+                        .iter()
+                        .filter(
+                            |t| t.activity == Some(crate::hardware::pool::TunerActivity::Scanning)
+                        )
+                        .count(),
+                    listening_count = status
+                        .tuners
+                        .iter()
+                        .filter(
+                            |t| t.activity == Some(crate::hardware::pool::TunerActivity::Listening)
+                        )
+                        .count(),
                     "Pool status updated"
                 );
+
+                // Debug each tuner's state
+                for tuner in &status.tuners {
+                    debug!(
+                        device_id = ?tuner.id.device_id,
+                        state = ?tuner.state,
+                        activity = ?tuner.activity,
+                        "Tuner status"
+                    );
+                }
+
+                // Sync tuner list with pool status to ensure device IDs match
+                // The pool may have different device IDs than discovery service
+                for pool_tuner in &status.tuners {
+                    let device_id = pool_tuner.id.device_id.clone();
+
+                    // Add tuner if not already in list
+                    if !self.tuners.iter().any(|t| t.id == device_id) {
+                        debug!(
+                            device_id = ?device_id,
+                            model = %pool_tuner.model,
+                            backend = %pool_tuner.backend,
+                            "Adding tuner from pool status"
+                        );
+                        self.tuners.push(crate::hardware::DeviceInfo {
+                            id: device_id.clone(),
+                            label: format!("{} ({})", pool_tuner.model, pool_tuner.backend),
+                        });
+                    }
+                }
+
                 self.pool_status = Some(status);
             }
         }

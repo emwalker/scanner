@@ -30,10 +30,24 @@ pub enum DeviceId {
 }
 
 impl DeviceId {
+    /// Normalize driver name to lowercase for consistent DeviceId creation
+    ///
+    /// SoapySDR drivers can return different capitalizations:
+    /// - enumeration: "sdrplay" (lowercase)
+    /// - driver_key(): "SDRplay" (mixed case)
+    ///
+    /// This ensures both discovery and pool create identical DeviceIds.
+    fn normalize_driver(driver: &str) -> String {
+        driver.to_lowercase()
+    }
+
     /// Create a device ID from backend name and serial number
+    ///
+    /// The driver name is normalized to lowercase to ensure discovery and pool
+    /// create matching DeviceIds even if SoapySDR returns different capitalizations.
     pub fn from_serial(backend: &str, serial: &str) -> Self {
         Self::Backend {
-            backend: backend.to_string(),
+            backend: Self::normalize_driver(backend),
             serial: serial.to_string(),
         }
     }
@@ -90,33 +104,64 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    /// Create capabilities from a SoapySDR device
-    pub fn from_soapy_device(device: &soapysdr::Device) -> Result<Self> {
-        let driver = device.driver_key()?;
-        let hardware_info = device.hardware_info()?;
-        let hardware_info_str: String = (&hardware_info).into();
+    /// Create capabilities with basic SDR defaults
+    ///
+    /// This is used by both SoapySDR (which queries actual hardware) and Mock backend.
+    /// The driver and serial parameters ensure the DeviceId matches what enumeration returned.
+    fn with_device_id(driver: &str, serial: &str) -> Self {
+        Self {
+            device_id: DeviceId::from_serial(driver, serial),
+            rx_frequency_ranges: vec![(24e6, 1766e6)],
+            rx_sample_rate_ranges: vec![(225_000.0, 2_400_000.0)],
+            gain_range: (0.0, 48.0),
+            has_agc: true,
+            antenna_options: vec!["RX".to_string()],
+            channels: 1,
+            max_bandwidth: 2_400_000.0,
+            typical_latency_us: 50,
+        }
+    }
 
-        let rx_freq_ranges = device
+    /// Create capabilities for mock devices
+    ///
+    /// Uses default SDR capabilities for testing without hardware.
+    pub fn for_mock(driver: &str, serial: &str) -> Self {
+        Self::with_device_id(driver, serial)
+    }
+
+    /// Create capabilities from a SoapySDR device
+    ///
+    /// Uses the provided driver and serial for the DeviceId to ensure consistency
+    /// with enumeration results.
+    pub fn from_soapy_device(
+        device: &soapysdr::Device,
+        driver: &str,
+        serial: &str,
+    ) -> Result<Self> {
+        let mut caps = Self::with_device_id(driver, serial);
+
+        caps.rx_frequency_ranges = device
             .frequency_range(soapysdr::Direction::Rx, 0)?
             .into_iter()
             .map(|r| (r.minimum, r.maximum))
             .collect();
 
-        let rx_sample_rate_ranges: Vec<(f64, f64)> = device
+        caps.rx_sample_rate_ranges = device
             .get_sample_rate_range(soapysdr::Direction::Rx, 0)?
             .into_iter()
             .map(|r| (r.minimum, r.maximum))
             .collect();
 
-        let gain_range = {
-            let r = device.gain_range(soapysdr::Direction::Rx, 0)?;
-            (r.minimum, r.maximum)
-        };
+        let gain_range = device.gain_range(soapysdr::Direction::Rx, 0)?;
+        caps.gain_range = (gain_range.minimum, gain_range.maximum);
 
-        let max_bandwidth = rx_sample_rate_ranges.last().map(|r| r.1).unwrap_or(0.0);
+        caps.max_bandwidth = caps
+            .rx_sample_rate_ranges
+            .last()
+            .map(|r| r.1)
+            .unwrap_or(0.0);
 
-        // Estimate latency based on driver type
-        let typical_latency_us = match driver.as_str() {
+        caps.typical_latency_us = match driver {
             "rtlsdr" => 50,   // Fast USB2.0 device
             "sdrplay" => 100, // Moderate latency
             "hackrf" => 75,   // Fast USB2.0
@@ -124,21 +169,17 @@ impl Capabilities {
             _ => 100,         // Default estimate
         };
 
-        Ok(Self {
-            device_id: DeviceId::from_serial(&driver, &hardware_info_str),
-            rx_frequency_ranges: rx_freq_ranges,
-            rx_sample_rate_ranges,
-            gain_range,
-            has_agc: device
-                .has_gain_mode(soapysdr::Direction::Rx, 0)
-                .unwrap_or(false),
-            antenna_options: device
-                .antennas(soapysdr::Direction::Rx, 0)
-                .unwrap_or_default(),
-            channels: device.num_channels(soapysdr::Direction::Rx).unwrap_or(1),
-            max_bandwidth,
-            typical_latency_us,
-        })
+        caps.has_agc = device
+            .has_gain_mode(soapysdr::Direction::Rx, 0)
+            .unwrap_or(false);
+
+        caps.antenna_options = device
+            .antennas(soapysdr::Direction::Rx, 0)
+            .unwrap_or_default();
+
+        caps.channels = device.num_channels(soapysdr::Direction::Rx).unwrap_or(1);
+
+        Ok(caps)
     }
 
     /// Check if device supports a given frequency
@@ -261,6 +302,34 @@ mod tests {
             DeviceId::Backend { backend, serial } => {
                 assert_eq!(backend, "soapy");
                 assert_eq!(serial, "12345");
+            }
+            _ => panic!("Expected Backend variant"),
+        }
+    }
+
+    #[test]
+    fn test_device_id_driver_normalization() {
+        // Test that different capitalizations produce the same DeviceId
+        let id_lowercase = DeviceId::from_serial("sdrplay", "12345");
+        let id_mixedcase = DeviceId::from_serial("SDRplay", "12345");
+        let id_uppercase = DeviceId::from_serial("SDRPLAY", "12345");
+
+        assert_eq!(
+            id_lowercase, id_mixedcase,
+            "Lowercase and mixed case should match"
+        );
+        assert_eq!(
+            id_lowercase, id_uppercase,
+            "Lowercase and uppercase should match"
+        );
+
+        // Verify all are normalized to lowercase
+        match &id_mixedcase {
+            DeviceId::Backend { backend, .. } => {
+                assert_eq!(
+                    backend, "sdrplay",
+                    "Driver should be normalized to lowercase"
+                );
             }
             _ => panic!("Expected Backend variant"),
         }

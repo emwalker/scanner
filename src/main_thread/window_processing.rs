@@ -2,7 +2,9 @@ use super::MainThread;
 use super::commands::{CommandHandler, CommandHandlerConfig};
 use crate::audio::session::AudioSession;
 use crate::core::types::Result;
+use crate::hardware::pool::TunerProvider;
 use crate::scanning::window::{Window, WindowConfig};
+use std::sync::Arc;
 use tracing::debug;
 
 impl MainThread {
@@ -90,7 +92,7 @@ impl MainThread {
             center_freq,
             window_num,
             total_windows,
-            tuner_provider: self.pool.clone(),
+            tuner_provider: Arc::clone(&self.pool) as Arc<dyn TunerProvider>,
             config: self.config.clone(),
             progress_reporter: self.progress_reporter.clone(),
             shutdown_coordinator: self.shutdown_coordinator.clone(),

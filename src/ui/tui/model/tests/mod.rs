@@ -11,3 +11,6 @@ mod ui_mode;
 
 #[cfg(test)]
 mod tuner_state;
+
+#[cfg(test)]
+mod tuner_state_proptest;

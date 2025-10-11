@@ -20,7 +20,7 @@ When updating this plan as work progresses, avoid adding:
 - Speculation about future improvements or possibilities
 - Time estimates or risk assessments
 
-Keep updates matter-of-fact and focused on concrete technical details. Simply check off completed tasks and add technical notes as needed.
+Keep updates matter-of-fact and focused on concrete technical details. Check off completed tasks and add technical notes as needed. For each section, add a brief summary of anything that you learned from internet searches.
 
 ## Proposal 1: <Name>
 

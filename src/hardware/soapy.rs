@@ -95,7 +95,7 @@ impl Backend for Soapy {
             format!("driver={},serial={}", backend, serial)
         };
 
-        Ok(Box::new(SoapyDevice::new(args)?))
+        Ok(Box::new(SoapyDevice::new(args, backend, serial)?))
     }
 
     fn name(&self) -> &str {
@@ -117,12 +117,15 @@ pub struct SoapyDevice {
 
 impl SoapyDevice {
     /// Create a new SoapyDevice from device arguments
-    pub fn new(device_args: String) -> Result<Self> {
+    pub fn new(device_args: String, expected_driver: &str, expected_serial: &str) -> Result<Self> {
         // Create temporary device to query capabilities
         let args = soapysdr::Args::from(device_args.as_str());
         let temp_device = soapysdr::Device::new(args)?;
 
-        let capabilities = Capabilities::from_soapy_device(&temp_device)?;
+        // Use the expected driver/serial from enumeration for DeviceId creation
+        // This ensures the DeviceId matches what discovery created
+        let capabilities =
+            Capabilities::from_soapy_device(&temp_device, expected_driver, expected_serial)?;
         let device_id = capabilities.device_id.clone();
 
         Ok(Self {

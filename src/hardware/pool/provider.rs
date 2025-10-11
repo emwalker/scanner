@@ -26,13 +26,9 @@ pub trait TunerProvider: Send + Sync {
 }
 
 /// Implement TunerProvider for Pool
-///
-/// This implementation delegates to the existing Pool methods,
-/// allowing Pool to be used anywhere a TunerProvider is expected.
 impl TunerProvider for crate::hardware::pool::Pool {
     fn acquire(&self, requirements: &TaskRequirements, activity: TunerActivity) -> Result<Tuner> {
-        // Delegate to Pool's existing acquire method
-        crate::hardware::pool::Pool::acquire(self, requirements, activity)
+        self.acquire(requirements, activity)
     }
 
     fn try_acquire(
@@ -40,7 +36,6 @@ impl TunerProvider for crate::hardware::pool::Pool {
         requirements: &TaskRequirements,
         activity: TunerActivity,
     ) -> Option<Tuner> {
-        // Delegate to Pool's existing try_acquire method
-        crate::hardware::pool::Pool::try_acquire(self, requirements, activity)
+        self.try_acquire(requirements, activity)
     }
 }

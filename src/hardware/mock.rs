@@ -31,7 +31,19 @@ impl Backend for Mock {
     }
 
     fn open_device(&self, id: &DeviceId) -> Result<Box<dyn DeviceTrait>> {
-        Ok(Box::new(MockDevice::new(id.clone(), false)))
+        let (driver, serial) = match id {
+            DeviceId::Backend { backend, serial } => (backend.as_str(), serial.as_str()),
+            DeviceId::Usb { .. } => {
+                return Err(
+                    crate::core::types::ScannerError::UnsupportedDeviceIdFormat {
+                        backend: "mock".to_string(),
+                        device_format: "USB".to_string(),
+                    },
+                );
+            }
+        };
+
+        Ok(Box::new(MockDevice::new(driver, serial, false)))
     }
 
     fn name(&self) -> &str {
@@ -52,22 +64,17 @@ pub struct MockDevice {
 impl MockDevice {
     /// Create a new mock device
     ///
+    /// Uses the same DeviceId creation logic as SoapyDevice to ensure
+    /// enumeration and opening produce matching DeviceIds.
+    ///
     /// # Arguments
     ///
-    /// * `device_id` - Tuner identifier
+    /// * `driver` - Backend driver name (e.g., "mock", "sdrplay")
+    /// * `serial` - Device serial number
     /// * `fail_on_tune` - If true, `tune()` will return an error (for testing error handling)
-    pub fn new(device_id: DeviceId, fail_on_tune: bool) -> Self {
-        let capabilities = Capabilities {
-            device_id: device_id.clone(),
-            rx_frequency_ranges: vec![(24e6, 1766e6)], // Typical RTL-SDR range
-            rx_sample_rate_ranges: vec![(225_000.0, 2_400_000.0)],
-            gain_range: (0.0, 48.0),
-            has_agc: true,
-            antenna_options: vec!["RX".to_string()],
-            channels: 1,
-            max_bandwidth: 2_400_000.0,
-            typical_latency_us: 50,
-        };
+    pub fn new(driver: &str, serial: &str, fail_on_tune: bool) -> Self {
+        let capabilities = Capabilities::for_mock(driver, serial);
+        let device_id = capabilities.device_id.clone();
 
         Self {
             device_id,
@@ -194,8 +201,7 @@ mod tests {
 
     #[test]
     fn test_mock_device_tune_failure() {
-        let device_id = DeviceId::from_serial("mock", "999");
-        let mut device = MockDevice::new(device_id, true); // fail_on_tune = true
+        let mut device = MockDevice::new("mock", "999", true); // fail_on_tune = true
 
         // Should fail
         let result = device.tune(100e6);

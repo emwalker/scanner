@@ -37,8 +37,11 @@ pub struct Tuner {
     /// Shared reference to the underlying device
     pub device: Arc<Mutex<Box<dyn hardware::DeviceTrait>>>,
 
-    /// Pool reference for auto-return
-    pub pool: Arc<Mutex<PoolInner>>,
+    /// Pool inner reference for auto-return
+    pub(crate) pool_inner: Arc<Mutex<PoolInner>>,
+
+    /// Notification closure (captures status computation and callbacks)
+    pub(crate) on_return: Box<dyn Fn() + Send + Sync>,
 
     /// Shutdown mode flag (shared with Pool)
     pub shutdown_mode: Arc<AtomicBool>,
@@ -139,17 +142,23 @@ impl Drop for Tuner {
     fn drop(&mut self) {
         let shutdown_mode = self.shutdown_mode.load(Ordering::SeqCst);
 
-        match self.pool.try_lock() {
-            Ok(mut pool) => {
-                pool.return_tuner(self.tuner_id.clone(), shutdown_mode);
+        let returned = match self.pool_inner.try_lock() {
+            Ok(mut pool_inner) => {
+                let returned = pool_inner.return_tuner(self.tuner_id.clone(), shutdown_mode);
                 tracing::debug!(tuner_id = ?self.tuner_id, "Tuner returned to pool");
+                returned
             }
             Err(_) => {
                 tracing::warn!(
                     tuner_id = ?self.tuner_id,
                     "Could not return tuner to pool (locked) - likely shutting down"
                 );
+                false
             }
+        };
+
+        if returned {
+            (self.on_return)();
         }
     }
 }

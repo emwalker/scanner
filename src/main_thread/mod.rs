@@ -67,7 +67,7 @@ impl MainThread {
         shutdown_coordinator: Arc<ShutdownCoordinator>,
         pool: Arc<Pool>,
     ) -> Result<Self> {
-        Ok(MainThread {
+        let main_thread = MainThread {
             config,
             console_writer,
             _logger: logger,
@@ -80,7 +80,9 @@ impl MainThread {
             pause_signal: PauseSignal::new(),
             current_playing: None,
             pool,
-        })
+        };
+
+        Ok(main_thread)
     }
 
     pub fn with_command_receiver(mut self, receiver: Receiver<ScannerCommand>) -> Self {
@@ -89,16 +91,14 @@ impl MainThread {
     }
 
     pub fn with_tui_event_sender(mut self, sender: Sender<TuiEvent>) -> Self {
-        self.tui_event_sender = Some(sender);
-        self
-    }
+        self.tui_event_sender = Some(sender.clone());
 
-    fn send_active_tuners_update(&self) {
-        if let Some(ref sender) = self.tui_event_sender {
-            let status = self.pool.status();
+        self.pool.add_state_change_callback(Box::new(move |status| {
             let event = TuiEvent::ActiveTunersUpdated { status };
             let _ = sender.send(event);
-        }
+        }));
+
+        self
     }
 
     pub fn run(mut self, stations: Option<String>) -> Result<()> {
@@ -114,9 +114,6 @@ impl MainThread {
         );
 
         self.console_writer.write_info("Scanning for stations ...");
-
-        // Send initial active tuners state (tuner is scanning)
-        self.send_active_tuners_update();
 
         if let Some(stations_str) = stations {
             self.scan_stations(&stations_str)?;
