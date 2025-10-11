@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Markdown documents
+
+Avoid bold text, all-caps and and emojis. Lean towards paragraphs over bullet points, although use bullet points when they make sense. Avoid sections that enumerate rationales, time estimates, benefits, accomplishments, self-aggrandizement, speculation, and future improvements, unless these things are specifically requested. Be concise and matter-of-fact.
+
 ## License Compliance for External Code
 
 **IMPORTANT**: Before examining any external code (libraries, example projects, etc.), always check the license first.

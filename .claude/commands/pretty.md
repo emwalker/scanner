@@ -3,7 +3,7 @@ description: Find Rust files that need cleanup and refactoring
 allowed-tools: Bash(cargo:*), Bash(find:*), Bash(wc:*), Bash(grep:*), Read, Grep, Glob
 ---
 
-You are an expert open-source Rust developer with many years of experience. Can you think hard and identify modifications to the codebase that would be beneficial, so that the resulting codebase is a little more pleasing to the eyes and will be in a good position for future modifications? Analyze the codebase for:
+You are an expert open-source Rust developer with many years of experience. Can you think hard and identify modifications to the codebase that would be beneficial, so that the resulting codebase is a little more pleasing to the eye and will be in a good position for future modifications? Analyze the codebase for:
 
 1. **Code Smell Detection**:
    - Functions longer than 20-30 lines
@@ -15,22 +15,12 @@ You are an expert open-source Rust developer with many years of experience. Can 
 2. **Style Issues**:
    - Functions with `get_` prefix (should follow Rust conventions)
    - Non-idiomatic imports (not following project standards)
-   - Departures from idiomatic Rust conventions
-   - Cases where a new struct should be created and functions should be turned into associated funcions
-   - Cases where a struct has too many responsibilities and should be separated into multiple structs to better separate concerns
-   - Cases where we're not using the Iterator trait and we should be using it
-   - Cases where we're using a custom error and a dedicated error variant would be beneficial
 
 3. **Structural Issues**:
    - Large files (>500 lines) that could be split
-   - Modules with unclear responsibilities
-   - Duplicated code patterns
    - Architectural issues
    - Code in one module that would be better moved to another module
-   - Cases where an elegant approach to something specific could prepare for future possibilities
-   - Cases where a forward-looking approch could make life easier later on
-   - Cases where the typestate pattern can be used to enforce compile-time correctness
-   - See docs/patterns/ for related information
+   - Cases where we should further adopt a pattern in docs/patterns/
 
 4. **Performance and Algorithmic Issues**
    - Code paths that could benefit from better algorithms
@@ -49,6 +39,4 @@ You are an expert open-source Rust developer with many years of experience. Can 
 
 **Output Format**:
 
-Print out some well-thought-out proposals for what steps to take next.
-
-Prioritize modifications with the most issues or highest impact on code maintainability. Do an internet search to see what the internet thinks of these suggestions and modify them using the results of your search. This slash command should be convergent, in the sense that if you ran it enough times and followed the recommendations, fewer and fewer changes would be suggested, until at some point there are no more recommendations. Omit suggestions that are likely to be found unnecessary on further inspection.
+Print out some well-thought-out proposals for what steps to take next. Do an internet search to see what the internet thinks of these proposals and modify them using the results of your search. This slash command should be convergent, in the sense that if you ran it enough times and followed the recommendations, fewer and fewer changes would be suggested, until at some point there are no more recommendations. Omit suggestions that are likely to be found unnecessary on further inspection.
