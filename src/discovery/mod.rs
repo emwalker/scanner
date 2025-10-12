@@ -21,14 +21,15 @@ pub enum DiscoveryMode {
     ForceUdev,
 }
 
-pub fn create(backend_names: Vec<String>, mode: DiscoveryMode) -> Box<dyn Service> {
+pub fn create(backends: Vec<hardware::types::Backend>, mode: DiscoveryMode) -> Box<dyn Service> {
     use enumerator::{MultiEnumerator, SourcePriority, SubprocessEnumerator};
 
-    let mut enumerators: Vec<(Box<dyn DeviceEnumerator>, SourcePriority)> = backend_names
+    let mut enumerators: Vec<(Box<dyn DeviceEnumerator>, SourcePriority)> = backends
         .into_iter()
-        .map(|name| {
+        .map(|backend| {
             (
-                Box::new(SubprocessEnumerator::new(name)) as Box<dyn DeviceEnumerator>,
+                Box::new(SubprocessEnumerator::new(backend.as_str().to_string()))
+                    as Box<dyn DeviceEnumerator>,
                 SourcePriority::Backend,
             )
         })
@@ -112,16 +113,17 @@ pub fn create_for_testing(
 /// # Returns
 /// List of discovered devices matching the filter
 pub fn enumerate_once_subprocess(
-    backend_names: &[String],
+    backends: &[hardware::types::Backend],
     filter: Option<&str>,
 ) -> Result<Vec<hardware::DeviceInfo>> {
     use enumerator::{MultiEnumerator, SourcePriority, SubprocessEnumerator};
 
-    let backend_enumerators: Vec<(Box<dyn DeviceEnumerator>, SourcePriority)> = backend_names
+    let backend_enumerators: Vec<(Box<dyn DeviceEnumerator>, SourcePriority)> = backends
         .iter()
-        .map(|name| {
+        .map(|backend| {
             (
-                Box::new(SubprocessEnumerator::new(name.clone())) as Box<dyn DeviceEnumerator>,
+                Box::new(SubprocessEnumerator::new(backend.as_str().to_string()))
+                    as Box<dyn DeviceEnumerator>,
                 SourcePriority::Backend,
             )
         })
@@ -140,7 +142,7 @@ pub fn enumerate_once_subprocess(
             Ok(all_devices
                 .into_iter()
                 .filter(|device| match (&device.id, key) {
-                    (hardware::DeviceId::Backend { backend, .. }, "driver") => backend == value,
+                    (hardware::DeviceId::Driver { driver, .. }, "driver") => driver == value,
                     _ => false,
                 })
                 .collect())
@@ -181,7 +183,7 @@ pub fn enumerate_once(
             Ok(all_devices
                 .into_iter()
                 .filter(|device| match (&device.id, key) {
-                    (hardware::DeviceId::Backend { backend, .. }, "driver") => backend == value,
+                    (hardware::DeviceId::Driver { driver, .. }, "driver") => driver == value,
                     _ => false,
                 })
                 .collect())

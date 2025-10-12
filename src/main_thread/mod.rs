@@ -27,6 +27,8 @@ pub struct MainThread {
     pause_signal: PauseSignal,
     current_playing: Option<TuneParams>,
     pool: Arc<Pool>,
+    #[allow(dead_code)]
+    discovered_devices: Vec<crate::hardware::DeviceInfo>,
 }
 
 impl MainThread {
@@ -55,9 +57,11 @@ impl MainThread {
             pause_signal: PauseSignal::new(),
             current_playing: None,
             pool: Arc::new(pool),
+            discovered_devices: Vec::new(),
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_progress(
         config: Arc<ScanningConfig>,
         console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
@@ -66,6 +70,7 @@ impl MainThread {
         progress_reporter: Arc<dyn ProgressReporter>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
         pool: Arc<Pool>,
+        discovered_devices: Vec<crate::hardware::DeviceInfo>,
     ) -> Result<Self> {
         let main_thread = MainThread {
             config,
@@ -80,6 +85,7 @@ impl MainThread {
             pause_signal: PauseSignal::new(),
             current_playing: None,
             pool,
+            discovered_devices,
         };
 
         Ok(main_thread)

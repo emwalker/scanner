@@ -23,11 +23,12 @@ use std::any::Any;
 ///
 /// ```no_run
 /// use rustradio::graph::Graph;
-/// use scanner::hardware::{Backend, Soapy};
+/// use scanner::hardware::{Backend, Soapy, pool::TunerId};
 ///
 /// let backend = Soapy;
 /// let devices = backend.enumerate_devices()?;
-/// let device = backend.open_device(&devices[0].id)?;
+/// let tuner_id = TunerId::new(devices[0].id.clone(), 0);
+/// let device = backend.open_tuner(&tuner_id)?;
 ///
 /// let mut graph = Graph::new();
 /// let stream = device.add_source_to_graph(
@@ -88,11 +89,12 @@ pub trait DeviceTrait: Send {
     /// # Examples
     ///
     /// ```no_run
-    /// use scanner::hardware::{Backend, Soapy};
+    /// use scanner::hardware::{Backend, Soapy, pool::TunerId};
     ///
     /// let backend = Soapy;
     /// let devices = backend.enumerate_devices()?;
-    /// let device = backend.open_device(&devices[0].id)?;
+    /// let tuner_id = TunerId::new(devices[0].id.clone(), 0);
+    /// let device = backend.open_tuner(&tuner_id)?;
     ///
     /// // Get raw device args for advanced configuration
     /// let raw = device.into_inner();

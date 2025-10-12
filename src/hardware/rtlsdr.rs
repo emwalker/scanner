@@ -17,7 +17,22 @@ impl Backend for RtlSdr {
         Ok(vec![]) // Stub for now
     }
 
-    fn open_device(&self, _id: &DeviceId) -> Result<Box<dyn DeviceTrait>> {
+    fn open_tuner(
+        &self,
+        _tuner_id: &crate::hardware::pool::TunerId,
+    ) -> Result<Box<dyn DeviceTrait>> {
+        Err(DeviceError::new(
+            DeviceErrorKind::Unsupported,
+            "RtlSdr",
+            "rtl-sdr-rs backend not yet implemented (may use Seify instead)",
+        )
+        .into())
+    }
+
+    fn open_streaming_tuner(
+        &self,
+        _tuner_id: &crate::hardware::pool::TunerId,
+    ) -> Result<Box<dyn super::streaming::StreamingDevice>> {
         Err(DeviceError::new(
             DeviceErrorKind::Unsupported,
             "RtlSdr",

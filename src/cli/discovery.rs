@@ -1,7 +1,6 @@
 use crate::core::types::{Result, ScannerError};
 use crate::discovery::{self, DiscoveryMode};
 use crate::hardware::pool::{AddDeviceResult, Pool, PoolFilter, TuningMode};
-use crate::hardware::{Backend, DeviceId};
 use crate::shutdown::ShutdownCoordinator;
 use crate::ui::TuiEvent;
 use std::sync::Arc;
@@ -14,17 +13,21 @@ pub struct DiscoverySetup {
 }
 
 pub fn initialize_pool_with_device(
-    device_id: &DeviceId,
-    backend: &dyn Backend,
+    tuner_id: &crate::hardware::pool::TunerId,
+    backend: crate::hardware::types::Backend,
+    use_subprocesses: bool,
 ) -> Result<Arc<Pool>> {
     let filter = PoolFilter::new()
         .with_driver("sdrplay")
         .with_mode(TuningMode::SingleTuner);
-    let pool = Arc::new(Pool::new(filter));
+    let mut pool = Pool::new(filter);
+    pool.use_subprocesses = use_subprocesses;
+    let pool = Arc::new(pool);
 
-    let device_trait = backend.open_device(device_id)?;
+    let capabilities = crate::hardware::Capabilities::for_device(&tuner_id.device_id);
+    let result = pool.add_device_metadata(tuner_id.device_id.clone(), capabilities, backend);
 
-    match pool.add_device(device_trait, backend.name().to_string()) {
+    match result {
         AddDeviceResult::Added {
             device_id,
             tuner_count,
@@ -32,6 +35,7 @@ pub fn initialize_pool_with_device(
             tracing::debug!(
                 device_id = ?device_id,
                 tuner_count = tuner_count,
+                use_subprocesses = use_subprocesses,
                 "Initial device added to pool"
             );
         }
@@ -62,9 +66,14 @@ pub fn start_discovery_service(
     tui_event_sender: mpsc::Sender<TuiEvent>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
     initial_devices: Vec<crate::hardware::DeviceInfo>,
+    use_subprocesses: bool,
 ) -> Result<DiscoverySetup> {
-    let backend_names = vec!["soapy".to_string()];
-    let mut discovery_service = discovery::create(backend_names, DiscoveryMode::Auto);
+    let backends = if use_subprocesses {
+        vec![]
+    } else {
+        vec![crate::hardware::types::Backend::Soapy]
+    };
+    let mut discovery_service = discovery::create(backends, DiscoveryMode::Auto);
 
     let (discovery_sender, discovery_receiver) = mpsc::channel();
 

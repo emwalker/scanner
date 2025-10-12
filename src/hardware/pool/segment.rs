@@ -149,6 +149,27 @@ impl Segment {
             graph_cancel,
         })
     }
+
+    /// Stop the stream and wait for acknowledgment
+    ///
+    /// This should be called before dropping the Segment to ensure the tuner
+    /// has fully stopped streaming and is ready for new commands.
+    pub fn stop_stream(&mut self) -> Result<()> {
+        // Cancel the graph first
+        self.graph_cancel.cancel();
+
+        // Wait for graph thread to finish
+        if let Some(handle) = self.graph_handle.take() {
+            debug!("Waiting for pool-based SDR graph thread to finish");
+            let _ = handle.join();
+            debug!("Pool-based SDR graph thread finished");
+        }
+
+        // Stop tuner stream and wait for acknowledgment (subprocess backend)
+        self._tuner.stop_stream()?;
+
+        Ok(())
+    }
 }
 
 impl SegmentTrait for Segment {

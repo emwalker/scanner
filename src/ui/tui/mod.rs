@@ -79,6 +79,12 @@ impl TuiProgressDisplay {
         self
     }
 
+    /// Pre-populate the model with cached devices
+    pub fn with_cached_devices(mut self, devices: Vec<crate::hardware::DeviceInfo>) -> Self {
+        self.model = self.model.with_cached_devices(devices);
+        self
+    }
+
     /// Run the TUI display loop
     pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Check if we're in an interactive terminal

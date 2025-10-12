@@ -2,12 +2,24 @@
 
 use crate::core::types::{Result, ScannerError};
 use crate::hardware;
+use crate::hardware::pool::SubprocessHandle;
 use crate::hardware::pool::state::PoolInner;
 use crate::hardware::pool::types::TunerId;
 use rustradio::Complex;
+use rustradio::graph::GraphRunner;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::error;
+
+/// Backend implementation for tuner operations
+pub enum TunerBackend {
+    /// Direct in-process device access
+    Direct {
+        device: Arc<Mutex<Box<dyn hardware::DeviceTrait>>>,
+    },
+    /// Subprocess-based IPC device access
+    Subprocess { subprocess: Arc<SubprocessHandle> },
+}
 
 /// Smart pointer that auto-returns tuner on drop (RAII)
 ///
@@ -34,8 +46,8 @@ pub struct Tuner {
     /// Tuner identifier
     pub tuner_id: TunerId,
 
-    /// Shared reference to the underlying device
-    pub device: Arc<Mutex<Box<dyn hardware::DeviceTrait>>>,
+    /// Backend for device operations
+    pub backend: TunerBackend,
 
     /// Pool inner reference for auto-return
     pub(crate) pool_inner: Arc<Mutex<PoolInner>>,
@@ -58,6 +70,22 @@ impl Tuner {
         self.tuner_id.channel_index
     }
 
+    /// Stop streaming on this tuner
+    ///
+    /// For subprocess backend, sends StopStream message and waits for acknowledgment
+    /// to ensure the worker is ready for new commands. For direct backend, this is a no-op.
+    ///
+    /// During shutdown mode, uses fire-and-forget to avoid blocking.
+    pub fn stop_stream(&self) -> Result<()> {
+        match &self.backend {
+            TunerBackend::Subprocess { subprocess } => subprocess.stop_stream(self.channel_index()),
+            TunerBackend::Direct { .. } => {
+                // Direct backend doesn't need explicit stream stopping
+                Ok(())
+            }
+        }
+    }
+
     /// Add source to rustradio graph for this tuner
     ///
     /// This is a convenience method that automatically uses the correct channel index.
@@ -77,55 +105,42 @@ impl Tuner {
             return Err(ScannerError::PoolShutdown);
         }
 
-        let device = self.device.lock().map_err(|_e| {
-            error!("Device mutex poisoned - recovering");
-            ScannerError::MutexPoisoned {
-                context: "device lock in add_source_to_graph".to_string(),
+        match &self.backend {
+            TunerBackend::Direct { device } => {
+                let device = device.lock().map_err(|_e| {
+                    error!("Device mutex poisoned - recovering");
+                    ScannerError::MutexPoisoned {
+                        context: "device lock in add_source_to_graph".to_string(),
+                    }
+                })?;
+                device.add_source_to_graph(graph, freq, samp_rate, gain_db)
             }
-        })?;
-        device.add_source_to_graph(graph, freq, samp_rate, gain_db)
-    }
+            TunerBackend::Subprocess { subprocess } => {
+                // Configure and start streaming
+                match subprocess.configure_and_start(self.channel_index(), freq, gain_db, samp_rate)
+                {
+                    Ok(_config) => {
+                        // Create subprocess source
+                        let (source, stream) = crate::hardware::pool::SubprocessSource::new(
+                            Arc::clone(&subprocess.data_receiver),
+                            self.channel_index(),
+                        );
 
-    /// Tune this tuner to a new frequency
-    ///
-    /// Returns error if pool is in shutdown mode.
-    ///
-    /// # Lock ordering
-    /// Acquires device lock only (safe - no pool lock needed)
-    pub fn tune(&mut self, freq: f64) -> Result<()> {
-        // Check shutdown mode first (lock-free)
-        if self.shutdown_mode.load(Ordering::SeqCst) {
-            return Err(ScannerError::PoolShutdown);
+                        // Add to graph
+                        graph.add(Box::new(source));
+                        Ok(stream)
+                    }
+                    Err(e) => {
+                        error!(
+                            tuner_id = ?self.tuner_id,
+                            error = ?e,
+                            "Failed to configure and start subprocess streaming"
+                        );
+                        Err(e)
+                    }
+                }
+            }
         }
-
-        let mut device = self.device.lock().map_err(|_e| {
-            error!("Device mutex poisoned - recovering");
-            ScannerError::MutexPoisoned {
-                context: "device lock in tune".to_string(),
-            }
-        })?;
-        device.tune(freq)
-    }
-
-    /// Set gain for this tuner
-    ///
-    /// Returns error if pool is in shutdown mode.
-    ///
-    /// # Lock ordering
-    /// Acquires device lock only (safe - no pool lock needed)
-    pub fn set_gain(&mut self, gain: f64) -> Result<()> {
-        // Check shutdown mode first (lock-free)
-        if self.shutdown_mode.load(Ordering::SeqCst) {
-            return Err(ScannerError::PoolShutdown);
-        }
-
-        let mut device = self.device.lock().map_err(|_e| {
-            error!("Device mutex poisoned - recovering");
-            ScannerError::MutexPoisoned {
-                context: "device lock in set_gain".to_string(),
-            }
-        })?;
-        device.set_gain(gain)
     }
 }
 
@@ -139,6 +154,10 @@ impl Drop for Tuner {
     /// Uses try_lock() to avoid blocking during shutdown. If the pool is locked
     /// (e.g., another thread is querying status), we skip returning the tuner
     /// since the pool is likely being destroyed anyway.
+    ///
+    /// # Stream cleanup
+    /// Caller should call stop_stream() explicitly before dropping to ensure
+    /// proper acknowledgment. Drop does not stop streams to avoid blocking.
     fn drop(&mut self) {
         let shutdown_mode = self.shutdown_mode.load(Ordering::SeqCst);
 

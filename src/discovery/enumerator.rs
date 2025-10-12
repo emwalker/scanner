@@ -248,14 +248,21 @@ impl UsbEnumerator {
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
 
+        let device_id = hardware::DeviceId::Usb {
+            vid,
+            pid,
+            serial: serial.to_string(),
+            bus_port: format!("{}-{}", bus, port),
+        };
+
         Some(hardware::DeviceInfo {
-            id: hardware::DeviceId::Usb {
-                vid,
-                pid,
-                serial: serial.to_string(),
-                bus_port: format!("{}-{}", bus, port),
-            },
+            id: device_id.clone(),
             label: format!("{} (USB VID={:04x} PID={:04x})", model, vid, pid),
+            tuners: vec![hardware::types::TunerInfo {
+                id: hardware::pool::TunerId::new(device_id, 0),
+                label: format!("{} (USB VID={:04x} PID={:04x})", model, vid, pid),
+                mode: String::new(),
+            }],
         })
     }
 }

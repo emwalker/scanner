@@ -182,14 +182,21 @@ mod tests {
         let pool = Arc::new(Pool::new(filter));
 
         // Add a mock device to the pool
+        let device_id = crate::hardware::DeviceId::from_serial("mock", "test-device");
         let device_info = crate::hardware::DeviceInfo {
-            id: crate::hardware::DeviceId::from_serial("mock", "test-device"),
+            id: device_id.clone(),
             label: "Test SDR Device".to_string(),
+            tuners: vec![crate::hardware::types::TunerInfo {
+                id: crate::hardware::pool::TunerId::new(device_id, 0),
+                label: "Test SDR Device".to_string(),
+                mode: String::new(),
+            }],
         };
 
         let mock_backend = crate::hardware::Mock;
-        let device = mock_backend.open_device(&device_info.id).unwrap();
-        pool.add_device(device, "mock".to_string());
+        let tuner_id = crate::hardware::pool::TunerId::new(device_info.id.clone(), 0);
+        let device = mock_backend.open_tuner(&tuner_id).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock);
 
         let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
         let config = ScanningConfig::default();

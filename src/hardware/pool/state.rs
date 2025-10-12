@@ -1,6 +1,7 @@
 //! Core pool state structures
 
 use crate::hardware;
+use crate::hardware::pool::SubprocessHandle;
 use crate::hardware::pool::filter::PoolFilter;
 use crate::hardware::pool::types::{AllocationInfo, DeviceEntry, PoolStatus, TunerEntry, TunerId};
 use std::collections::HashMap;
@@ -87,6 +88,12 @@ pub struct Pool {
 
     /// Callbacks invoked when tuner state changes (acquire/release)
     pub(crate) on_state_change: StateChangeCallback,
+
+    /// Device worker subprocesses (one per device, lazily spawned)
+    pub(crate) subprocesses: Mutex<HashMap<hardware::DeviceId, Arc<SubprocessHandle>>>,
+
+    /// Use subprocess backend for device operations
+    pub use_subprocesses: bool,
 }
 
 impl Pool {
@@ -104,12 +111,21 @@ impl Pool {
             filter: Arc::new(filter),
             shutdown_mode: Arc::new(AtomicBool::new(false)),
             on_state_change: Arc::new(Mutex::new(Vec::new())),
+            subprocesses: Mutex::new(HashMap::new()),
+            use_subprocesses: false,
         }
     }
 
     /// Create new pool allowing all tuners (convenience method)
     pub fn new_unfiltered() -> Self {
         Self::new(PoolFilter::allow_all())
+    }
+
+    /// Create new pool with subprocess mode enabled
+    pub fn new_with_subprocesses() -> Self {
+        let mut pool = Self::new_unfiltered();
+        pool.use_subprocesses = true;
+        pool
     }
 
     /// Enter shutdown mode (makes pool reject all future operations)
@@ -125,6 +141,25 @@ impl Pool {
 
         self.shutdown_mode.store(true, Ordering::SeqCst);
         debug!("Pool entered shutdown mode");
+
+        if let Ok(mut subprocesses) = self.subprocesses.lock() {
+            let count = subprocesses.len();
+            if count > 0 {
+                debug!(
+                    subprocess_count = count,
+                    "Shutting down device subprocesses"
+                );
+            }
+
+            for (device_id, handle) in subprocesses.iter_mut() {
+                debug!(device_id = ?device_id, "Shutting down subprocess");
+                if let Some(handle) = Arc::get_mut(handle) {
+                    let _ = handle.shutdown();
+                }
+            }
+
+            subprocesses.clear();
+        }
     }
 
     /// Check if pool is in shutdown mode
@@ -163,5 +198,12 @@ impl Pool {
                 callback(status.clone());
             }
         }
+    }
+}
+
+impl Drop for Pool {
+    fn drop(&mut self) {
+        debug!("Pool being dropped, calling shutdown");
+        self.shutdown();
     }
 }

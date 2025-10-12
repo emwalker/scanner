@@ -1,8 +1,8 @@
 use crate::core::types::{Result, ScannerError};
-use crate::hardware::soapy;
 use crate::shutdown::ShutdownCoordinator;
 use crate::ui::tui::themes::ThemeName;
 use std::sync::Arc;
+use tracing::debug;
 
 use super::args::ScanArgs;
 use super::config::build_scanning_config;
@@ -14,17 +14,24 @@ use super::tui_mode::{create_logger, run_with_tui, setup_tui_channels, start_tui
 const DEFAULT_DRIVER: &str = "driver=sdrplay";
 
 pub fn handle_scan_command(args: ScanArgs) -> Result<()> {
-    let allow_cpp_output = args.verbose && args.headless;
-    crate::logging::set_soapysdr_log_level(!allow_cpp_output);
-
     let config = build_scanning_config(&args)?;
 
-    soapy::reset_soapysdr_state();
-
-    let backend_names = vec!["soapy".to_string()];
+    let backends = vec![crate::hardware::types::Backend::Soapy];
     let driver_filter = args.device_args.as_deref().or(Some(DEFAULT_DRIVER));
-    let discovered_devices =
-        crate::discovery::enumerate_once_subprocess(&backend_names, driver_filter)?;
+    let discovered_devices = crate::discovery::enumerate_once_subprocess(&backends, driver_filter)?;
+
+    debug!(
+        device_count = discovered_devices.len(),
+        "Device enumeration complete"
+    );
+    for (idx, device) in discovered_devices.iter().enumerate() {
+        debug!(
+            index = idx,
+            device_id = ?device.id,
+            label = %device.label,
+            "Discovered device"
+        );
+    }
 
     if discovered_devices.is_empty() {
         return Err(ScannerError::NoSdrDevicesFound {
@@ -33,7 +40,8 @@ pub fn handle_scan_command(args: ScanArgs) -> Result<()> {
     }
 
     let selected_device = &discovered_devices[0];
-    let selected_tuner_id = selected_device.id.clone();
+    // Select first tuner (channel_index 0) of the first device
+    let selected_tuner_id = crate::hardware::pool::TunerId::new(selected_device.id.clone(), 0);
 
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
     setup_signal_handler(shutdown_coordinator.clone())?;
@@ -63,7 +71,7 @@ fn run_tui_mode(
     args: &ScanArgs,
     config: crate::core::types::ScanningConfig,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
-    selected_tuner_id: crate::hardware::DeviceId,
+    selected_tuner_id: crate::hardware::pool::TunerId,
     discovered_devices: Vec<crate::hardware::DeviceInfo>,
 ) -> Result<()> {
     let (mut tui_context, tui_event_receiver) = setup_tui_channels();
@@ -79,20 +87,34 @@ fn run_tui_mode(
     let (command_sender, command_receiver) = std::sync::mpsc::channel();
     tui_context.command_receiver = command_receiver;
 
-    let backend = crate::hardware::Soapy;
-    let shared_pool = initialize_pool_with_device(&selected_tuner_id, &backend)?;
+    let backend = crate::hardware::types::Backend::Soapy;
+    let shared_pool =
+        initialize_pool_with_device(&selected_tuner_id, backend, args.use_subprocesses)?;
+
+    // Send cached devices to TUI immediately
+    for device in &discovered_devices {
+        let _ = tui_context
+            .tui_event_sender
+            .send(crate::ui::TuiEvent::TunerAdded(device.clone()));
+    }
 
     let discovery_setup = start_discovery_service(
         tui_context.tui_event_sender.clone(),
         shutdown_coordinator.clone(),
-        discovered_devices,
+        discovered_devices.clone(),
+        args.use_subprocesses,
     )?;
 
+    debug!(
+        cached_device_count = discovered_devices.len(),
+        "Passing cached devices to TUI"
+    );
     let tui_handle = start_tui(
         tui_event_receiver,
         shutdown_coordinator.clone(),
         theme_name,
         command_sender,
+        discovered_devices.clone(),
     );
 
     let logger = create_logger(args);
@@ -106,6 +128,7 @@ fn run_tui_mode(
         tui_context,
         tui_handle,
         logger,
+        discovered_devices,
     );
 
     let _ = discovery_setup.discovery_handle.join();

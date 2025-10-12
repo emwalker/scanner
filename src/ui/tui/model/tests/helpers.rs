@@ -24,9 +24,6 @@ pub fn create_test_pool_status(
                 device_id: device_id.clone(),
                 channel_index: 0,
             },
-            model: "Test Device".to_string(),
-            backend: "test".to_string(),
-            channel_index: 0,
             state,
             activity,
         });

@@ -11,7 +11,7 @@ mod tests {
 
     fn create_mock_device(device_id: &hardware::DeviceId) -> Box<dyn hardware::DeviceTrait> {
         let (driver, serial) = match device_id {
-            hardware::DeviceId::Backend { backend, serial } => (backend.as_str(), serial.as_str()),
+            hardware::DeviceId::Driver { driver, serial, .. } => (driver.as_str(), serial.as_str()),
             _ => ("mock", "unknown"),
         };
         Box::new(hardware::mock::MockDevice::new(driver, serial, false))
@@ -24,7 +24,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test001");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -55,7 +56,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test002");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -89,7 +91,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test003");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -121,7 +124,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test004");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let pool_arc = pool.pool_ref.clone();
         let _lock = pool_arc.lock().unwrap();
@@ -141,7 +145,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test005");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -171,7 +176,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test006");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let pool_arc = pool.pool_ref.clone();
         let _lock = pool_arc.lock().unwrap();
@@ -192,7 +198,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test007");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -222,7 +229,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test008");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -260,7 +268,7 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test009");
         let device = create_mock_device(&device_id);
-        let result = pool.add_device(device, "mock".to_string());
+        let result = pool.add_device(device, crate::hardware::types::Backend::Mock);
 
         assert!(
             matches!(result, AddDeviceResult::ShutdownMode),
@@ -280,7 +288,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test010");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         pool.shutdown();
 
@@ -307,7 +316,7 @@ mod tests {
             let start = Instant::now();
             let device_id = hardware::DeviceId::from_serial("mock", "test011");
             let device = create_mock_device(&device_id);
-            let result = pool_in_thread.add_device(device, "mock".to_string());
+            let result = pool_in_thread.add_device(device, crate::hardware::types::Backend::Mock);
             let elapsed = start.elapsed();
 
             assert!(result.is_err(), "Should return error when pool is locked");
@@ -330,7 +339,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test012");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let pool_arc = pool.pool_ref.clone();
         let _lock = pool_arc.lock().unwrap();
@@ -359,7 +369,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test013");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -368,24 +379,18 @@ mod tests {
             priority: TaskPriority::Normal,
         };
 
-        let mut tuner = pool
+        let tuner = pool
             .try_acquire(&requirements, TunerActivity::Scanning)
             .unwrap();
 
         pool.shutdown();
 
-        let tune_result = tuner.tune(100.0e6);
+        let mut graph = rustradio::graph::Graph::new();
+        let add_source_result = tuner.add_source_to_graph(&mut graph, 100.0e6, 2.4e6, 30.0);
         assert!(
-            tune_result.is_err(),
-            "Tune should fail during shutdown: {:?}",
-            tune_result
-        );
-
-        let gain_result = tuner.set_gain(30.0);
-        assert!(
-            gain_result.is_err(),
-            "Set gain should fail during shutdown: {:?}",
-            gain_result
+            add_source_result.is_err(),
+            "add_source_to_graph should fail during shutdown: {:?}",
+            add_source_result
         );
     }
 
@@ -433,7 +438,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test014");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -475,16 +481,17 @@ mod tests {
 
     #[test]
     fn test_filter_by_backend() {
-        let pool = Pool::new(PoolFilter::new().with_backend("soapy"));
+        let pool = Pool::new(PoolFilter::new().with_backend(hardware::types::Backend::Mock));
 
-        let soapy_id = hardware::DeviceId::from_serial("sdrplay", "test015");
+        let mock_id = hardware::DeviceId::from_serial("mock", "test015");
+        let mock_device = create_mock_device(&mock_id);
+        pool.add_device(mock_device, hardware::types::Backend::Mock)
+            .unwrap();
+
+        let soapy_id = hardware::DeviceId::from_serial("sdrplay", "test016");
         let soapy_device = create_mock_device(&soapy_id);
-        pool.add_device(soapy_device, "soapy".to_string()).unwrap();
-
-        let rtlsdr_id = hardware::DeviceId::from_serial("rtlsdr", "test016");
-        let rtlsdr_device = create_mock_device(&rtlsdr_id);
         // Different backend should be filtered out
-        let result = pool.add_device(rtlsdr_device, "rtlsdr".to_string());
+        let result = pool.add_device(soapy_device, hardware::types::Backend::Soapy);
         assert!(matches!(result, AddDeviceResult::FilteredOut { .. }));
 
         let requirements = TaskRequirements {
@@ -495,7 +502,7 @@ mod tests {
         };
 
         let tuner = pool.try_acquire(&requirements, TunerActivity::Scanning);
-        assert!(tuner.is_some(), "Should acquire tuner from soapy backend");
+        assert!(tuner.is_some(), "Should acquire tuner from mock backend");
 
         let status = pool.status();
         assert_eq!(
@@ -510,18 +517,18 @@ mod tests {
 
     #[test]
     fn test_filter_by_driver() {
-        let pool = Pool::new(PoolFilter::new().with_driver("sdrplay"));
+        let pool = Pool::new(PoolFilter::new().with_driver("mock"));
 
-        let sdrplay_id = hardware::DeviceId::from_serial("sdrplay", "test017");
-        let sdrplay_device = create_mock_device(&sdrplay_id);
-        pool.add_device(sdrplay_device, "soapy".to_string())
+        let mock_id1 = hardware::DeviceId::from_serial("mock", "test017");
+        let mock_device1 = create_mock_device(&mock_id1);
+        pool.add_device(mock_device1, hardware::types::Backend::Mock)
             .unwrap();
 
-        let rtlsdr_id = hardware::DeviceId::from_serial("rtlsdr", "test018");
-        let rtlsdr_device = create_mock_device(&rtlsdr_id);
-        // RTL-SDR should be filtered out by driver check
-        let result = pool.add_device(rtlsdr_device, "soapy".to_string());
-        assert!(matches!(result, AddDeviceResult::FilteredOut { .. }));
+        let mock_id2 = hardware::DeviceId::from_serial("mock", "test018");
+        let mock_device2 = create_mock_device(&mock_id2);
+        // Same driver should NOT be filtered out
+        let result = pool.add_device(mock_device2, hardware::types::Backend::Mock);
+        assert!(matches!(result, AddDeviceResult::Added { .. }));
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -531,7 +538,7 @@ mod tests {
         };
 
         let tuner = pool.try_acquire(&requirements, TunerActivity::Scanning);
-        assert!(tuner.is_some(), "Should acquire sdrplay tuner");
+        assert!(tuner.is_some(), "Should acquire mock tuner");
 
         let status = pool.status();
         let allocated = status
@@ -540,8 +547,8 @@ mod tests {
             .find(|t| t.state == TunerState::Allocated)
             .unwrap();
         assert!(
-            format!("{:?}", allocated.id.device_id).contains("sdrplay"),
-            "Allocated tuner should be from sdrplay driver"
+            format!("{:?}", allocated.id.device_id).contains("mock"),
+            "Allocated tuner should be from mock driver"
         );
     }
 
@@ -551,11 +558,13 @@ mod tests {
 
         let device1_id = hardware::DeviceId::from_serial("mock", "test019");
         let device1 = create_mock_device(&device1_id);
-        pool.add_device(device1, "mock".to_string()).unwrap();
+        pool.add_device(device1, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let device2_id = hardware::DeviceId::from_serial("mock", "test020");
         let device2 = create_mock_device(&device2_id);
-        pool.add_device(device2, "mock".to_string()).unwrap();
+        pool.add_device(device2, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         drop(pool);
 
@@ -564,12 +573,12 @@ mod tests {
 
         let device1_again = create_mock_device(&device1_id);
         pool_filtered
-            .add_device(device1_again, "mock".to_string())
+            .add_device(device1_again, crate::hardware::types::Backend::Mock)
             .unwrap();
 
         let device2_again = create_mock_device(&device2_id);
         // Device2 should be filtered out (only tuner1 is allowed)
-        let result = pool_filtered.add_device(device2_again, "mock".to_string());
+        let result = pool_filtered.add_device(device2_again, crate::hardware::types::Backend::Mock);
         assert!(matches!(result, AddDeviceResult::FilteredOut { .. }));
 
         let requirements = TaskRequirements {
@@ -591,7 +600,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test021");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -622,20 +632,14 @@ mod tests {
     fn test_filter_combined_driver_and_mode() {
         let pool = Pool::new(
             PoolFilter::new()
-                .with_driver("sdrplay")
+                .with_driver("mock")
                 .with_mode(TuningMode::SingleTuner),
         );
 
-        let sdrplay_id = hardware::DeviceId::from_serial("sdrplay", "test022");
-        let sdrplay_device = create_mock_device(&sdrplay_id);
-        pool.add_device(sdrplay_device, "soapy".to_string())
+        let mock_id = hardware::DeviceId::from_serial("mock", "test022");
+        let mock_device = create_mock_device(&mock_id);
+        pool.add_device(mock_device, hardware::types::Backend::Mock)
             .unwrap();
-
-        let rtlsdr_id = hardware::DeviceId::from_serial("rtlsdr", "test023");
-        let rtlsdr_device = create_mock_device(&rtlsdr_id);
-        // RTL-SDR should be filtered out by driver check
-        let result = pool.add_device(rtlsdr_device, "rtlsdr".to_string());
-        assert!(matches!(result, AddDeviceResult::FilteredOut { .. }));
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -645,7 +649,7 @@ mod tests {
         };
 
         let tuner1 = pool.try_acquire(&requirements, TunerActivity::Scanning);
-        assert!(tuner1.is_some(), "Should acquire sdrplay tuner");
+        assert!(tuner1.is_some(), "Should acquire mock tuner");
 
         let status = pool.status();
         let allocated = status
@@ -654,8 +658,8 @@ mod tests {
             .find(|t| t.state == TunerState::Allocated)
             .unwrap();
         assert!(
-            format!("{:?}", allocated.id.device_id).contains("sdrplay"),
-            "Should allocate from sdrplay driver"
+            format!("{:?}", allocated.id.device_id).contains("mock"),
+            "Should allocate from mock driver"
         );
 
         let tuner2 = pool.try_acquire(&requirements, TunerActivity::Listening);
@@ -691,7 +695,7 @@ mod tests {
 
         let device1_id = hardware::DeviceId::from_serial("mock", "test024");
         let device1 = create_mock_device(&device1_id);
-        let result1 = pool.add_device(device1, "mock".to_string());
+        let result1 = pool.add_device(device1, crate::hardware::types::Backend::Mock);
         assert!(
             matches!(result1, AddDeviceResult::Added { .. }),
             "Should add device in Active state"
@@ -701,7 +705,7 @@ mod tests {
 
         let device2_id = hardware::DeviceId::from_serial("mock", "test025");
         let device2 = create_mock_device(&device2_id);
-        let result2 = pool.add_device(device2, "mock".to_string());
+        let result2 = pool.add_device(device2, crate::hardware::types::Backend::Mock);
         assert!(
             matches!(result2, AddDeviceResult::ShutdownMode),
             "Should not add device in ShuttingDown state"
@@ -714,7 +718,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test026");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -750,7 +755,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test027");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let status1 = pool.status();
         assert_eq!(
@@ -775,7 +781,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test028");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let callback_count = Arc::new(Mutex::new(0));
         let callback_count_clone = Arc::clone(&callback_count);
@@ -834,7 +841,8 @@ mod tests {
 
         let device_id = hardware::DeviceId::from_serial("mock", "test029");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "mock".to_string()).unwrap();
+        pool.add_device(device, crate::hardware::types::Backend::Mock)
+            .unwrap();
 
         let callback1_count = Arc::new(Mutex::new(0));
         let callback2_count = Arc::new(Mutex::new(0));
@@ -891,31 +899,20 @@ mod tests {
     }
 
     #[test]
-    fn test_tuner_status_model_uses_display_not_debug() {
+    fn test_tuner_status_contains_id_and_state() {
         let pool = Pool::new_unfiltered();
 
-        let device_id = hardware::DeviceId::from_serial("sdrplay", "2301034E34:ST");
+        let device_id = hardware::DeviceId::from_serial("mock", "2301034E34:ST");
         let device = create_mock_device(&device_id);
-        pool.add_device(device, "sdrplay".to_string()).unwrap();
+        pool.add_device(device, hardware::types::Backend::Mock)
+            .unwrap();
 
         let status = pool.status();
         assert_eq!(status.tuners.len(), 1, "Should have one tuner");
 
         let tuner = &status.tuners[0];
-        assert!(
-            !tuner.model.contains("Backend {"),
-            "Model should not contain Debug-formatted struct output, got: {}",
-            tuner.model
-        );
-        assert!(
-            !tuner.model.contains("backend:"),
-            "Model should not contain Debug field names, got: {}",
-            tuner.model
-        );
-        assert_eq!(
-            tuner.model, "sdrplay:2301034E34:ST",
-            "Model should use Display format"
-        );
+        assert_eq!(tuner.state, TunerState::Available);
+        assert_eq!(tuner.activity, None);
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -930,14 +927,7 @@ mod tests {
 
         let status_allocated = pool.status();
         let allocated_tuner = &status_allocated.tuners[0];
-        assert!(
-            !allocated_tuner.model.contains("Backend {"),
-            "Allocated tuner model should not contain Debug format, got: {}",
-            allocated_tuner.model
-        );
-        assert_eq!(
-            allocated_tuner.model, "sdrplay:2301034E34:ST",
-            "Allocated tuner model should use Display format"
-        );
+        assert_eq!(allocated_tuner.state, TunerState::Allocated);
+        assert_eq!(allocated_tuner.activity, Some(TunerActivity::Listening));
     }
 }

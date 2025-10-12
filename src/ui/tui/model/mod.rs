@@ -14,8 +14,8 @@ pub mod updates;
 mod tests;
 
 // Re-export all types for backward compatibility
-pub use state::Model;
+pub use state::{Model, TunerInfo};
 pub use types::{
-    CandidateProgress, CandidateStatus, FocusState, SelectedCandidateInfo, TunerDisplayState,
-    TunerState, UiMode, WindowProgress,
+    CandidateProgress, CandidateStatus, FocusState, SelectedCandidateInfo, TunerDisplayInfo,
+    TunerDisplayState, TunerState, UiMode, WindowProgress,
 };

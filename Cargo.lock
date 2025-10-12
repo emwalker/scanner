@@ -2019,6 +2019,7 @@ dependencies = [
  "criterion",
  "crossterm",
  "ctrlc",
+ "glob",
  "hound",
  "libc",
  "log",

@@ -327,7 +327,6 @@ impl Logger for DefaultLogger {
 pub fn init(logger: &dyn Logger, verbose: bool) -> Result<()> {
     let _ = verbose; // No longer used, keeping for compatibility
     let _ = logger.init();
-    soapysdr::configure_logging();
     Ok(())
 }
 

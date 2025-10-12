@@ -104,7 +104,7 @@ impl Window {
         )?;
         debug!(tuner_id = ?tuner.id(), "Acquired tuner from tuner provider");
 
-        let segment = crate::hardware::pool::Segment::from_tuner(
+        let mut segment = crate::hardware::pool::Segment::from_tuner(
             tuner,
             self.center_freq,
             &self.config,
@@ -113,7 +113,10 @@ impl Window {
 
         let result = self.process(&segment);
 
-        debug!("Processing complete, pool::Segment will drop and return tuner to pool");
+        debug!("Processing complete, stopping stream before dropping segment");
+        segment.stop_stream()?;
+
+        debug!("Stream stopped, pool::Segment will drop and return tuner to pool");
 
         result
     }

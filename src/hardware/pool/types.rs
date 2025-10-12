@@ -49,7 +49,9 @@ impl AddDeviceResult {
 /// This type identifies a specific tuner (RX channel) within a device.
 /// Multi-tuner devices like the SDRplay RSPduo have multiple tuners,
 /// each identified by a unique channel index.
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(
+    Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct TunerId {
     pub device_id: hardware::DeviceId,
     pub channel_index: usize,
@@ -68,13 +70,14 @@ impl TunerId {
 pub struct DeviceEntry {
     /// Shared reference to the device
     /// Multiple tuners from the same device share this
-    pub device: Arc<Mutex<Box<dyn hardware::DeviceTrait>>>,
+    /// None when using subprocess mode (device opened in subprocess instead)
+    pub device: Option<Arc<Mutex<Box<dyn hardware::DeviceTrait>>>>,
 
     /// Device-level capabilities
     pub capabilities: hardware::Capabilities,
 
     /// Backend that provides this device
-    pub backend_name: String,
+    pub backend: hardware::types::Backend,
 
     /// Number of tuners/channels this device has
     pub num_tuners: usize,
@@ -99,7 +102,7 @@ pub struct TunerEntry {
 pub struct AllocationInfo {
     pub allocated_at: Instant,
     pub task_id: Option<String>,
-    pub backend_name: String,
+    pub backend: hardware::types::Backend,
     pub model: String,
     pub activity: TunerActivity,
 }
@@ -142,9 +145,6 @@ pub struct PoolStatus {
 #[derive(Clone, Debug)]
 pub struct TunerStatus {
     pub id: TunerId,
-    pub model: String,
-    pub backend: String,
-    pub channel_index: usize,
     pub state: TunerState,
     pub activity: Option<TunerActivity>,
 }

@@ -5,7 +5,7 @@
 
 use super::helpers::create_test_pool_status;
 use crate::{
-    hardware::{DeviceId, DeviceInfo},
+    hardware::{DeviceId, DeviceInfo, pool::TunerId},
     ui::{
         TuiEvent,
         tui::model::{Model, TunerState},
@@ -193,16 +193,21 @@ impl StateMachineTest for TunerStateMachineTest {
             if activity.is_some() {
                 let device_id = DeviceId::from_serial("test", id);
                 let device_info = DeviceInfo {
-                    id: device_id,
+                    id: device_id.clone(),
                     label: format!("Test Device {}", id),
+                    tuners: vec![crate::hardware::types::TunerInfo {
+                        id: crate::hardware::pool::TunerId::new(device_id.clone(), 0),
+                        label: format!("Test Device {}", id),
+                        mode: String::new(),
+                    }],
                 };
                 model.add_device(device_info);
             }
         }
 
-        // Apply initial allocations
-        let (scanning, listening) = extract_allocations(ref_state);
-        if !scanning.is_empty() || !listening.is_empty() {
+        // Apply initial allocations - send pool status if any tuners exist
+        if !ref_state.tuners.is_empty() {
+            let (scanning, listening) = extract_allocations(ref_state);
             let all_devices: Vec<_> = ref_state
                 .tuners
                 .keys()
@@ -226,10 +231,27 @@ impl StateMachineTest for TunerStateMachineTest {
             Transition::AddTuner(id) => {
                 let device_id = DeviceId::from_serial("test", &id);
                 let device_info = DeviceInfo {
-                    id: device_id,
+                    id: device_id.clone(),
                     label: format!("Test Device {}", id),
+                    tuners: vec![crate::hardware::types::TunerInfo {
+                        id: crate::hardware::pool::TunerId::new(device_id.clone(), 0),
+                        label: format!("Test Device {}", id),
+                        mode: String::new(),
+                    }],
                 };
                 state.add_device(device_info);
+
+                // Send updated pool status to populate the new tuner
+                let (scanning, listening) = extract_allocations(ref_state);
+                let all_devices: Vec<_> = ref_state
+                    .tuners
+                    .keys()
+                    .map(|id| DeviceId::from_serial("test", id))
+                    .collect();
+
+                state.update_tui_event(TuiEvent::ActiveTunersUpdated {
+                    status: create_test_pool_status(all_devices, scanning, listening),
+                });
             }
             Transition::AllocateForScanning(_)
             | Transition::AllocateForListening(_)
@@ -258,11 +280,12 @@ impl StateMachineTest for TunerStateMachineTest {
         for (id, ref_activity) in &ref_state.tuners {
             if let Some(expected_activity) = ref_activity {
                 let device_id = DeviceId::from_serial("test", id);
+                let tuner_id = TunerId::new(device_id, 0);
 
                 // Find this tuner's display state
                 let display_state = display_states
                     .iter()
-                    .find(|d| d.device_id == device_id)
+                    .find(|d| d.tuner_id == tuner_id)
                     .unwrap_or_else(|| {
                         panic!(
                             "Tuner {} present in reference state but not in model display states",
@@ -280,11 +303,11 @@ impl StateMachineTest for TunerStateMachineTest {
                     expected_label,
                     display_state.status_label,
                     ref_activity,
-                    state.tuner_state(&device_id)
+                    state.tuner_state(&tuner_id)
                 );
 
                 // Also check the underlying tuner state enum
-                let tuner_state = state.tuner_state(&device_id);
+                let tuner_state = state.tuner_state(&tuner_id);
                 match expected_activity {
                     RefActivity::Available => assert_eq!(tuner_state, TunerState::Available),
                     RefActivity::Scanning => assert_eq!(tuner_state, TunerState::Scanning),

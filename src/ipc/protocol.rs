@@ -158,6 +158,7 @@ pub enum ControlMessage {
     StreamStopped {
         channel: usize,
     },
+    ShutdownAck,
     Error {
         channel: Option<usize>,
         message: String,
@@ -189,6 +190,9 @@ fn send_control_message(stream: &mut UnixStream, msg: &ControlMessage) -> Result
 
 #[allow(dead_code)]
 fn recv_control_message(stream: &mut UnixStream) -> Result<ControlMessage> {
+    // Ensure socket is in blocking mode (in case try_recv left it non-blocking)
+    stream.set_nonblocking(false)?;
+
     let mut len_bytes = [0u8; 4];
     stream.read_exact(&mut len_bytes)?;
     let len = u32::from_le_bytes(len_bytes) as usize;
@@ -251,4 +255,137 @@ fn recv_iq_packet(stream: &mut UnixStream) -> Result<IQPacket> {
 
     let packet = postcard::from_bytes(&buf)?;
     Ok(packet)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_control_message_serialization() {
+        let msg = ControlMessage::ConfigureAndStart {
+            channel: 0,
+            freq_hz: 88.9e6,
+            gain_db: 24.0,
+            sample_rate: 2_000_000.0,
+        };
+
+        let bytes = postcard::to_allocvec(&msg).unwrap();
+        let deserialized: ControlMessage = postcard::from_bytes(&bytes).unwrap();
+
+        match deserialized {
+            ControlMessage::ConfigureAndStart {
+                channel,
+                freq_hz,
+                gain_db,
+                sample_rate,
+            } => {
+                assert_eq!(channel, 0);
+                assert_eq!(freq_hz, 88.9e6);
+                assert_eq!(gain_db, 24.0);
+                assert_eq!(sample_rate, 2_000_000.0);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_iq_packet_serialization() {
+        let packet = IQPacket {
+            channel: 0,
+            samples: vec![
+                Complex::new(1.0, 0.5),
+                Complex::new(-0.5, 1.0),
+                Complex::new(0.0, -1.0),
+            ],
+            timestamp: 123456789,
+            sequence: 42,
+        };
+
+        let bytes = postcard::to_allocvec(&packet).unwrap();
+        let deserialized: IQPacket = postcard::from_bytes(&bytes).unwrap();
+
+        assert_eq!(deserialized.channel, 0);
+        assert_eq!(deserialized.samples.len(), 3);
+        assert_eq!(deserialized.samples[0], Complex::new(1.0, 0.5));
+        assert_eq!(deserialized.samples[1], Complex::new(-0.5, 1.0));
+        assert_eq!(deserialized.samples[2], Complex::new(0.0, -1.0));
+        assert_eq!(deserialized.timestamp, 123456789);
+        assert_eq!(deserialized.sequence, 42);
+    }
+
+    #[test]
+    fn test_all_control_message_variants() {
+        let messages = vec![
+            ControlMessage::ConfigureAndStart {
+                channel: 0,
+                freq_hz: 100.0e6,
+                gain_db: 20.0,
+                sample_rate: 2.4e6,
+            },
+            ControlMessage::StopStream { channel: 1 },
+            ControlMessage::Shutdown,
+            ControlMessage::Ready {
+                device_id: "test-device".to_string(),
+                channels: 2,
+            },
+            ControlMessage::StreamStarted {
+                channel: 0,
+                actual_freq: 100.05e6,
+                actual_gain: 19.8,
+                actual_sample_rate: 2.4e6,
+            },
+            ControlMessage::StreamStopped { channel: 1 },
+            ControlMessage::ShutdownAck,
+            ControlMessage::Error {
+                channel: Some(0),
+                message: "Test error".to_string(),
+            },
+        ];
+
+        for msg in messages {
+            let bytes = postcard::to_allocvec(&msg).unwrap();
+            let _deserialized: ControlMessage = postcard::from_bytes(&bytes).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_iq_packet_with_many_samples() {
+        let samples: Vec<Complex<f32>> = (0..1024)
+            .map(|i| Complex::new(i as f32 / 1024.0, (1024 - i) as f32 / 1024.0))
+            .collect();
+
+        let packet = IQPacket {
+            channel: 0,
+            samples: samples.clone(),
+            timestamp: 987654321,
+            sequence: 100,
+        };
+
+        let bytes = postcard::to_allocvec(&packet).unwrap();
+        let deserialized: IQPacket = postcard::from_bytes(&bytes).unwrap();
+
+        assert_eq!(deserialized.samples.len(), 1024);
+        assert_eq!(deserialized.samples[0], samples[0]);
+        assert_eq!(deserialized.samples[1023], samples[1023]);
+    }
+
+    #[test]
+    fn test_error_message_with_none_channel() {
+        let msg = ControlMessage::Error {
+            channel: None,
+            message: "Device-level error".to_string(),
+        };
+
+        let bytes = postcard::to_allocvec(&msg).unwrap();
+        let deserialized: ControlMessage = postcard::from_bytes(&bytes).unwrap();
+
+        match deserialized {
+            ControlMessage::Error { channel, message } => {
+                assert_eq!(channel, None);
+                assert_eq!(message, "Device-level error");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
 }

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 716561e783c86e105fc48f439999d2dd52601a6fae6156c02a9a7f18e2907270 # shrinks to (initial_state, transitions, seen_counter) = (RefState { tuners: {"a": Some(Available)} }, [], None)

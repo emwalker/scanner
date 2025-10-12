@@ -53,7 +53,9 @@ pub enum TuiEvent {
     /// Tuner removed/disconnected (from discovery service)
     TunerRemoved(crate::hardware::DeviceId),
     /// Scanner has been paused and is ready for browsing
-    Paused { tuner_id: crate::hardware::DeviceId },
+    Paused {
+        tuner_id: crate::hardware::pool::TunerId,
+    },
     /// Active tuners state has been updated
     ActiveTunersUpdated {
         status: crate::hardware::pool::PoolStatus,

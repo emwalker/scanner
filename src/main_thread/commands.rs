@@ -1,7 +1,7 @@
 use crate::audio::session::AudioSession;
 use crate::core::types::{Result, ScanningConfig};
 use crate::hardware::DeviceId;
-use crate::hardware::pool::Pool;
+use crate::hardware::pool::{Pool, TunerId};
 use crate::main_thread::audio_coordinator::{AudioCoordinator, TuneParams};
 use crate::scanner_state::PauseSignal;
 use crate::scanner_state::ScannerState;
@@ -68,8 +68,8 @@ impl<'a> CommandHandler<'a> {
             let tuner_id = status
                 .tuners
                 .first()
-                .map(|t| t.id.device_id.clone())
-                .unwrap_or_else(|| DeviceId::from_serial("unknown", "0"));
+                .map(|t| t.id.clone())
+                .unwrap_or_else(|| TunerId::new(DeviceId::from_serial("unknown", "0"), 0));
             let _ = sender.send(TuiEvent::Paused { tuner_id });
         }
 

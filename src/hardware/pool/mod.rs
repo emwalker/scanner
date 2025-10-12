@@ -12,6 +12,8 @@ mod lifecycle;
 mod provider;
 mod segment;
 mod state;
+mod subprocess;
+mod subprocess_source;
 mod tuner;
 mod types;
 
@@ -30,6 +32,8 @@ pub use filter::{PoolFilter, TuningMode};
 pub use provider::TunerProvider;
 pub use segment::Segment;
 pub use state::Pool;
+pub use subprocess::SubprocessHandle;
+pub use subprocess_source::SubprocessSource;
 pub use tuner::Tuner;
 pub use types::{
     AddDeviceResult, AllocationInfo, DeviceEntry, PoolStatus, TaskPriority, TaskRequirements,

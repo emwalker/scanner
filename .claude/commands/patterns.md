@@ -6,9 +6,9 @@ allowed-tools: WebSearch, WebFetch(domain:*), Write(docs/patterns/**), Read(docs
 
 Topic: $1
 
-Can you do a thorough internet search of design patterns that are used in connection with $1 and summarize them in docs/patterns/<shortened-name-or-acronym>.md?
+Let's do a thorough internet search of design patterns that are used in connection with $1 and summarize them in docs/patterns/<shortened-name-or-acronym>.md.
 
-For each pattern, include a brief note about when you would and wouldn't use a pattern. Do not include a generic discussion of the benefits and drawbacks of all patterns as a collection.
+Ultrathink and for each pattern, include a brief note about when you would and wouldn't use a pattern. Do not include a generic discussion of the benefits and drawbacks of all patterns as a collection.
 
 Follow these guidelines:
 

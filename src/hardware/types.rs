@@ -3,6 +3,18 @@
 use crate::core::types::Result;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
+
+/// Tuner information within a device
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TunerInfo {
+    /// Tuner identifier
+    pub id: crate::hardware::pool::TunerId,
+    /// Human-readable label for this tuner
+    pub label: String,
+    /// Mode identifier (e.g., "ST", "DT", "MA")
+    pub mode: String,
+}
 
 /// Device information returned by enumeration
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -11,6 +23,48 @@ pub struct DeviceInfo {
     pub id: DeviceId,
     /// Human-readable label
     pub label: String,
+    /// List of tuners available on this device
+    pub tuners: Vec<TunerInfo>,
+}
+
+impl DeviceInfo {
+    /// Look up a tuner by TunerId
+    pub fn tuner(&self, tuner_id: &crate::hardware::pool::TunerId) -> Option<&TunerInfo> {
+        self.tuners.iter().find(|t| &t.id == tuner_id)
+    }
+}
+
+/// Backend implementation type
+#[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Backend {
+    Soapy,
+    Mock,
+    Usb,
+    Unknown(String),
+}
+
+impl Backend {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Backend::Soapy => "soapy",
+            Backend::Mock => "mock",
+            Backend::Usb => "usb",
+            Backend::Unknown(s) => s.as_str(),
+        }
+    }
+}
+
+impl FromStr for Backend {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
+            "soapy" => Backend::Soapy,
+            "mock" => Backend::Mock,
+            "usb" => Backend::Usb,
+            other => Backend::Unknown(other.to_string()),
+        })
+    }
 }
 
 /// Stable device identifier
@@ -19,8 +73,12 @@ pub struct DeviceInfo {
 /// have a single DeviceId but multiple tuners (channels) within that device.
 #[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DeviceId {
-    /// Backend-based identification (SoapySDR, etc.)
-    Backend { backend: String, serial: String },
+    /// Driver-based identification (SoapySDR drivers)
+    Driver {
+        backend: Backend,
+        driver: String,
+        serial: String,
+    },
     /// USB-based identification (VID/PID + serial + physical location)
     Usb {
         vid: u16,
@@ -42,21 +100,39 @@ impl DeviceId {
         driver.to_lowercase()
     }
 
-    /// Create a device ID from backend name and serial number
-    ///
-    /// The driver name is normalized to lowercase to ensure discovery and pool
-    /// create matching DeviceIds even if SoapySDR returns different capitalizations.
-    pub fn from_serial(backend: &str, serial: &str) -> Self {
-        Self::Backend {
-            backend: Self::normalize_driver(backend),
+    /// Create a device ID from backend, driver, and serial number
+    pub fn from_driver(backend: Backend, driver: &str, serial: &str) -> Self {
+        Self::Driver {
+            backend,
+            driver: Self::normalize_driver(driver),
             serial: serial.to_string(),
         }
     }
 
-    /// Get backend name from device ID
-    pub fn backend(&self) -> &str {
+    /// Create a device ID from driver name and serial number
+    ///
+    /// Infers backend from driver name. The driver name is normalized to lowercase.
+    pub fn from_serial(driver: &str, serial: &str) -> Self {
+        let backend = match driver.to_lowercase().as_str() {
+            "sdrplay" | "rtlsdr" | "lime" | "hackrf" | "airspy" => Backend::Soapy,
+            "mock" => Backend::Mock,
+            other => Backend::Unknown(other.to_string()),
+        };
+        Self::from_driver(backend, driver, serial)
+    }
+
+    /// Get backend from device ID
+    pub fn backend(&self) -> Backend {
         match self {
-            DeviceId::Backend { backend, .. } => backend.as_str(),
+            DeviceId::Driver { backend, .. } => backend.clone(),
+            DeviceId::Usb { .. } => Backend::Usb,
+        }
+    }
+
+    /// Get driver name from device ID
+    pub fn driver(&self) -> &str {
+        match self {
+            DeviceId::Driver { driver, .. } => driver.as_str(),
             DeviceId::Usb { .. } => "usb",
         }
     }
@@ -64,7 +140,7 @@ impl DeviceId {
     /// Get a string representation suitable for logging
     pub fn as_str(&self) -> String {
         match self {
-            DeviceId::Backend { backend, serial } => format!("{}:{}", backend, serial),
+            DeviceId::Driver { driver, serial, .. } => format!("{}:{}", driver, serial),
             DeviceId::Usb {
                 vid,
                 pid,
@@ -136,6 +212,23 @@ impl Capabilities {
     /// Uses default SDR capabilities for testing without hardware.
     pub fn for_mock(driver: &str, serial: &str) -> Self {
         Self::with_device_id(driver, serial)
+    }
+
+    /// Create capabilities from a DeviceId without opening the device
+    ///
+    /// Used in subprocess mode where we need to populate the pool with device
+    /// metadata before the subprocess opens the actual device.
+    /// Returns default capabilities - actual hardware capabilities will be
+    /// queried by the subprocess when it opens the device.
+    pub fn for_device(device_id: &DeviceId) -> Self {
+        match device_id {
+            DeviceId::Driver { driver, serial, .. } => Self::with_device_id(driver, serial),
+            DeviceId::Usb { .. } => {
+                // USB devices need driver-specific handling
+                // For now, return defaults
+                Self::with_device_id("unknown", "unknown")
+            }
+        }
     }
 
     /// Create capabilities from a SoapySDR device
@@ -308,18 +401,18 @@ mod tests {
         assert_eq!(id1, id2);
 
         match &id1 {
-            DeviceId::Backend { backend, serial } => {
-                assert_eq!(backend, "soapy");
+            DeviceId::Driver { driver, serial, .. } => {
+                assert_eq!(driver, "soapy");
                 assert_eq!(serial, "12345");
             }
-            _ => panic!("Expected Backend variant"),
+            _ => panic!("Expected Driver variant"),
         }
     }
 
     #[test]
     fn test_device_id_backend() {
         let id = DeviceId::from_serial("sdrplay", "12345");
-        assert_eq!(id.backend(), "sdrplay");
+        assert_eq!(id.backend(), Backend::Soapy);
 
         let usb_id = DeviceId::Usb {
             vid: 0x0bda,
@@ -327,7 +420,7 @@ mod tests {
             serial: "00000001".to_string(),
             bus_port: "1-2".to_string(),
         };
-        assert_eq!(usb_id.backend(), "usb");
+        assert_eq!(usb_id.backend(), Backend::Usb);
     }
 
     #[test]
@@ -348,13 +441,13 @@ mod tests {
 
         // Verify all are normalized to lowercase
         match &id_mixedcase {
-            DeviceId::Backend { backend, .. } => {
+            DeviceId::Driver { driver, .. } => {
                 assert_eq!(
-                    backend, "sdrplay",
+                    driver, "sdrplay",
                     "Driver should be normalized to lowercase"
                 );
             }
-            _ => panic!("Expected Backend variant"),
+            _ => panic!("Expected Driver variant"),
         }
     }
 

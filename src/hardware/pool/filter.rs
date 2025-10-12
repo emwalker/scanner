@@ -12,7 +12,7 @@ use tracing::debug;
 /// - Phase 2+: Gradually relax constraints
 /// - Final: allow_all() - full multi-tuner support
 pub struct PoolFilter {
-    backend: Option<String>,
+    backend: Option<hardware::types::Backend>,
     driver: Option<String>,
     mode: Option<TuningMode>,
     specific_tuners: Option<HashSet<TunerId>>,
@@ -33,6 +33,7 @@ impl PoolFilter {
     /// # Examples
     /// ```
     /// use scanner::hardware::pool::{PoolFilter, TuningMode};
+    /// use scanner::hardware::types::Backend;
     ///
     /// // Allow only sdrplay devices in single-tuner mode
     /// let filter = PoolFilter::new()
@@ -40,7 +41,7 @@ impl PoolFilter {
     ///     .with_mode(TuningMode::SingleTuner);
     ///
     /// // Allow only soapy backend
-    /// let filter = PoolFilter::new().with_backend("soapy");
+    /// let filter = PoolFilter::new().with_backend(Backend::Soapy);
     /// ```
     pub fn new() -> Self {
         Self {
@@ -51,9 +52,9 @@ impl PoolFilter {
         }
     }
 
-    /// Constrain to specific backend (e.g., "soapy", "rtlsdr")
-    pub fn with_backend(mut self, backend: impl Into<String>) -> Self {
-        self.backend = Some(backend.into());
+    /// Constrain to specific backend
+    pub fn with_backend(mut self, backend: hardware::types::Backend) -> Self {
+        self.backend = Some(backend);
         self
     }
 
@@ -84,7 +85,7 @@ impl PoolFilter {
     pub(crate) fn is_allowed(
         &self,
         tuner_id: &TunerId,
-        backend_name: &str,
+        backend: &hardware::types::Backend,
         allocated_count: usize,
     ) -> bool {
         // Check specific tuners first (most restrictive)
@@ -96,12 +97,12 @@ impl PoolFilter {
         } else {
             // Check backend (only if specific tuners not set)
             if let Some(allowed_backend) = &self.backend
-                && backend_name != allowed_backend
+                && backend != allowed_backend
             {
                 debug!(
                     tuner_id = ?tuner_id,
-                    backend_name = backend_name,
-                    allowed_backend = allowed_backend,
+                    backend = ?backend,
+                    allowed_backend = ?allowed_backend,
                     "Filter rejected: backend mismatch"
                 );
                 return false;
@@ -110,11 +111,11 @@ impl PoolFilter {
             // Check driver (case-insensitive, only if specific tuners not set)
             if let Some(allowed_driver) = &self.driver {
                 match &tuner_id.device_id {
-                    hardware::DeviceId::Backend { backend, .. } => {
-                        if !backend.eq_ignore_ascii_case(allowed_driver) {
+                    hardware::DeviceId::Driver { driver, .. } => {
+                        if !driver.eq_ignore_ascii_case(allowed_driver) {
                             debug!(
                                 tuner_id = ?tuner_id,
-                                driver = backend,
+                                driver = driver,
                                 allowed_driver = allowed_driver,
                                 "Filter rejected: driver mismatch"
                             );

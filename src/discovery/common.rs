@@ -35,6 +35,14 @@ mod tests {
             DeviceInfo {
                 id: DeviceId::from_serial("test", "001"),
                 label: "Test Device".to_string(),
+                tuners: vec![crate::hardware::types::TunerInfo {
+                    label: "Test Device".to_string(),
+                    mode: String::new(),
+                    id: crate::hardware::pool::TunerId::new(
+                        DeviceId::from_serial("test", "001"),
+                        0,
+                    ),
+                }],
             },
         );
 
@@ -52,6 +60,14 @@ mod tests {
             DeviceInfo {
                 id: DeviceId::from_serial("test", "001"),
                 label: "Test Device 1".to_string(),
+                tuners: vec![crate::hardware::types::TunerInfo {
+                    label: "Test Device 1".to_string(),
+                    mode: String::new(),
+                    id: crate::hardware::pool::TunerId::new(
+                        DeviceId::from_serial("test", "001"),
+                        0,
+                    ),
+                }],
             },
         );
         current.insert(
@@ -59,6 +75,14 @@ mod tests {
             DeviceInfo {
                 id: DeviceId::from_serial("test", "002"),
                 label: "Test Device 2".to_string(),
+                tuners: vec![crate::hardware::types::TunerInfo {
+                    label: "Test Device 2".to_string(),
+                    mode: String::new(),
+                    id: crate::hardware::pool::TunerId::new(
+                        DeviceId::from_serial("test", "002"),
+                        0,
+                    ),
+                }],
             },
         );
 
@@ -77,6 +101,14 @@ mod tests {
             DeviceInfo {
                 id: DeviceId::from_serial("test", "001"),
                 label: "Test Device 1".to_string(),
+                tuners: vec![crate::hardware::types::TunerInfo {
+                    label: "Test Device 1".to_string(),
+                    mode: String::new(),
+                    id: crate::hardware::pool::TunerId::new(
+                        DeviceId::from_serial("test", "001"),
+                        0,
+                    ),
+                }],
             },
         );
         known.insert(
@@ -84,6 +116,14 @@ mod tests {
             DeviceInfo {
                 id: DeviceId::from_serial("test", "002"),
                 label: "Test Device 2".to_string(),
+                tuners: vec![crate::hardware::types::TunerInfo {
+                    label: "Test Device 2".to_string(),
+                    mode: String::new(),
+                    id: crate::hardware::pool::TunerId::new(
+                        DeviceId::from_serial("test", "002"),
+                        0,
+                    ),
+                }],
             },
         );
 
@@ -106,6 +146,11 @@ mod tests {
                 DeviceInfo {
                     id: id.clone(),
                     label: format!("Device {}", i),
+                    tuners: vec![crate::hardware::types::TunerInfo {
+                        id: crate::hardware::pool::TunerId::new(id.clone(), 0),
+                        label: format!("Device {}", i),
+                        mode: String::new(),
+                    }],
                 },
             );
         }

@@ -254,9 +254,11 @@ fn test_pool_device_population() {
     let pool = Pool::new(filter);
 
     let mock_backend = crate::hardware::Mock;
-    let device = mock_backend.open_device(&tuner_id).unwrap();
+    let pool_tuner_id = crate::hardware::pool::TunerId::new(tuner_id, 0);
+    let device = mock_backend.open_tuner(&pool_tuner_id).unwrap();
 
-    pool.add_device(device, "Mock".to_string()).unwrap();
+    pool.add_device(device, crate::hardware::types::Backend::Mock)
+        .unwrap();
 
     let status = pool.status();
     assert_eq!(status.device_count, 1, "Pool should have one device");
@@ -273,8 +275,10 @@ fn test_pool_acquire_and_use() {
     let pool = Pool::new(filter);
 
     let mock_backend = crate::hardware::Mock;
-    let device = mock_backend.open_device(&tuner_id).unwrap();
-    pool.add_device(device, "Mock".to_string()).unwrap();
+    let pool_tuner_id = crate::hardware::pool::TunerId::new(tuner_id, 0);
+    let device = mock_backend.open_tuner(&pool_tuner_id).unwrap();
+    pool.add_device(device, crate::hardware::types::Backend::Mock)
+        .unwrap();
 
     let pool = Arc::new(pool);
 

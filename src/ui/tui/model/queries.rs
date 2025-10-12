@@ -181,9 +181,25 @@ impl Model {
             .map(|tuner| {
                 let state = self.tuner_state(&tuner.id);
                 super::TunerDisplayState {
-                    device_id: tuner.id.clone(),
+                    tuner_id: tuner.id.clone(),
                     label: tuner.label.clone(),
                     status_label: state.display(),
+                }
+            })
+            .collect()
+    }
+
+    /// Get flat list of tuners with their current states
+    /// Tuners are naturally sorted by label via BTreeSet
+    pub fn tuner_list(&self) -> Vec<super::TunerDisplayInfo> {
+        self.tuners
+            .iter()
+            .map(|tuner| {
+                let state = self.tuner_state(&tuner.id);
+                super::TunerDisplayInfo {
+                    id: tuner.id.clone(),
+                    label: tuner.label.clone(),
+                    state,
                 }
             })
             .collect()

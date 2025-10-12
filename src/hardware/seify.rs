@@ -23,13 +23,28 @@ impl Backend for Seify {
         Ok(vec![]) // Stub for now
     }
 
-    fn open_device(&self, _id: &DeviceId) -> Result<Box<dyn DeviceTrait>> {
+    fn open_tuner(
+        &self,
+        _tuner_id: &crate::hardware::pool::TunerId,
+    ) -> Result<Box<dyn DeviceTrait>> {
         // TODO: Implement when Seify reaches v1.0
         // Will require SeifyBridgeBlock to connect to rustradio
         //
         // Implementation will look like:
         // let device = seify::Device::new()?;
         // Ok(Box::new(SeifyDevice::new(device)?))
+        Err(DeviceError::new(
+            DeviceErrorKind::Unsupported,
+            "Seify",
+            "Seify backend planned for Phase 2 (when v1.0 is released)",
+        )
+        .into())
+    }
+
+    fn open_streaming_tuner(
+        &self,
+        _tuner_id: &crate::hardware::pool::TunerId,
+    ) -> Result<Box<dyn super::streaming::StreamingDevice>> {
         Err(DeviceError::new(
             DeviceErrorKind::Unsupported,
             "Seify",

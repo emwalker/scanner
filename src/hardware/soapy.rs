@@ -1,6 +1,6 @@
 //! SoapySDR backend implementation
 
-use super::{Backend, Capabilities, DeviceId, DeviceInfo, DeviceTrait};
+use super::{Backend, Capabilities, DeviceId, DeviceInfo, DeviceTrait, types::TunerInfo};
 use crate::core::types::{Result, ScannerError};
 use rustradio::Complex;
 use rustradio::graph::GraphRunner;
@@ -45,65 +45,65 @@ pub struct Soapy;
 
 impl Backend for Soapy {
     fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
+        use std::collections::HashMap;
+
         // Suppress stderr during enumeration to prevent RtAudio spam
         let devices = suppress_stderr(|| soapysdr::enumerate(""))?;
 
-        Ok(devices
+        // Group devices by (driver, serial) to collect modes as tuners
+        let mut device_map: HashMap<(String, String), (String, Vec<TunerInfo>)> = HashMap::new();
+
+        for d in devices {
+            let driver = d.get("driver").unwrap_or("soapy").to_string();
+
+            // Skip audio devices - we only want SDR hardware
+            if driver == "audio" {
+                continue;
+            }
+
+            let serial = d.get("serial").unwrap_or("unknown").to_string();
+            let mode = d.get("mode").unwrap_or("").to_string();
+            let model = d.get("label").unwrap_or("Unknown").to_string();
+
+            let key = (driver.clone(), serial.clone());
+            let entry = device_map
+                .entry(key)
+                .or_insert_with(|| (model.clone(), Vec::new()));
+
+            let tuner_label = if mode.is_empty() {
+                format!("{} ({}:{})", model, driver, serial)
+            } else {
+                format!("{} - {} ({}:{})", model, mode, driver, serial)
+            };
+
+            let device_id = DeviceId::from_serial(&driver, &serial);
+            let channel_index = entry.1.len();
+
+            entry.1.push(TunerInfo {
+                id: crate::hardware::pool::TunerId::new(device_id, channel_index),
+                label: tuner_label,
+                mode,
+            });
+        }
+
+        // Convert grouped devices to DeviceInfo
+        let devices: Vec<DeviceInfo> = device_map
             .into_iter()
-            .filter_map(|d| {
-                let driver = d.get("driver").unwrap_or("soapy");
-
-                // Skip audio devices - we only want SDR hardware
-                if driver == "audio" {
-                    return None;
-                }
-
-                let serial = d.get("serial").unwrap_or("unknown").to_string();
-                let mode = d.get("mode").unwrap_or("");
-                let model = d.get("label").unwrap_or("Unknown").to_string();
-
-                // Include mode in serial for devices like RSPduo that have multiple modes
-                let unique_serial = if mode.is_empty() {
-                    serial.clone()
-                } else {
-                    format!("{}:{}", serial, mode)
-                };
-
-                Some(DeviceInfo {
-                    id: DeviceId::from_serial(driver, &unique_serial),
-                    label: format!("{} ({}:{})", model, driver, serial),
-                })
+            .map(|((driver, serial), (model, tuners))| DeviceInfo {
+                id: DeviceId::from_serial(&driver, &serial),
+                label: format!("{} ({}:{})", &model, &driver, &serial),
+                tuners,
             })
-            .collect())
+            .collect();
+        Ok(devices)
     }
 
-    fn open_device(&self, id: &DeviceId) -> Result<Box<dyn DeviceTrait>> {
-        let (backend, serial) = match id {
-            DeviceId::Backend { backend, serial } => (backend.as_str(), serial.as_str()),
-            DeviceId::Usb { .. } => {
-                return Err(ScannerError::UnsupportedDeviceIdFormat {
-                    backend: "soapysdr".to_string(),
-                    device_format: "USB".to_string(),
-                });
-            }
-        };
-
-        // Handle RSPduo format: serial can be "1234:ST" or just "1234"
-        let args = if let Some((actual_serial, mode)) = serial.split_once(':') {
-            format!("driver={},serial={},mode={}", backend, actual_serial, mode)
-        } else {
-            format!("driver={},serial={}", backend, serial)
-        };
-
-        Ok(Box::new(SoapyDevice::new(args, backend, serial)?))
-    }
-
-    fn open_streaming_device(
+    fn open_tuner(
         &self,
-        id: &DeviceId,
-    ) -> Result<Box<dyn super::streaming::StreamingDevice>> {
-        let (backend, serial) = match id {
-            DeviceId::Backend { backend, serial } => (backend.as_str(), serial.as_str()),
+        tuner_id: &crate::hardware::pool::TunerId,
+    ) -> Result<Box<dyn DeviceTrait>> {
+        let (driver, serial) = match &tuner_id.device_id {
+            DeviceId::Driver { driver, serial, .. } => (driver.as_str(), serial.as_str()),
             DeviceId::Usb { .. } => {
                 return Err(ScannerError::UnsupportedDeviceIdFormat {
                     backend: "soapysdr".to_string(),
@@ -112,18 +112,67 @@ impl Backend for Soapy {
             }
         };
 
-        let args = if let Some((actual_serial, mode)) = serial.split_once(':') {
-            format!("driver={},serial={},mode={}", backend, actual_serial, mode)
-        } else {
-            format!("driver={},serial={}", backend, serial)
+        // For RSPduo, map channel_index to mode
+        let mode = match driver {
+            "sdrplay" => match tuner_id.channel_index {
+                0 => Some("ST"),  // Single Tuner
+                1 => Some("DT"),  // Dual Tuner
+                2 => Some("MA"),  // Master
+                3 => Some("MA8"), // Master 8MHz
+                _ => None,
+            },
+            _ => None,
         };
 
-        let device = suppress_stderr(|| soapysdr::Device::new(args.as_str()))?;
+        let args = if let Some(mode_str) = mode {
+            format!("driver={},serial={},mode={}", driver, serial, mode_str)
+        } else {
+            format!("driver={},serial={}", driver, serial)
+        };
+
+        Ok(Box::new(SoapyDevice::new(args, driver, serial)?))
+    }
+
+    fn open_streaming_tuner(
+        &self,
+        tuner_id: &crate::hardware::pool::TunerId,
+    ) -> Result<Box<dyn super::streaming::StreamingDevice>> {
+        let (driver, serial) = match &tuner_id.device_id {
+            DeviceId::Driver { driver, serial, .. } => (driver.as_str(), serial.as_str()),
+            DeviceId::Usb { .. } => {
+                return Err(ScannerError::UnsupportedDeviceIdFormat {
+                    backend: "soapysdr".to_string(),
+                    device_format: "USB".to_string(),
+                });
+            }
+        };
+
+        // For RSPduo, map channel_index to mode
+        let mode = match driver {
+            "sdrplay" => match tuner_id.channel_index {
+                0 => Some("ST"),  // Single Tuner
+                1 => Some("DT"),  // Dual Tuner
+                2 => Some("MA"),  // Master
+                3 => Some("MA8"), // Master 8MHz
+                _ => None,
+            },
+            _ => None,
+        };
+
+        let args = if let Some(mode_str) = mode {
+            format!("driver={},serial={},mode={}", driver, serial, mode_str)
+        } else {
+            format!("driver={},serial={}", driver, serial)
+        };
+
+        tracing::debug!(args = %args, "Opening SoapySDR streaming device");
+        let device = soapysdr::Device::new(args.as_str())?;
+        tracing::debug!("SoapySDR streaming device opened successfully");
         let channels = device.num_channels(soapysdr::Direction::Rx).unwrap_or(1);
 
         Ok(Box::new(SoapyStreamingDevice {
             device,
-            device_id: id.clone(),
+            device_id: tuner_id.device_id.clone(),
             channels,
             active_streams: std::collections::HashMap::new(),
         }))
@@ -301,9 +350,16 @@ mod tests {
                 format!("{}:{}", serial, mode)
             };
 
+            let device_id = DeviceId::from_serial(driver, &unique_serial);
+
             processed_devices.push(DeviceInfo {
-                id: DeviceId::from_serial(driver, &unique_serial),
+                id: device_id.clone(),
                 label: format!("{} ({}:{})", model, driver, serial),
+                tuners: vec![TunerInfo {
+                    id: crate::hardware::pool::TunerId::new(device_id, 0),
+                    label: format!("{} ({}:{})", model, driver, serial),
+                    mode: mode.to_string(),
+                }],
             });
         }
 
@@ -330,8 +386,8 @@ mod tests {
         for expected_id in expected_ids {
             assert!(
                 processed_devices.iter().any(|d| match &d.id {
-                    DeviceId::Backend { backend, serial } =>
-                        format!("{}:{}", backend, serial) == expected_id,
+                    DeviceId::Driver { driver, serial, .. } =>
+                        format!("{}:{}", driver, serial) == expected_id,
                     _ => false,
                 }),
                 "Should find device with ID: {}",
@@ -380,6 +436,14 @@ impl super::streaming::StreamingDevice for SoapyStreamingDevice {
         rate: f64,
         gain: f64,
     ) -> Result<super::streaming::ActualConfig> {
+        if self
+            .device
+            .has_gain_mode(soapysdr::Direction::Rx, channel)?
+        {
+            self.device
+                .set_gain_mode(soapysdr::Direction::Rx, channel, false)?;
+        }
+
         self.device
             .set_sample_rate(soapysdr::Direction::Rx, channel, rate)?;
         self.device

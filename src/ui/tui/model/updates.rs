@@ -6,7 +6,7 @@ use tracing::debug;
 
 use super::{
     state::Model,
-    types::{CandidateProgress, CandidateStatus, TunerState, UiMode, WindowProgress},
+    types::{CandidateProgress, CandidateStatus, UiMode, WindowProgress},
 };
 
 impl Model {
@@ -18,7 +18,6 @@ impl Model {
             TuiEvent::TunerRemoved(tuner_id) => self.remove_device(&tuner_id),
             TuiEvent::Paused { tuner_id } => {
                 debug!(tuner_id = ?tuner_id, "Scanning paused, tuner now available");
-                self.tuner_states.insert(tuner_id, TunerState::Available);
             }
             TuiEvent::ActiveTunersUpdated { status } => {
                 debug!(
@@ -58,6 +57,31 @@ impl Model {
                         activity = ?tuner.activity,
                         "Tuner status"
                     );
+                }
+
+                // Build pool_info HashMap for O(1) lookups
+                self.pool_info = status
+                    .tuners
+                    .iter()
+                    .map(|t| (t.id.clone(), t.clone()))
+                    .collect();
+
+                // Populate tuners from all devices (both cached and dynamic)
+                for device in self.cached_devices.values().chain(self.devices.values()) {
+                    for tuner in &device.tuners {
+                        let tuner_info = crate::ui::tui::model::TunerInfo {
+                            id: tuner.id.clone(),
+                            label: tuner.label.clone(),
+                        };
+
+                        if self.tuners.insert(tuner_info.clone()) {
+                            debug!(
+                                tuner_id = ?tuner_info.id,
+                                label = %tuner_info.label,
+                                "Adding tuner to UI"
+                            );
+                        }
+                    }
                 }
 
                 self.pool_status = Some(status);

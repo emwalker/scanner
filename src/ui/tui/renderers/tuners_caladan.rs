@@ -19,16 +19,17 @@ pub fn render_tuners(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme
 
     let bracket_color = ratatui::style::Color::Rgb(160, 200, 220);
 
-    // Use discovered tuners if available, otherwise show "No tuners" message
-    if model.tuners.is_empty() {
+    let tuners = model.tuner_list();
+    if tuners.is_empty() {
         render_no_devices(f, area, theme, bracket_color);
         return;
     }
 
     let mut y_offset = 0;
-    for (idx, tuner) in model.tuners.iter().enumerate() {
+
+    for (tuner_idx, tuner_info) in tuners.iter().enumerate() {
         if y_offset + 5 > area.height {
-            break;
+            return;
         }
 
         let tuner_area = Rect {
@@ -38,17 +39,8 @@ pub fn render_tuners(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme
             height: 5,
         };
 
-        let has_focus = matches!(model.focus_state, FocusState::Tuner(i) if i == idx);
-        let tuner_state = model.tuner_state(&tuner.id);
-        render_tuner_block(
-            f,
-            tuner_area,
-            tuner,
-            theme,
-            bracket_color,
-            has_focus,
-            tuner_state,
-        );
+        let has_focus = matches!(model.focus_state, FocusState::Tuner(i) if i == tuner_idx);
+        render_tuner_block(f, tuner_area, tuner_info, theme, bracket_color, has_focus);
         y_offset += 5;
     }
 }
@@ -105,11 +97,10 @@ fn render_no_devices(
 fn render_tuner_block(
     f: &mut Frame,
     area: Rect,
-    tuner: &crate::hardware::DeviceInfo,
+    tuner: &crate::ui::tui::model::TunerDisplayInfo,
     theme: &dyn Theme,
     bracket_color: ratatui::style::Color,
     has_focus: bool,
-    tuner_state: crate::ui::tui::model::TunerState,
 ) {
     let border_style = if has_focus {
         Style::default()
@@ -139,10 +130,9 @@ fn render_tuner_block(
 
     let inner = block.inner(area);
 
-    // Extract tuner info from label and ID
-    let tuner_id_str = match &tuner.id {
-        crate::hardware::DeviceId::Backend { backend, serial } => {
-            format!("{}:{}", backend, serial)
+    let tuner_id_str = match &tuner.id.device_id {
+        crate::hardware::DeviceId::Driver { driver, serial, .. } => {
+            format!("{}:{}", driver, serial)
         }
         crate::hardware::DeviceId::Usb {
             vid, pid, serial, ..
@@ -163,7 +153,7 @@ fn render_tuner_block(
             Style::default().fg(theme.secondary()),
         )]),
         Line::from(vec![Span::styled(
-            tuner_state.display(),
+            tuner.state.display(),
             Style::default()
                 .fg(theme.foreground())
                 .add_modifier(Modifier::DIM),

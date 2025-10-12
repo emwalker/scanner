@@ -18,21 +18,39 @@ pub struct Mock;
 
 impl Backend for Mock {
     fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
+        use super::types::TunerInfo;
+
+        let device_001 = DeviceId::from_serial("mock", "001");
+        let device_002 = DeviceId::from_serial("mock", "002");
+
         Ok(vec![
             DeviceInfo {
-                id: DeviceId::from_serial("mock", "001"),
+                id: device_001.clone(),
                 label: "Mock RTL-SDR (mock:001)".to_string(),
+                tuners: vec![TunerInfo {
+                    id: crate::hardware::pool::TunerId::new(device_001, 0),
+                    label: "Mock RTL-SDR (mock:001)".to_string(),
+                    mode: String::new(),
+                }],
             },
             DeviceInfo {
-                id: DeviceId::from_serial("mock", "002"),
+                id: device_002.clone(),
                 label: "Mock SDRplay (mock:002)".to_string(),
+                tuners: vec![TunerInfo {
+                    id: crate::hardware::pool::TunerId::new(device_002, 0),
+                    label: "Mock SDRplay (mock:002)".to_string(),
+                    mode: String::new(),
+                }],
             },
         ])
     }
 
-    fn open_device(&self, id: &DeviceId) -> Result<Box<dyn DeviceTrait>> {
-        let (driver, serial) = match id {
-            DeviceId::Backend { backend, serial } => (backend.as_str(), serial.as_str()),
+    fn open_tuner(
+        &self,
+        tuner_id: &crate::hardware::pool::TunerId,
+    ) -> Result<Box<dyn DeviceTrait>> {
+        let (driver, serial) = match &tuner_id.device_id {
+            DeviceId::Driver { driver, serial, .. } => (driver.as_str(), serial.as_str()),
             DeviceId::Usb { .. } => {
                 return Err(
                     crate::core::types::ScannerError::UnsupportedDeviceIdFormat {
@@ -46,12 +64,12 @@ impl Backend for Mock {
         Ok(Box::new(MockDevice::new(driver, serial, false)))
     }
 
-    fn open_streaming_device(
+    fn open_streaming_tuner(
         &self,
-        id: &DeviceId,
+        tuner_id: &crate::hardware::pool::TunerId,
     ) -> Result<Box<dyn super::streaming::StreamingDevice>> {
-        let (driver, serial) = match id {
-            DeviceId::Backend { backend, serial } => (backend.as_str(), serial.as_str()),
+        let (driver, serial) = match &tuner_id.device_id {
+            DeviceId::Driver { driver, serial, .. } => (driver.as_str(), serial.as_str()),
             DeviceId::Usb { .. } => {
                 return Err(
                     crate::core::types::ScannerError::UnsupportedDeviceIdFormat {
@@ -182,7 +200,8 @@ mod tests {
     fn test_mock_device_open() {
         let backend = Mock;
         let devices = backend.enumerate_devices().unwrap();
-        let device = backend.open_device(&devices[0].id).unwrap();
+        let tuner_id = crate::hardware::pool::TunerId::new(devices[0].id.clone(), 0);
+        let device = backend.open_tuner(&tuner_id).unwrap();
 
         assert_eq!(device.id(), &DeviceId::from_serial("mock", "001"));
     }
@@ -191,7 +210,8 @@ mod tests {
     fn test_mock_device_capabilities() {
         let backend = Mock;
         let devices = backend.enumerate_devices().unwrap();
-        let device = backend.open_device(&devices[0].id).unwrap();
+        let tuner_id = crate::hardware::pool::TunerId::new(devices[0].id.clone(), 0);
+        let device = backend.open_tuner(&tuner_id).unwrap();
 
         let caps = device.capabilities();
         assert!(caps.supports_frequency(88.9e6));
@@ -202,7 +222,8 @@ mod tests {
     fn test_mock_device_graph_integration() {
         let backend = Mock;
         let devices = backend.enumerate_devices().unwrap();
-        let device = backend.open_device(&devices[0].id).unwrap();
+        let tuner_id = crate::hardware::pool::TunerId::new(devices[0].id.clone(), 0);
+        let device = backend.open_tuner(&tuner_id).unwrap();
 
         let mut graph = Graph::new();
         let _stream = device
@@ -216,7 +237,8 @@ mod tests {
     fn test_mock_device_tune_success() {
         let backend = Mock;
         let devices = backend.enumerate_devices().unwrap();
-        let mut device = backend.open_device(&devices[0].id).unwrap();
+        let tuner_id = crate::hardware::pool::TunerId::new(devices[0].id.clone(), 0);
+        let mut device = backend.open_tuner(&tuner_id).unwrap();
 
         // Should succeed
         device.tune(100e6).unwrap();
@@ -235,7 +257,8 @@ mod tests {
     fn test_mock_device_into_inner() {
         let backend = Mock;
         let devices = backend.enumerate_devices().unwrap();
-        let device = backend.open_device(&devices[0].id).unwrap();
+        let tuner_id = crate::hardware::pool::TunerId::new(devices[0].id.clone(), 0);
+        let device = backend.open_tuner(&tuner_id).unwrap();
 
         let raw = device.into_inner();
         let device_id = raw.downcast::<DeviceId>().unwrap();

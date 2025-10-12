@@ -66,6 +66,7 @@ pub fn start_tui(
     shutdown_coordinator: Arc<ShutdownCoordinator>,
     theme_name: ThemeName,
     command_sender: mpsc::Sender<ScannerCommand>,
+    cached_devices: Vec<crate::hardware::DeviceInfo>,
 ) -> thread::JoinHandle<std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>> {
     let theme = create_theme(&theme_name);
 
@@ -76,6 +77,7 @@ pub fn start_tui(
             theme,
             theme_name,
         )
+        .with_cached_devices(cached_devices)
         .with_command_sender(command_sender);
         tui_display.run()
     })
@@ -91,6 +93,7 @@ pub fn create_logger(args: &ScanArgs) -> Arc<dyn Logger + Send + Sync> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_with_tui(
     config: ScanningConfig,
     stations: Option<String>,
@@ -101,6 +104,7 @@ pub fn run_with_tui(
         std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>,
     >,
     logger: Arc<dyn Logger + Send + Sync>,
+    discovered_devices: Vec<crate::hardware::DeviceInfo>,
 ) -> Result<()> {
     let console_writer = Arc::new(DefaultConsoleWriter);
     let backend = Arc::new(crate::hardware::Soapy);
@@ -113,6 +117,7 @@ pub fn run_with_tui(
         tui_context.progress_reporter,
         shutdown_coordinator.clone(),
         shared_pool.clone(),
+        discovered_devices,
     )?
     .with_command_receiver(tui_context.command_receiver)
     .with_tui_event_sender(tui_context.tui_event_sender);

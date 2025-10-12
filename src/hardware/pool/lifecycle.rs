@@ -15,63 +15,44 @@ use std::time::Instant;
 use tracing::{debug, error};
 
 impl Pool {
-    /// Add newly discovered device and expose all its tuners
-    ///
-    /// Checks pool filter before adding device. Returns AddDeviceResult indicating what happened.
-    /// During shutdown, returns ShutdownMode without blocking if pool is locked.
-    fn check_filter_allows_device(
-        &self,
-        device_id: &hardware::DeviceId,
-        backend_name: &str,
-    ) -> Option<AddDeviceResult> {
-        let test_tuner_id = TunerId::new(device_id.clone(), 0);
+    fn open_device_for_tuner(&self, tuner_id: &TunerId) -> Result<Box<dyn hardware::DeviceTrait>> {
+        let backend = tuner_id.device_id.backend();
 
-        let allocated_count = match self.pool_ref.try_lock() {
-            Ok(inner) => inner.allocated_tuners.len(),
-            Err(_) => {
-                debug!(device_id = ?device_id, "Add device failed - pool is locked");
-                return Some(AddDeviceResult::PoolBusy);
+        let backend_impl: Box<dyn hardware::Backend> = match backend {
+            hardware::types::Backend::Soapy => Box::new(hardware::Soapy),
+            hardware::types::Backend::Mock => Box::new(hardware::Mock),
+            _ => {
+                return Err(ScannerError::Custom(format!(
+                    "Unsupported backend: {:?}",
+                    backend
+                )));
             }
         };
 
-        if !self
-            .filter
-            .is_allowed(&test_tuner_id, backend_name, allocated_count)
-        {
-            debug!(
-                device_id = ?device_id,
-                backend = backend_name,
-                "Device rejected by pool filter"
-            );
-            return Some(AddDeviceResult::FilteredOut {
-                device_id: device_id.clone(),
-                reason: format!("Filter does not allow backend '{}'", backend_name),
-            });
-        }
-
-        None
+        backend_impl.open_tuner(tuner_id)
     }
 
     fn create_and_insert_device_entry(
         &self,
-        device: Box<dyn hardware::DeviceTrait>,
-        backend_name: &str,
+        device: Option<Box<dyn hardware::DeviceTrait>>,
+        device_id: hardware::DeviceId,
+        backend: &hardware::types::Backend,
         capabilities: &hardware::Capabilities,
     ) -> Option<hardware::DeviceId> {
-        let device_id = device.id().clone();
         let num_tuners = capabilities.channels;
 
         debug!(
             device_id = ?device_id,
-            backend = backend_name,
+            backend = ?backend,
             num_tuners = num_tuners,
+            has_device = device.is_some(),
             "Adding device to pool"
         );
 
         let device_entry = DeviceEntry {
-            device: Arc::new(Mutex::new(device)),
+            device: device.map(|d| Arc::new(Mutex::new(d))),
             capabilities: capabilities.clone(),
-            backend_name: backend_name.to_string(),
+            backend: backend.clone(),
             num_tuners,
             added_at: Instant::now(),
         };
@@ -93,17 +74,30 @@ impl Pool {
         device_id: &hardware::DeviceId,
         num_tuners: usize,
         capabilities: &hardware::Capabilities,
-    ) {
+        backend: &hardware::types::Backend,
+    ) -> usize {
         let mut inner = match self.pool_ref.try_lock() {
             Ok(guard) => guard,
             Err(_) => {
                 debug!(device_id = ?device_id, "Failed to expose tuners - pool is locked");
-                return;
+                return 0;
             }
         };
 
+        let allocated_count = inner.allocated_tuners.len();
+        let mut exposed_count = 0;
+
         for channel_index in 0..num_tuners {
             let tuner_id = TunerId::new(device_id.clone(), channel_index);
+
+            // Check if this tuner passes the filter
+            if !self.filter.is_allowed(&tuner_id, backend, allocated_count) {
+                debug!(
+                    tuner_id = ?tuner_id,
+                    "Tuner filtered out - not exposing"
+                );
+                continue;
+            }
 
             debug!(
                 tuner_id = ?tuner_id,
@@ -117,13 +111,16 @@ impl Pool {
             };
 
             inner.available_tuners.insert(tuner_id, tuner_entry);
+            exposed_count += 1;
         }
+
+        exposed_count
     }
 
     pub fn add_device(
         &self,
         device: Box<dyn hardware::DeviceTrait>,
-        backend_name: String,
+        backend: hardware::types::Backend,
     ) -> AddDeviceResult {
         let device_id = device.id().clone();
         let capabilities = device.capabilities().clone();
@@ -151,21 +148,103 @@ impl Pool {
             return AddDeviceResult::ShutdownMode;
         }
 
-        if let Some(result) = self.check_filter_allows_device(&device_id, &backend_name) {
-            return result;
+        let device_id = match self.create_and_insert_device_entry(
+            Some(device),
+            device_id,
+            &backend,
+            &capabilities,
+        ) {
+            Some(id) => id,
+            None => return AddDeviceResult::PoolBusy,
+        };
+
+        let exposed_count = self.expose_tuners(&device_id, num_tuners, &capabilities, &backend);
+
+        if exposed_count == 0 {
+            // No tuners passed the filter - remove the device
+            debug!(
+                device_id = ?device_id,
+                "Removing device - no tuners passed filter"
+            );
+            if let Err(e) = self.remove_device(&device_id) {
+                debug!(
+                    device_id = ?device_id,
+                    error = ?e,
+                    "Failed to remove filtered device (ignoring)"
+                );
+            }
+            return AddDeviceResult::FilteredOut {
+                device_id,
+                reason: "No tuners passed filter criteria".to_string(),
+            };
+        }
+
+        AddDeviceResult::Added {
+            device_id,
+            tuner_count: exposed_count,
+        }
+    }
+
+    pub fn add_device_metadata(
+        &self,
+        device_id: hardware::DeviceId,
+        capabilities: hardware::Capabilities,
+        backend: hardware::types::Backend,
+    ) -> AddDeviceResult {
+        let num_tuners = capabilities.channels;
+
+        match self.state.try_lock() {
+            Ok(state_guard) => {
+                if !matches!(
+                    *state_guard,
+                    crate::hardware::pool::state::PoolState::Active(_)
+                ) {
+                    debug!(device_id = ?device_id, "Add device metadata rejected - pool not in Active state");
+                    return AddDeviceResult::ShutdownMode;
+                }
+                drop(state_guard);
+            }
+            Err(_) => {
+                debug!(device_id = ?device_id, "Add device metadata skipped - state lock contention");
+                return AddDeviceResult::PoolBusy;
+            }
+        }
+
+        if self.shutdown_mode.load(Ordering::SeqCst) {
+            debug!(device_id = ?device_id, "Add device metadata skipped - pool in shutdown mode");
+            return AddDeviceResult::ShutdownMode;
         }
 
         let device_id =
-            match self.create_and_insert_device_entry(device, &backend_name, &capabilities) {
+            match self.create_and_insert_device_entry(None, device_id, &backend, &capabilities) {
                 Some(id) => id,
                 None => return AddDeviceResult::PoolBusy,
             };
 
-        self.expose_tuners(&device_id, num_tuners, &capabilities);
+        let exposed_count = self.expose_tuners(&device_id, num_tuners, &capabilities, &backend);
+
+        if exposed_count == 0 {
+            // No tuners passed the filter - remove the device
+            debug!(
+                device_id = ?device_id,
+                "Removing device - no tuners passed filter"
+            );
+            if let Err(e) = self.remove_device(&device_id) {
+                debug!(
+                    device_id = ?device_id,
+                    error = ?e,
+                    "Failed to remove filtered device (ignoring)"
+                );
+            }
+            return AddDeviceResult::FilteredOut {
+                device_id,
+                reason: "No tuners passed filter criteria".to_string(),
+            };
+        }
 
         AddDeviceResult::Added {
             device_id,
-            tuner_count: num_tuners,
+            tuner_count: exposed_count,
         }
     }
 
@@ -254,12 +333,12 @@ impl Pool {
 
                 let filter_allowed =
                     self.filter
-                        .is_allowed(tuner_id, &device_entry.backend_name, allocated_count);
+                        .is_allowed(tuner_id, &device_entry.backend, allocated_count);
                 let can_handle = entry.capabilities.can_handle_task(requirements);
 
                 debug!(
                     tuner_id = ?tuner_id,
-                    backend = &device_entry.backend_name,
+                    backend = ?device_entry.backend,
                     filter_allowed = filter_allowed,
                     can_handle = can_handle,
                     "Pool acquire: evaluated tuner"
@@ -281,77 +360,6 @@ impl Pool {
 
                 (range_size, entry.channel_index)
             })
-    }
-
-    fn allocate_tuner(
-        &self,
-        inner: &mut PoolInner,
-        tuner_id: &TunerId,
-        activity: TunerActivity,
-    ) -> Option<Tuner> {
-        let entry = match inner.available_tuners.remove(tuner_id) {
-            Some(e) => e,
-            None => {
-                error!(tuner_id = ?tuner_id, "Tuner disappeared during acquisition");
-                return None;
-            }
-        };
-
-        let device_entry = match inner.devices.get(&entry.device_id) {
-            Some(d) => d,
-            None => {
-                error!(
-                    device_id = ?entry.device_id,
-                    tuner_id = ?tuner_id,
-                    "Device not found for tuner during acquisition"
-                );
-                return None;
-            }
-        };
-
-        let backend_name = device_entry.backend_name.clone();
-        let model = device_entry.capabilities.device_id.to_string();
-        let device = Arc::clone(&device_entry.device);
-
-        inner.allocated_tuners.insert(
-            tuner_id.clone(),
-            AllocationInfo {
-                allocated_at: Instant::now(),
-                task_id: None,
-                backend_name,
-                model,
-                activity,
-            },
-        );
-
-        debug!(tuner_id = ?tuner_id, "Tuner acquired from pool");
-
-        let on_state_change = Arc::clone(&self.on_state_change);
-        let pool_ref = Arc::clone(&self.pool_ref);
-        let shutdown_mode_clone = Arc::clone(&self.shutdown_mode);
-
-        Some(Tuner {
-            tuner_id: tuner_id.clone(),
-            device,
-            pool_inner: Arc::clone(&self.pool_ref),
-            on_return: Box::new(move || {
-                if shutdown_mode_clone.load(Ordering::SeqCst) {
-                    return;
-                }
-
-                let status = match pool_ref.try_lock() {
-                    Ok(inner) => crate::hardware::pool::Pool::build_status_from_inner(&inner),
-                    Err(_) => return,
-                };
-
-                if let Ok(callbacks) = on_state_change.lock() {
-                    for callback in callbacks.iter() {
-                        callback(status.clone());
-                    }
-                }
-            }),
-            shutdown_mode: Arc::clone(&self.shutdown_mode),
-        })
     }
 
     /// Try to acquire tuner matching requirements (non-blocking)
@@ -403,23 +411,192 @@ impl Pool {
             "Pool acquire: checking available tuners"
         );
 
-        let tuner = match self.find_best_matching_tuner(&inner, requirements, allocated_count) {
-            Some((tuner_id, _)) => {
-                let tuner_id = tuner_id.clone();
-                self.allocate_tuner(&mut inner, &tuner_id, activity)
-            }
+        // Find and allocate tuner, then drop lock before spawning subprocess
+        let tuner_id = match self.find_best_matching_tuner(&inner, requirements, allocated_count) {
+            Some((tuner_id, _)) => tuner_id.clone(),
             None => {
                 debug!(requirements = ?requirements, "No tuner available");
-                None
+                return None;
             }
         };
 
-        if tuner.is_some() {
-            drop(inner);
-            self.notify_state_change();
+        // Get data needed while we still have the lock
+        let device_entry = match inner.devices.get(&tuner_id.device_id) {
+            Some(d) => d,
+            None => {
+                error!(
+                    device_id = ?tuner_id.device_id,
+                    tuner_id = ?tuner_id,
+                    "Device not found for tuner during acquisition"
+                );
+                return None;
+            }
+        };
+
+        let backend_type = device_entry.backend.clone();
+        let model = device_entry.capabilities.device_id.to_string();
+        let device_id_for_open = tuner_id.device_id.clone();
+        let capabilities_for_rollback = device_entry.capabilities.clone();
+        let stored_device = device_entry.device.clone();
+
+        // Mark as allocated
+        inner.allocated_tuners.insert(
+            tuner_id.clone(),
+            AllocationInfo {
+                allocated_at: Instant::now(),
+                task_id: None,
+                backend: backend_type.clone(),
+                model,
+                activity,
+            },
+        );
+
+        // Remove from available
+        inner.available_tuners.remove(&tuner_id);
+
+        debug!(tuner_id = ?tuner_id, "Tuner acquired from pool");
+
+        // Drop the lock before opening device or spawning subprocess
+        drop(inner);
+
+        // Now open device or spawn subprocess (without holding the lock)
+        let backend = if self.use_subprocesses {
+            match self.get_or_spawn_subprocess(&device_id_for_open) {
+                Ok(subprocess) => {
+                    crate::hardware::pool::tuner::TunerBackend::Subprocess { subprocess }
+                }
+                Err(e) => {
+                    error!(
+                        tuner_id = ?tuner_id,
+                        error = ?e,
+                        "Failed to spawn subprocess for tuner - rolling back allocation"
+                    );
+
+                    // Rollback: remove from allocated_tuners and return to available_tuners
+                    if let Ok(mut inner) = self.pool_ref.try_lock() {
+                        inner.allocated_tuners.remove(&tuner_id);
+                        let tuner_entry = TunerEntry {
+                            device_id: tuner_id.device_id.clone(),
+                            channel_index: tuner_id.channel_index,
+                            capabilities: capabilities_for_rollback,
+                        };
+                        inner.available_tuners.insert(tuner_id.clone(), tuner_entry);
+                    }
+
+                    return None;
+                }
+            }
+        } else {
+            // Direct mode: use stored device if available, otherwise open it
+            let backend_trait = if let Some(stored) = stored_device {
+                stored
+            } else {
+                match self.open_device_for_tuner(&tuner_id) {
+                    Ok(device) => Arc::new(Mutex::new(device)),
+                    Err(e) => {
+                        error!(
+                            tuner_id = ?tuner_id,
+                            error = ?e,
+                            "Failed to open device for direct mode - rolling back allocation"
+                        );
+
+                        // Rollback
+                        if let Ok(mut inner) = self.pool_ref.try_lock() {
+                            inner.allocated_tuners.remove(&tuner_id);
+                            let tuner_entry = TunerEntry {
+                                device_id: tuner_id.device_id.clone(),
+                                channel_index: tuner_id.channel_index,
+                                capabilities: capabilities_for_rollback,
+                            };
+                            inner.available_tuners.insert(tuner_id.clone(), tuner_entry);
+                        }
+
+                        return None;
+                    }
+                }
+            };
+
+            crate::hardware::pool::tuner::TunerBackend::Direct {
+                device: backend_trait,
+            }
+        };
+
+        let on_state_change = Arc::clone(&self.on_state_change);
+        let pool_ref = Arc::clone(&self.pool_ref);
+        let shutdown_mode_clone = Arc::clone(&self.shutdown_mode);
+
+        self.notify_state_change();
+
+        Some(crate::hardware::pool::tuner::Tuner {
+            tuner_id: tuner_id.clone(),
+            backend,
+            pool_inner: Arc::clone(&self.pool_ref),
+            on_return: Box::new(move || {
+                if shutdown_mode_clone.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                let status = match pool_ref.try_lock() {
+                    Ok(inner) => crate::hardware::pool::Pool::build_status_from_inner(&inner),
+                    Err(_) => return,
+                };
+
+                if let Ok(callbacks) = on_state_change.lock() {
+                    for callback in callbacks.iter() {
+                        callback(status.clone());
+                    }
+                }
+            }),
+            shutdown_mode: Arc::clone(&self.shutdown_mode),
+        })
+    }
+
+    /// Get or spawn subprocess for a device (lazy spawning)
+    ///
+    /// Returns Arc to subprocess handle. Multiple tuners on same device share one subprocess.
+    /// Subprocess is spawned on first call for a given device_id, then reused on subsequent calls.
+    fn get_or_spawn_subprocess(
+        &self,
+        device_id: &hardware::DeviceId,
+    ) -> Result<Arc<crate::hardware::pool::SubprocessHandle>> {
+        use crate::hardware::pool::SubprocessHandle;
+
+        let mut subprocesses = self
+            .subprocesses
+            .lock()
+            .map_err(|e| ScannerError::Custom(format!("Subprocess lock failed: {}", e)))?;
+
+        if let Some(handle) = subprocesses.get(device_id) {
+            debug!(device_id = ?device_id, "Reusing existing subprocess");
+            return Ok(Arc::clone(handle));
         }
 
-        tuner
+        let pool_inner = self
+            .pool_ref
+            .try_lock()
+            .map_err(|_| ScannerError::PoolLockTimeout)?;
+
+        let device_entry = pool_inner
+            .devices
+            .get(device_id)
+            .ok_or_else(|| ScannerError::DeviceNotFound(device_id.clone()))?;
+
+        debug!(
+            device_id = ?device_id,
+            num_tuners = device_entry.num_tuners,
+            "Spawning new subprocess (first allocation)"
+        );
+
+        drop(pool_inner);
+
+        let handle = Arc::new(SubprocessHandle::spawn(
+            device_id.clone(),
+            Arc::clone(&self.shutdown_mode),
+        )?);
+
+        subprocesses.insert(device_id.clone(), Arc::clone(&handle));
+
+        Ok(handle)
     }
 
     fn create_empty_pool_status() -> PoolStatus {
@@ -434,23 +611,14 @@ impl Pool {
     fn collect_tuner_statuses(inner: &PoolInner) -> Vec<TunerStatus> {
         inner
             .available_tuners
-            .iter()
-            .filter_map(|(id, entry)| {
-                let device = inner.devices.get(&entry.device_id)?;
-                Some(TunerStatus {
-                    id: id.clone(),
-                    model: device.capabilities.device_id.to_string(),
-                    backend: device.backend_name.clone(),
-                    channel_index: entry.channel_index,
-                    state: TunerState::Available,
-                    activity: None,
-                })
+            .keys()
+            .map(|id| TunerStatus {
+                id: id.clone(),
+                state: TunerState::Available,
+                activity: None,
             })
             .chain(inner.allocated_tuners.iter().map(|(id, info)| TunerStatus {
                 id: id.clone(),
-                model: info.model.clone(),
-                backend: info.backend_name.clone(),
-                channel_index: id.channel_index,
                 state: TunerState::Allocated,
                 activity: Some(info.activity.clone()),
             }))
