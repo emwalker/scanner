@@ -10,7 +10,7 @@ $ cargo run -- scan --band fm --headless --verbose --json
 
 At the moment, only basic FM demodulation is working.
 
-<img width="2576" height="1456" alt="Screenshot From 2025-10-03 22-57-13" src="https://github.com/user-attachments/assets/03e7719c-eedc-4107-9e23-99060f606867" />
+<img width="2156" height="1760" alt="Screenshot From 2025-10-13 15-10-04" src="https://github.com/user-attachments/assets/5f7385c5-2d4f-463d-81e9-2cef1a5dd408" />
 
 ## Test bed for coding agents
 
