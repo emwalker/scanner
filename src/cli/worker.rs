@@ -6,6 +6,7 @@ use crate::ipc::{
 };
 use rustradio::Complex;
 use std::collections::HashMap;
+use std::error::Error;
 use std::os::unix::net::UnixListener;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -461,12 +462,19 @@ fn main_loop(
                                     did_work = true;
                                 }
                                 Err(e) => {
-                                    let err_str = e.to_string();
-                                    if err_str.contains("would block")
-                                        || err_str.contains("timed out")
+                                    let is_timeout_or_backpressure = if let Some(io_err) =
+                                        e.source().and_then(|s| s.downcast_ref::<std::io::Error>())
                                     {
-                                        // Timeout or backpressure - parent likely stopped reading
-                                        // Drop this packet and break to check for commands
+                                        matches!(
+                                            io_err.kind(),
+                                            std::io::ErrorKind::WouldBlock
+                                                | std::io::ErrorKind::TimedOut
+                                        )
+                                    } else {
+                                        false
+                                    };
+
+                                    if is_timeout_or_backpressure {
                                         if state.sequence_number % 100 == 0 {
                                             debug!(
                                                 channel = *channel,
