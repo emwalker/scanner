@@ -90,5 +90,16 @@ proptest-state-machine = "0.4"
 loom = "0.7"
 
 [[bench]]
-name = "ipc_bench"
+name = "serialization_bench"
+path = "benches/ipc/serialization_bench.rs"
+harness = false
+
+[[bench]]
+name = "latency_bench"
+path = "benches/ipc/latency_bench.rs"
+harness = false
+
+[[bench]]
+name = "throughput_bench"
+path = "benches/ipc/throughput_bench.rs"
 harness = false

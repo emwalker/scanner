@@ -15,23 +15,6 @@ use std::time::Instant;
 use tracing::{debug, error};
 
 impl Pool {
-    fn open_device_for_tuner(&self, tuner_id: &TunerId) -> Result<Box<dyn hardware::DeviceTrait>> {
-        let backend = tuner_id.device_id.backend();
-
-        let backend_impl: Box<dyn hardware::Backend> = match backend {
-            hardware::types::Backend::Soapy => Box::new(hardware::Soapy),
-            hardware::types::Backend::Mock => Box::new(hardware::Mock),
-            _ => {
-                return Err(ScannerError::Custom(format!(
-                    "Unsupported backend: {:?}",
-                    backend
-                )));
-            }
-        };
-
-        backend_impl.open_tuner(tuner_id)
-    }
-
     fn create_and_insert_device_entry(
         &self,
         device: Option<Box<dyn hardware::DeviceTrait>>,
@@ -437,7 +420,6 @@ impl Pool {
         let model = device_entry.capabilities.device_id.to_string();
         let device_id_for_open = tuner_id.device_id.clone();
         let capabilities_for_rollback = device_entry.capabilities.clone();
-        let stored_device = device_entry.device.clone();
 
         // Mark as allocated
         inner.allocated_tuners.insert(
@@ -456,68 +438,31 @@ impl Pool {
 
         debug!(tuner_id = ?tuner_id, "Tuner acquired from pool");
 
-        // Drop the lock before opening device or spawning subprocess
+        // Drop the lock before spawning subprocess
         drop(inner);
 
-        // Now open device or spawn subprocess (without holding the lock)
-        let backend = if self.use_subprocesses {
-            match self.get_or_spawn_subprocess(&device_id_for_open) {
-                Ok(subprocess) => {
-                    crate::hardware::pool::tuner::TunerBackend::Subprocess { subprocess }
+        // Spawn subprocess (without holding the lock)
+        let backend = match self.get_or_spawn_subprocess(&device_id_for_open) {
+            Ok(subprocess) => crate::hardware::pool::tuner::TunerBackend::Subprocess { subprocess },
+            Err(e) => {
+                error!(
+                    tuner_id = ?tuner_id,
+                    error = ?e,
+                    "Failed to spawn subprocess for tuner - rolling back allocation"
+                );
+
+                // Rollback: remove from allocated_tuners and return to available_tuners
+                if let Ok(mut inner) = self.pool_ref.try_lock() {
+                    inner.allocated_tuners.remove(&tuner_id);
+                    let tuner_entry = TunerEntry {
+                        device_id: tuner_id.device_id.clone(),
+                        channel_index: tuner_id.channel_index,
+                        capabilities: capabilities_for_rollback,
+                    };
+                    inner.available_tuners.insert(tuner_id.clone(), tuner_entry);
                 }
-                Err(e) => {
-                    error!(
-                        tuner_id = ?tuner_id,
-                        error = ?e,
-                        "Failed to spawn subprocess for tuner - rolling back allocation"
-                    );
 
-                    // Rollback: remove from allocated_tuners and return to available_tuners
-                    if let Ok(mut inner) = self.pool_ref.try_lock() {
-                        inner.allocated_tuners.remove(&tuner_id);
-                        let tuner_entry = TunerEntry {
-                            device_id: tuner_id.device_id.clone(),
-                            channel_index: tuner_id.channel_index,
-                            capabilities: capabilities_for_rollback,
-                        };
-                        inner.available_tuners.insert(tuner_id.clone(), tuner_entry);
-                    }
-
-                    return None;
-                }
-            }
-        } else {
-            // Direct mode: use stored device if available, otherwise open it
-            let backend_trait = if let Some(stored) = stored_device {
-                stored
-            } else {
-                match self.open_device_for_tuner(&tuner_id) {
-                    Ok(device) => Arc::new(Mutex::new(device)),
-                    Err(e) => {
-                        error!(
-                            tuner_id = ?tuner_id,
-                            error = ?e,
-                            "Failed to open device for direct mode - rolling back allocation"
-                        );
-
-                        // Rollback
-                        if let Ok(mut inner) = self.pool_ref.try_lock() {
-                            inner.allocated_tuners.remove(&tuner_id);
-                            let tuner_entry = TunerEntry {
-                                device_id: tuner_id.device_id.clone(),
-                                channel_index: tuner_id.channel_index,
-                                capabilities: capabilities_for_rollback,
-                            };
-                            inner.available_tuners.insert(tuner_id.clone(), tuner_entry);
-                        }
-
-                        return None;
-                    }
-                }
-            };
-
-            crate::hardware::pool::tuner::TunerBackend::Direct {
-                device: backend_trait,
+                return None;
             }
         };
 

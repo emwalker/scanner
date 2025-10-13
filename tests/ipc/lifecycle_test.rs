@@ -5,7 +5,7 @@ use std::time::Duration;
 
 #[test]
 fn test_subprocess_spawns_lazily() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let device = Box::new(MockDevice::new("mock", "lazy001", false));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);
@@ -27,7 +27,7 @@ fn test_subprocess_spawns_lazily() {
 
 #[test]
 fn test_subprocess_reuse_for_second_allocation() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let device = Box::new(MockDevice::new("mock", "reuse001", false));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);
@@ -55,7 +55,7 @@ fn test_subprocess_reuse_for_second_allocation() {
 
 #[test]
 fn test_subprocess_graceful_shutdown() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let device = Box::new(MockDevice::new("mock", "shutdown001", false));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);
@@ -82,7 +82,7 @@ fn test_subprocess_graceful_shutdown() {
 
 #[test]
 fn test_subprocess_persists_across_allocations() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let device = Box::new(MockDevice::new("mock", "persist001", false));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);

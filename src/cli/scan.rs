@@ -88,8 +88,7 @@ fn run_tui_mode(
     tui_context.command_receiver = command_receiver;
 
     let backend = crate::hardware::types::Backend::Soapy;
-    let shared_pool =
-        initialize_pool_with_device(&selected_tuner_id, backend, args.use_subprocesses)?;
+    let shared_pool = initialize_pool_with_device(&selected_tuner_id, backend)?;
 
     // Send cached devices to TUI immediately
     for device in &discovered_devices {
@@ -102,7 +101,6 @@ fn run_tui_mode(
         tui_context.tui_event_sender.clone(),
         shutdown_coordinator.clone(),
         discovered_devices.clone(),
-        args.use_subprocesses,
     )?;
 
     debug!(

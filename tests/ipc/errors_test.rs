@@ -5,7 +5,7 @@ use std::time::Duration;
 
 #[test]
 fn test_subprocess_crash_isolation() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let device = Box::new(MockDevice::new("mock", "crash001", false));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);
@@ -29,7 +29,7 @@ fn test_subprocess_crash_isolation() {
 
 #[test]
 fn test_failed_device_tune() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let device = Box::new(MockDevice::new("mock", "failtune001", true));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);
@@ -53,7 +53,7 @@ fn test_failed_device_tune() {
 
 #[test]
 fn test_no_available_tuner() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let device = Box::new(MockDevice::new("mock", "noavail001", false));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);
@@ -82,7 +82,7 @@ fn test_no_available_tuner() {
 
 #[test]
 fn test_unsupported_frequency() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let device = Box::new(MockDevice::new("mock", "unsupfreq001", false));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);
@@ -106,7 +106,7 @@ fn test_unsupported_frequency() {
 
 #[test]
 fn test_unsupported_sample_rate() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let device = Box::new(MockDevice::new("mock", "unsuprate001", false));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);

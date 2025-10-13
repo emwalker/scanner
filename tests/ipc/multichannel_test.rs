@@ -5,7 +5,7 @@ use std::time::Duration;
 
 #[test]
 fn test_two_tuners_share_one_subprocess() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let mut caps = Capabilities::for_mock("mock", "dual001");
     caps.channels = 2;
@@ -40,7 +40,7 @@ fn test_two_tuners_share_one_subprocess() {
 
 #[test]
 fn test_stop_one_channel_doesnt_affect_other() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let mut caps = Capabilities::for_mock("mock", "dual002");
     caps.channels = 2;
@@ -76,7 +76,7 @@ fn test_stop_one_channel_doesnt_affect_other() {
 
 #[test]
 fn test_concurrent_streams_independent() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let mut caps = Capabilities::for_mock("mock", "dual003");
     caps.channels = 2;

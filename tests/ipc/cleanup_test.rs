@@ -5,7 +5,7 @@ use std::time::Duration;
 
 #[test]
 fn test_no_zombie_processes_after_shutdown() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let device = Box::new(MockDevice::new("mock", "zombie001", false));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);
@@ -31,7 +31,7 @@ fn test_no_zombie_processes_after_shutdown() {
 
 #[test]
 fn test_socket_cleanup_after_shutdown() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let device = Box::new(MockDevice::new("mock", "socket001", false));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);
@@ -57,7 +57,7 @@ fn test_socket_cleanup_after_shutdown() {
 
 #[test]
 fn test_tuner_drop_non_blocking_during_shutdown() {
-    let pool = std::sync::Arc::new(Pool::new_with_subprocesses());
+    let pool = std::sync::Arc::new(Pool::new_unfiltered());
 
     let device = Box::new(MockDevice::new("mock", "nonblock001", false));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);
@@ -87,7 +87,7 @@ fn test_tuner_drop_non_blocking_during_shutdown() {
 
 #[test]
 fn test_shutdown_terminates_all_subprocesses() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     for i in 0..3 {
         let device = Box::new(MockDevice::new("mock", &format!("multi{:03}", i), false));

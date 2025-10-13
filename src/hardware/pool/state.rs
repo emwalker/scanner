@@ -91,9 +91,6 @@ pub struct Pool {
 
     /// Device worker subprocesses (one per device, lazily spawned)
     pub(crate) subprocesses: Mutex<HashMap<hardware::DeviceId, Arc<SubprocessHandle>>>,
-
-    /// Use subprocess backend for device operations
-    pub use_subprocesses: bool,
 }
 
 impl Pool {
@@ -112,20 +109,12 @@ impl Pool {
             shutdown_mode: Arc::new(AtomicBool::new(false)),
             on_state_change: Arc::new(Mutex::new(Vec::new())),
             subprocesses: Mutex::new(HashMap::new()),
-            use_subprocesses: false,
         }
     }
 
     /// Create new pool allowing all tuners (convenience method)
     pub fn new_unfiltered() -> Self {
         Self::new(PoolFilter::allow_all())
-    }
-
-    /// Create new pool with subprocess mode enabled
-    pub fn new_with_subprocesses() -> Self {
-        let mut pool = Self::new_unfiltered();
-        pool.use_subprocesses = true;
-        pool
     }
 
     /// Enter shutdown mode (makes pool reject all future operations)

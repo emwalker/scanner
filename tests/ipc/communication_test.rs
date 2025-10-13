@@ -5,7 +5,7 @@ use std::time::Duration;
 
 #[test]
 fn test_control_message_round_trip() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let device = Box::new(MockDevice::new("mock", "comm001", false));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);
@@ -29,7 +29,7 @@ fn test_control_message_round_trip() {
 
 #[test]
 fn test_iq_data_packets_with_channel_tags() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let device = Box::new(MockDevice::new("mock", "iq001", false));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);
@@ -53,7 +53,7 @@ fn test_iq_data_packets_with_channel_tags() {
 
 #[test]
 fn test_terminal_isolation() {
-    let pool = Pool::new_with_subprocesses();
+    let pool = Pool::new_unfiltered();
 
     let device = Box::new(MockDevice::new("mock", "iso001", false));
     pool.add_device(device, scanner::hardware::types::Backend::Mock);
