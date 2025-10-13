@@ -8,6 +8,7 @@ mod signals;
 mod train;
 mod tui_mode;
 mod worker;
+pub(crate) mod worker_logging;
 
 pub use args::{AudioClassifier, Cli, Commands, ScanArgs, TrainArgs, WorkerCommand};
 pub use scan::handle_scan_command;

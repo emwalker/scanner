@@ -29,7 +29,11 @@ pub struct SubprocessHandle {
 
 impl SubprocessHandle {
     /// Spawn a new device worker subprocess
-    pub fn spawn(device_id: DeviceId, shutdown_flag: Arc<AtomicBool>) -> Result<Self> {
+    pub fn spawn(
+        device_id: DeviceId,
+        shutdown_flag: Arc<AtomicBool>,
+        parent_log_file: Option<&str>,
+    ) -> Result<Self> {
         if shutdown_flag.load(Ordering::SeqCst) {
             return Err(ScannerError::PoolShutdown);
         }
@@ -59,10 +63,16 @@ impl SubprocessHandle {
             "Spawning device worker subprocess"
         );
 
-        let worker_log_path = format!(
-            "/tmp/scanner-worker-{}-{}.log",
-            device_id.to_string().replace([':', '/', ' '], "_"),
-            timestamp
+        use crate::cli::worker_logging::{WorkerContext, WorkerType, generate_worker_log_path};
+
+        let worker_log_path = generate_worker_log_path(
+            parent_log_file,
+            WorkerType::Device,
+            &WorkerContext {
+                device_id: Some(device_id.to_string().replace([':', '/', ' '], "_")),
+                timestamp: Some(timestamp),
+                backend: None,
+            },
         );
 
         let binary_path = std::env::current_exe()?;
@@ -88,9 +98,11 @@ impl SubprocessHandle {
             .arg("--control-socket-path")
             .arg(&control_socket_path)
             .arg("--data-socket-path")
-            .arg(&data_socket_path)
-            .arg("--log-file")
-            .arg(&worker_log_path);
+            .arg(&data_socket_path);
+
+        if let Some(log_path) = worker_log_path {
+            cmd.arg("--log-file").arg(&log_path);
+        }
 
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -142,14 +154,53 @@ impl SubprocessHandle {
             }
         }
 
-        Ok(Self {
+        let handle = Self {
             device_id,
             process: Mutex::new(child),
             control_channel: Mutex::new(control_channel),
             data_receiver: Arc::new(Mutex::new(data_receiver)),
             shutdown_flag,
             socket_paths: (control_socket_path, data_socket_path),
-        })
+        };
+
+        #[cfg(debug_assertions)]
+        Self::validate_subprocess_state(&handle)?;
+
+        Ok(handle)
+    }
+
+    #[cfg(debug_assertions)]
+    fn validate_subprocess_state(handle: &SubprocessHandle) -> Result<()> {
+        debug_assert!(
+            handle.socket_paths.0.exists(),
+            "Control socket missing for device {}",
+            handle.device_id
+        );
+        debug_assert!(
+            handle.socket_paths.1.exists(),
+            "Data socket missing for device {}",
+            handle.device_id
+        );
+
+        if let Ok(mut proc) = handle.process.try_lock() {
+            match proc.try_wait() {
+                Ok(None) => {}
+                Ok(Some(status)) => {
+                    return Err(ScannerError::Custom(format!(
+                        "Subprocess for device {} died unexpectedly: {:?}",
+                        handle.device_id, status
+                    )));
+                }
+                Err(e) => {
+                    return Err(ScannerError::Custom(format!(
+                        "Cannot check subprocess for device {}: {:?}",
+                        handle.device_id, e
+                    )));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Configure and start streaming on a channel
@@ -160,6 +211,8 @@ impl SubprocessHandle {
         gain_db: f64,
         sample_rate: f64,
     ) -> Result<ActualConfig> {
+        #[cfg(debug_assertions)]
+        Self::validate_subprocess_state(self)?;
         if self.shutdown_flag.load(Ordering::SeqCst) {
             return Err(ScannerError::PoolShutdown);
         }
@@ -203,6 +256,9 @@ impl SubprocessHandle {
     /// During normal operation, waits for StreamStopped acknowledgment to ensure
     /// the worker is ready for new commands. During shutdown, uses fire-and-forget.
     pub fn stop_stream(&self, channel: usize) -> Result<()> {
+        #[cfg(debug_assertions)]
+        Self::validate_subprocess_state(self)?;
+
         let shutdown_mode = self.shutdown_flag.load(Ordering::SeqCst);
 
         if shutdown_mode {

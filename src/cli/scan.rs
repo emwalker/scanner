@@ -18,7 +18,11 @@ pub fn handle_scan_command(args: ScanArgs) -> Result<()> {
 
     let backends = vec![crate::hardware::types::Backend::Soapy];
     let driver_filter = args.device_args.as_deref().or(Some(DEFAULT_DRIVER));
-    let discovered_devices = crate::discovery::enumerate_once_subprocess(&backends, driver_filter)?;
+    let discovered_devices = crate::discovery::enumerate_once_subprocess(
+        &backends,
+        driver_filter,
+        args.log_file.clone(),
+    )?;
 
     debug!(
         device_count = discovered_devices.len(),
@@ -88,7 +92,8 @@ fn run_tui_mode(
     tui_context.command_receiver = command_receiver;
 
     let backend = crate::hardware::types::Backend::Soapy;
-    let shared_pool = initialize_pool_with_device(&selected_tuner_id, backend)?;
+    let shared_pool =
+        initialize_pool_with_device(&selected_tuner_id, backend, args.log_file.clone())?;
 
     // Send cached devices to TUI immediately
     for device in &discovered_devices {
@@ -101,6 +106,7 @@ fn run_tui_mode(
         tui_context.tui_event_sender.clone(),
         shutdown_coordinator.clone(),
         discovered_devices.clone(),
+        args.log_file.clone(),
     )?;
 
     debug!(

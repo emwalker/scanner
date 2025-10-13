@@ -6,7 +6,7 @@ use crate::hardware::pool::state::{Pool, PoolInner};
 use crate::hardware::pool::tuner::Tuner;
 use crate::hardware::pool::types::{
     AddDeviceResult, AllocationInfo, DeviceEntry, PoolStatus, TaskRequirements, TunerActivity,
-    TunerEntry, TunerId, TunerState, TunerStatus,
+    TunerAllocation, TunerEntry, TunerId, TunerState, TunerStatus,
 };
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -345,16 +345,11 @@ impl Pool {
             })
     }
 
-    /// Try to acquire tuner matching requirements (non-blocking)
+    /// Check if pool is in valid state for acquisition
     ///
-    /// Similar to `acquire()` but returns `None` instead of an error if no tuner is available.
-    /// Returns `None` if the pool is in shutdown mode or if the pool lock cannot be acquired.
-    /// The `activity` parameter tracks what the tuner will be used for.
-    pub fn try_acquire(
-        &self,
-        requirements: &TaskRequirements,
-        activity: TunerActivity,
-    ) -> Option<Tuner> {
+    /// Returns None if pool state is not Active, shutdown mode is enabled,
+    /// or state lock cannot be acquired.
+    fn check_acquisition_preconditions(&self) -> Option<()> {
         match self.state.try_lock() {
             Ok(state_guard) => {
                 if !matches!(
@@ -364,7 +359,6 @@ impl Pool {
                     debug!("Acquire rejected - pool not in Active state");
                     return None;
                 }
-                drop(state_guard);
             }
             Err(_) => {
                 debug!("Acquire rejected - state lock contention");
@@ -377,14 +371,19 @@ impl Pool {
             return None;
         }
 
-        let mut inner = match self.pool_ref.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                debug!("Acquire failed - pool is locked");
-                return None;
-            }
-        };
+        Some(())
+    }
 
+    /// Select best matching tuner and mark it as allocated
+    ///
+    /// Returns allocation data or None if no suitable tuner found.
+    /// Updates pool state to mark tuner as allocated and remove from available.
+    fn allocate_matching_tuner(
+        &self,
+        inner: &mut PoolInner,
+        requirements: &TaskRequirements,
+        activity: TunerActivity,
+    ) -> Option<TunerAllocation> {
         let allocated_count = inner.allocated_tuners.len();
 
         debug!(
@@ -394,8 +393,7 @@ impl Pool {
             "Pool acquire: checking available tuners"
         );
 
-        // Find and allocate tuner, then drop lock before spawning subprocess
-        let tuner_id = match self.find_best_matching_tuner(&inner, requirements, allocated_count) {
+        let tuner_id = match self.find_best_matching_tuner(inner, requirements, allocated_count) {
             Some((tuner_id, _)) => tuner_id.clone(),
             None => {
                 debug!(requirements = ?requirements, "No tuner available");
@@ -403,7 +401,6 @@ impl Pool {
             }
         };
 
-        // Get data needed while we still have the lock
         let device_entry = match inner.devices.get(&tuner_id.device_id) {
             Some(d) => d,
             None => {
@@ -416,64 +413,84 @@ impl Pool {
             }
         };
 
-        let backend_type = device_entry.backend.clone();
+        let backend = device_entry.backend.clone();
         let model = device_entry.capabilities.device_id.to_string();
-        let device_id_for_open = tuner_id.device_id.clone();
-        let capabilities_for_rollback = device_entry.capabilities.clone();
+        let capabilities = device_entry.capabilities.clone();
 
-        // Mark as allocated
         inner.allocated_tuners.insert(
             tuner_id.clone(),
             AllocationInfo {
                 allocated_at: Instant::now(),
                 task_id: None,
-                backend: backend_type.clone(),
-                model,
-                activity,
+                backend: backend.clone(),
+                model: model.clone(),
+                activity: activity.clone(),
             },
         );
 
-        // Remove from available
         inner.available_tuners.remove(&tuner_id);
 
         debug!(tuner_id = ?tuner_id, "Tuner acquired from pool");
 
-        // Drop the lock before spawning subprocess
-        drop(inner);
+        Some(TunerAllocation {
+            tuner_id,
+            backend,
+            model,
+            capabilities,
+            activity,
+        })
+    }
 
-        // Spawn subprocess (without holding the lock)
-        let backend = match self.get_or_spawn_subprocess(&device_id_for_open) {
-            Ok(subprocess) => crate::hardware::pool::tuner::TunerBackend::Subprocess { subprocess },
+    /// Spawn or reuse subprocess for the allocated tuner
+    ///
+    /// On failure, automatically rolls back the allocation by returning
+    /// the tuner to the available pool.
+    fn spawn_subprocess_with_rollback(
+        &self,
+        allocation: &TunerAllocation,
+    ) -> Option<crate::hardware::pool::tuner::TunerBackend> {
+        match self.get_or_spawn_subprocess(&allocation.tuner_id.device_id) {
+            Ok(subprocess) => {
+                Some(crate::hardware::pool::tuner::TunerBackend::Subprocess { subprocess })
+            }
             Err(e) => {
                 error!(
-                    tuner_id = ?tuner_id,
+                    tuner_id = ?allocation.tuner_id,
                     error = ?e,
                     "Failed to spawn subprocess for tuner - rolling back allocation"
                 );
 
-                // Rollback: remove from allocated_tuners and return to available_tuners
                 if let Ok(mut inner) = self.pool_ref.try_lock() {
-                    inner.allocated_tuners.remove(&tuner_id);
+                    inner.allocated_tuners.remove(&allocation.tuner_id);
                     let tuner_entry = TunerEntry {
-                        device_id: tuner_id.device_id.clone(),
-                        channel_index: tuner_id.channel_index,
-                        capabilities: capabilities_for_rollback,
+                        device_id: allocation.tuner_id.device_id.clone(),
+                        channel_index: allocation.tuner_id.channel_index,
+                        capabilities: allocation.capabilities.clone(),
                     };
-                    inner.available_tuners.insert(tuner_id.clone(), tuner_entry);
+                    inner
+                        .available_tuners
+                        .insert(allocation.tuner_id.clone(), tuner_entry);
                 }
 
-                return None;
+                None
             }
-        };
+        }
+    }
 
+    /// Create the final Tuner object with callbacks
+    fn create_tuner_with_callbacks(
+        &self,
+        allocation: TunerAllocation,
+        backend: crate::hardware::pool::tuner::TunerBackend,
+    ) -> crate::hardware::pool::tuner::Tuner {
         let on_state_change = Arc::clone(&self.on_state_change);
         let pool_ref = Arc::clone(&self.pool_ref);
         let shutdown_mode_clone = Arc::clone(&self.shutdown_mode);
 
         self.notify_state_change();
 
-        Some(crate::hardware::pool::tuner::Tuner {
-            tuner_id: tuner_id.clone(),
+        crate::hardware::pool::tuner::Tuner {
+            tuner_id: allocation.tuner_id.clone(),
             backend,
             pool_inner: Arc::clone(&self.pool_ref),
             on_return: Box::new(move || {
@@ -493,7 +510,28 @@ impl Pool {
                 }
             }),
             shutdown_mode: Arc::clone(&self.shutdown_mode),
-        })
+        }
+    }
+
+    /// Try to acquire tuner matching requirements (non-blocking)
+    ///
+    /// Similar to `acquire()` but returns `None` instead of an error if no tuner is available.
+    /// Returns `None` if the pool is in shutdown mode or if the pool lock cannot be acquired.
+    /// The `activity` parameter tracks what the tuner will be used for.
+    pub fn try_acquire(
+        &self,
+        requirements: &TaskRequirements,
+        activity: TunerActivity,
+    ) -> Option<Tuner> {
+        self.check_acquisition_preconditions()?;
+
+        let mut inner = self.pool_ref.try_lock().ok()?;
+        let allocation = self.allocate_matching_tuner(&mut inner, requirements, activity)?;
+        drop(inner);
+
+        let backend = self.spawn_subprocess_with_rollback(&allocation)?;
+
+        Some(self.create_tuner_with_callbacks(allocation, backend))
     }
 
     /// Get or spawn subprocess for a device (lazy spawning)
@@ -537,6 +575,7 @@ impl Pool {
         let handle = Arc::new(SubprocessHandle::spawn(
             device_id.clone(),
             Arc::clone(&self.shutdown_mode),
+            self.parent_log_file.as_deref(),
         )?);
 
         subprocesses.insert(device_id.clone(), Arc::clone(&handle));

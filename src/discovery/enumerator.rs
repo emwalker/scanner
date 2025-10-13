@@ -83,11 +83,15 @@ impl DeviceEnumerator for DirectEnumerator {
 
 pub struct SubprocessEnumerator {
     backend_name: String,
+    parent_log_file: Option<String>,
 }
 
 impl SubprocessEnumerator {
-    pub fn new(backend_name: String) -> Self {
-        Self { backend_name }
+    pub fn new(backend_name: String, parent_log_file: Option<String>) -> Self {
+        Self {
+            backend_name,
+            parent_log_file,
+        }
     }
 
     fn spawn_and_enumerate(&self) -> Result<Vec<hardware::DeviceInfo>, Box<dyn std::error::Error>> {
@@ -114,6 +118,18 @@ impl SubprocessEnumerator {
 
         debug!(socket_path = %socket_path, "Generated socket path");
 
+        use crate::cli::worker_logging::{WorkerContext, WorkerType, generate_worker_log_path};
+
+        let worker_log_path = generate_worker_log_path(
+            self.parent_log_file.as_deref(),
+            WorkerType::Enumeration,
+            &WorkerContext {
+                device_id: None,
+                timestamp: Some(timestamp),
+                backend: Some(self.backend_name.clone()),
+            },
+        );
+
         let mut cmd = Command::new(env::current_exe()?);
         cmd.arg("worker")
             .arg("enumerate")
@@ -121,6 +137,10 @@ impl SubprocessEnumerator {
             .arg(&self.backend_name)
             .arg("--socket-path")
             .arg(&socket_path);
+
+        if let Some(log_path) = worker_log_path {
+            cmd.arg("--log-file").arg(&log_path);
+        }
 
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())

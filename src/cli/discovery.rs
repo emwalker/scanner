@@ -15,11 +15,12 @@ pub struct DiscoverySetup {
 pub fn initialize_pool_with_device(
     tuner_id: &crate::hardware::pool::TunerId,
     backend: crate::hardware::types::Backend,
+    parent_log_file: Option<String>,
 ) -> Result<Arc<Pool>> {
     let filter = PoolFilter::new()
         .with_driver("sdrplay")
         .with_mode(TuningMode::SingleTuner);
-    let pool = Pool::new(filter);
+    let pool = Pool::new(filter, parent_log_file);
     let pool = Arc::new(pool);
 
     let capabilities = crate::hardware::Capabilities::for_device(&tuner_id.device_id);
@@ -63,9 +64,10 @@ pub fn start_discovery_service(
     tui_event_sender: mpsc::Sender<TuiEvent>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
     initial_devices: Vec<crate::hardware::DeviceInfo>,
+    parent_log_file: Option<String>,
 ) -> Result<DiscoverySetup> {
     let backends = vec![];
-    let mut discovery_service = discovery::create(backends, DiscoveryMode::Auto);
+    let mut discovery_service = discovery::create(backends, DiscoveryMode::Auto, parent_log_file);
 
     let (discovery_sender, discovery_receiver) = mpsc::channel();
 

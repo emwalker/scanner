@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use scanner::hardware::mock::MockDevice;
 use scanner::hardware::pool::{Pool, TaskPriority, TaskRequirements, TunerActivity};
 use std::time::Instant;
@@ -93,40 +93,36 @@ fn bench_multiple_roundtrips(c: &mut Criterion) {
     group.measurement_time(std::time::Duration::from_secs(20));
 
     for &count in &[5, 10] {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(count),
-            &count,
-            |b, &count| {
-                let pool = Pool::new_unfiltered();
-                let device = Box::new(MockDevice::new("mock", "bench003", false));
-                pool.add_device(device, scanner::hardware::types::Backend::Mock);
+        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, &count| {
+            let pool = Pool::new_unfiltered();
+            let device = Box::new(MockDevice::new("mock", "bench003", false));
+            pool.add_device(device, scanner::hardware::types::Backend::Mock);
 
-                let requirements = TaskRequirements {
-                    frequency_hz: 88.9e6,
-                    bandwidth_hz: 200e3,
-                    required_sample_rate: 2.4e6,
-                    priority: TaskPriority::Normal,
-                };
+            let requirements = TaskRequirements {
+                frequency_hz: 88.9e6,
+                bandwidth_hz: 200e3,
+                required_sample_rate: 2.4e6,
+                priority: TaskPriority::Normal,
+            };
 
-                b.iter(|| {
-                    for _ in 0..count {
-                        let tuner = pool
-                            .try_acquire(&requirements, TunerActivity::Scanning)
-                            .expect("Failed to acquire tuner");
+            b.iter(|| {
+                for _ in 0..count {
+                    let tuner = pool
+                        .try_acquire(&requirements, TunerActivity::Scanning)
+                        .expect("Failed to acquire tuner");
 
-                        let mut graph = rustradio::graph::Graph::new();
-                        let _stream = tuner
-                            .add_source_to_graph(&mut graph, 100.0e6, 2.4e6, 30.0)
-                            .expect("Failed to add source");
+                    let mut graph = rustradio::graph::Graph::new();
+                    let _stream = tuner
+                        .add_source_to_graph(&mut graph, 100.0e6, 2.4e6, 30.0)
+                        .expect("Failed to add source");
 
-                        let _ = tuner.stop_stream();
-                        drop(tuner);
-                    }
-                });
+                    let _ = tuner.stop_stream();
+                    drop(tuner);
+                }
+            });
 
-                pool.shutdown();
-            },
-        );
+            pool.shutdown();
+        });
     }
 
     group.finish();

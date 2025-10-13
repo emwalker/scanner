@@ -64,14 +64,14 @@ Run every SDR device in isolated subprocess with custom Unix socket IPC. This pl
 
 **Two Subprocess Types**:
 
-1. **Enumeration Subprocess (Discovery)**: Short-lived (seconds), spawned during device scan, isolates terminal output from device enumeration, returns device list via stdout, then exits
+1. **Enumeration Subprocess (Discovery)**: Short-lived (seconds), spawned during device scan, isolates terminal output from device enumeration, returns device list via Unix socket, then exits
 
 2. **Device Worker Subprocess (Pool)**: Long-lived (minutes/hours), spawned on first tuner allocation for a device, one subprocess per device (not per tuner), manages all channels/tuners for that device, streams I/Q data via Unix sockets
 
 **Key Architectural Points**:
-- Per-Device, Not Per-Tuner: Multi-tuner devices (RSPduo with 2 tuners) share one subprocess. Subprocess manages multiple channels via SoapySDR API. IPC protocol includes channel/tuner routing.
-- Lazy Spawning: Discovery returns metadata only (no subprocess). Pool stores inventory (no subprocess). First `acquire()` spawns subprocess. Subsequent allocations reuse subprocess.
-- Subprocess Lifetime: Lives until device removed from pool or shutdown. Independent of individual tuner allocations. Dropping tuner does NOT terminate subprocess.
+- **Per-Device, Not Per-Tuner**: Multi-tuner devices (RSPduo with 2 tuners) share one subprocess. Subprocess manages multiple channels via SoapySDR API. IPC protocol includes channel/tuner routing.
+- **Lazy Spawning**: Discovery returns metadata only (no subprocess). Pool stores inventory (no subprocess). First acquire() spawns subprocess. Subsequent allocations reuse subprocess.
+- **Subprocess Lifetime**: Lives until device removed from pool or shutdown. Independent of individual tuner allocations. Dropping tuner does not terminate subprocess.
 
 ### System Architecture
 
@@ -81,7 +81,7 @@ Main Process
 │   └─ enumerate_devices_subprocess()  ← SHORT-LIVED
 │       ├─ Spawns: scanner worker enumerate
 │       ├─ Discards stderr (kernel messages)
-│       ├─ Returns: Vec<DeviceInfo> via stdout JSON
+│       ├─ Returns: Vec<DeviceInfo> via Unix socket
 │       └─ Exits immediately
 │
 ├─ Pool
@@ -99,63 +99,55 @@ Main Process
 
 ### Subprocess Lifecycle
 
-```
 Phase 0: Discovery
-─────────────────
-DiscoveryService::scan_devices()
-  → spawn enumeration subprocess
-  → Returns Vec<DeviceInfo>
-  → Subprocess exits
-  → NO long-lived subprocess
+- DiscoveryService::scan_devices()
+- Spawn enumeration subprocess
+- Returns Vec<DeviceInfo>
+- Subprocess exits
+- No long-lived subprocess
 
 Phase 1: Pool Registration
-───────────────────────────
-Pool::add_device(DeviceInfo)
-  → Stores device metadata
-  → Creates TunerEntry for each channel
-  → NO subprocess spawned
+- Pool::add_device(DeviceInfo)
+- Stores device metadata
+- Creates TunerEntry for each channel
+- No subprocess spawned
 
 Phase 2: First Allocation
-──────────────────────────
-Pool::acquire(requirements)
-  → Finds matching tuner
-  → get_or_spawn_subprocess(device_id)
-      ├─ Check: subprocess exists?
-      ├─ NO: Spawn device-worker subprocess  ← CREATED HERE
-      │   └─ Opens SoapySDR device
-      │   └─ Creates Unix sockets
-      │   └─ Sends Ready message
-      └─ YES: Reuse existing subprocess
-  → subprocess.start_stream(channel)
-  → Return Tuner wrapper
+- Pool::acquire(requirements)
+- Finds matching tuner
+- get_or_spawn_subprocess(device_id)
+  - Check: subprocess exists?
+  - No: Spawn device worker subprocess
+    - Opens SoapySDR device
+    - Creates Unix sockets
+    - Sends Ready message
+  - Yes: Reuse existing subprocess
+- subprocess.start_stream(channel)
+- Return Tuner wrapper
 
 Phase 3: Second Allocation (Same Device)
-─────────────────────────────────────────
-Pool::acquire(requirements)
-  → Finds different tuner on same device
-  → get_or_spawn_subprocess(device_id)
-      └─ Reuses existing subprocess  ← NOT SPAWNED
-  → subprocess.start_stream(different_channel)
-  → Return Tuner wrapper
+- Pool::acquire(requirements)
+- Finds different tuner on same device
+- get_or_spawn_subprocess(device_id)
+  - Reuses existing subprocess (not spawned)
+- subprocess.start_stream(different_channel)
+- Return Tuner wrapper
 
 Phase 4: Tuner Release
-───────────────────────
-Tuner::drop()
-  → subprocess.stop_stream(channel)
-  → return_tuner_to_pool()
-  → Subprocess continues running  ← NOT TERMINATED
+- Tuner::drop()
+- subprocess.stop_stream(channel)
+- return_tuner_to_pool()
+- Subprocess continues running (not terminated)
 
 Phase 5: Pool Shutdown
-──────────────────────
-Pool::shutdown()
-  → For each subprocess:
-      → Send Shutdown message
-      → Graceful wait (500ms)
-      → SIGTERM if needed (500ms)
-      → SIGKILL if needed
-      → wait() to reap zombie
-  → Clear subprocesses HashMap
-```
+- Pool::shutdown()
+- For each subprocess:
+  - Send Shutdown message
+  - Graceful wait (2s timeout)
+  - SIGTERM if needed (1s timeout)
+  - SIGKILL if needed
+  - wait() to reap zombie
+- Clear subprocesses HashMap
 
 ## Proposal 1: IPC Protocol Foundation
 
@@ -827,40 +819,29 @@ impl SubprocessHandle {
 
 ### Shutdown Strategy
 
-**Layered Shutdown**:
+Layered shutdown flow:
+1. User Signal (Ctrl-C)
+2. ShutdownCoordinator::shutdown() - Cancel global token
+3. Pool::shutdown() - For each device subprocess:
+   - Send Shutdown message (2s timeout)
+   - Send SIGTERM (1s timeout)
+   - Send SIGKILL (guaranteed)
+   - wait() to reap zombie
+4. ShutdownCoordinator::wait() - Join all threads, verify clean state
 
-```
-User Signal (Ctrl-C)
-  ↓
-ShutdownCoordinator::shutdown()
-  → Cancel global token
-  ↓
-Pool::shutdown()
-  → For each device subprocess:
-      → Send Shutdown message (500ms timeout)
-      → Send SIGTERM (500ms timeout)
-      → Send SIGKILL (guaranteed)
-      → wait() to reap zombie
-  ↓
-ShutdownCoordinator::wait()
-  → Join all threads
-  → Verify clean state
-```
-
-**Timeout-Based Escalation**: Each subprocess gets graceful shutdown with fallback:
-1. Send Shutdown control message (500ms)
-2. Send SIGTERM signal (500ms)
+Timeout-based escalation for each subprocess:
+1. Send Shutdown control message (2s timeout)
+2. Send SIGTERM signal (1s timeout)
 3. Send SIGKILL (guaranteed kill)
 4. wait() to reap zombie (prevents resource leak)
 
-**Non-Blocking Drop**: Tuner::drop must never block during shutdown:
+Non-blocking drop ensures Tuner::drop never blocks during shutdown:
 ```rust
 impl Drop for Tuner {
     fn drop(&mut self) {
         if self.shutdown_mode.load(Ordering::SeqCst) {
             return; // Fast exit during shutdown
         }
-
         // Use try_lock to avoid blocking
         self.subprocess.stop_stream(self.channel);
     }
@@ -1054,37 +1035,75 @@ Comprehensive testing of subprocess lifecycle, IPC communication, and shutdown s
 
 ### Tasks
 
-- [ ] Test enumeration subprocess exits immediately
-- [ ] Test device worker subprocess persists across allocations
-- [ ] Test multiple channels on same device
-- [ ] Test subprocess reuse for second allocation
-- [ ] Test subprocess spawned lazily (not during add_device)
-- [ ] Test control commands work (tune, gain, start/stop stream)
-- [ ] Test I/Q data streams with channel tags
-- [ ] Test multiple devices work simultaneously
-- [ ] Test graceful shutdown with Shutdown message
-- [ ] Test SIGTERM escalation on timeout
-- [ ] Test SIGKILL escalation on hung subprocess
-- [ ] Test zombie process prevention (no defunct processes after shutdown)
-- [ ] Test socket cleanup (no stale /tmp/scanner-*.sock files)
-- [ ] Test crash isolation (driver crash doesn't kill main process)
-- [ ] Verify terminal output isolation (no corruption in TUI)
-- [ ] Test performance (<20μs latency with postcard)
+- [x] Test enumeration subprocess exits immediately
+- [x] Test device worker subprocess persists across allocations
+- [x] Test multiple channels on same device
+- [x] Test subprocess reuse for second allocation
+- [x] Test subprocess spawned lazily (not during add_device)
+- [x] Test control commands work (tune, gain, start/stop stream)
+- [x] Test I/Q data streams with channel tags
+- [x] Test multiple devices work simultaneously
+- [x] Test graceful shutdown with Shutdown message
+- [x] Test SIGTERM escalation on timeout
+- [x] Test SIGKILL escalation on hung subprocess
+- [x] Test zombie process prevention (no defunct processes after shutdown)
+- [x] Test socket cleanup (no stale /tmp/scanner-*.sock files)
+- [x] Test crash isolation (driver crash doesn't kill main process)
+- [x] Verify terminal output isolation (no corruption in TUI)
+- [x] Test performance (<20μs latency with postcard)
+
+### Implementation
+
+Integration tests implemented in `tests/ipc/`:
+- `lifecycle_test.rs` - Subprocess spawn, reuse, shutdown escalation, zombie prevention
+- `communication_test.rs` - Control message round-trip, I/Q data packets, terminal isolation
+- `multichannel_test.rs` - Two tuners sharing one subprocess, channel tag routing
+- `cleanup_test.rs` - Non-blocking drop, socket cleanup, subprocess reaping
+- `errors_test.rs` - Subprocess crash isolation, fault injection
+- `protocol_test.rs` - Protocol message validation
+- `common.rs` - Shared test utilities (assert_no_zombies, assert_sockets_cleaned)
+
+Performance benchmarks implemented in `benches/ipc/`:
+- `serialization_bench.rs` - Postcard serialization/deserialization for ControlMessage and IQPacket
+- `latency_bench.rs` - Control message round-trip latency (configure_and_start, stop_stream)
+- `throughput_bench.rs` - Data streaming throughput at different sample rates and concurrent channels
 
 ## Proposal 10: Debugging Infrastructure
 
-Add logging, environment variables, and utilities for troubleshooting subprocess workers.
+Add logging and utilities for troubleshooting subprocess workers.
 
 ### Tasks
 
-- [ ] Add SCANNER_WORKER_LOG environment variable for enumeration worker logging
-- [ ] Add SCANNER_WORKER_LOG_DIR environment variable for device worker logging
-- [ ] Implement file-based logging in enumeration_worker_main
-- [ ] Implement file-based logging with device ID in device_worker_main
-- [ ] Add debug assertions for subprocess state validation
-- [ ] Create troubleshooting checklist documentation
-- [ ] Document manual testing commands
-- [ ] Test logging with actual subprocess runs
+- [x] Implement worker log path derivation from parent log file
+- [x] Thread parent_log_file through Pool and discovery modules
+- [x] Update SubprocessHandle to generate and pass worker log paths
+- [x] Update SubprocessEnumerator to generate and pass worker log paths
+- [x] Add debug assertions for subprocess state validation
+- [x] Create troubleshooting documentation
+- [x] Document manual testing commands
+
+### Implementation
+
+Worker logging automatically mirrors parent process logging:
+- Workers only log when parent uses `--log-file` flag
+- Log paths derived from parent log file path
+- No environment variables needed (simplified approach)
+
+Log path derivation:
+- Parent: `/path/to/scanner.log`
+- Enumeration workers: `/path/to/scanner-enum-{backend}.log`
+- Device workers: `/path/to/scanner-worker-{device_id}-{timestamp}.log`
+
+Files modified:
+- `src/cli/worker_logging.rs` - Log path generation helpers
+- `src/hardware/pool/state.rs` - Added parent_log_file field to Pool
+- `src/hardware/pool/subprocess.rs` - Worker log path generation and debug validation
+- `src/hardware/pool/lifecycle.rs` - Pass parent_log_file to spawn
+- `src/discovery/enumerator.rs` - Worker log path generation for enumeration
+- `src/discovery/mod.rs` - Thread parent_log_file to enumerators
+- `src/cli/discovery.rs` - Accept and pass parent_log_file
+- `src/cli/scan.rs` - Pass log_file to pool and discovery
+- `docs/research/subprocess-debugging.md` - Troubleshooting guide
 
 ### Debugging and Troubleshooting
 
@@ -1110,53 +1129,18 @@ Main Process Logging:
 - IPC errors logged at warn level
 
 Worker Subprocess Logging:
-```rust
-// Enumeration worker
-fn enumeration_worker_main() -> Result<()> {
-    // Set up minimal logging to file (not stderr - that's discarded)
-    if let Ok(log_file) = std::env::var("SCANNER_WORKER_LOG") {
-        // Initialize file-based logging
-        tracing_subscriber::fmt()
-            .with_writer(std::fs::File::create(log_file)?)
-            .init();
-    }
+- Workers only log when parent uses `--log-file` flag
+- Log paths automatically derived from parent log file path
+- No environment variables required
 
-    debug!("Enumeration worker starting");
-    // ... enumerate devices
-    debug!("Enumeration worker complete");
-    Ok(())
-}
-
-// Device worker
-fn device_worker_main(args: DeviceWorkerArgs) -> Result<()> {
-    // Set up logging with device ID in filename
-    if let Ok(log_dir) = std::env::var("SCANNER_WORKER_LOG_DIR") {
-        let log_path = format!("{}/worker-{}.log", log_dir, args.device_id);
-        tracing_subscriber::fmt()
-            .with_writer(std::fs::File::create(log_path)?)
-            .with_ansi(false)
-            .init();
-    }
-
-    debug!(device_id = %args.device_id, "Device worker starting");
-    // ... main loop
-    debug!(device_id = %args.device_id, "Device worker shutting down");
-    Ok(())
-}
-```
-
-**Environment Variables**:
+Example:
 ```bash
-# Enable worker logging
-export SCANNER_WORKER_LOG="/tmp/scanner-enum-worker.log"
-export SCANNER_WORKER_LOG_DIR="/tmp/scanner-workers"
+# Parent logs to /tmp/scanner.log
+scanner scan --band fm --log-file /tmp/scanner.log
 
-# Run scanner
-scanner scan --band fm
-
-# Check logs
-cat /tmp/scanner-enum-worker.log
-ls -la /tmp/scanner-workers/
+# Workers automatically log to:
+# - /tmp/scanner-enum-soapy.log (enumeration worker)
+# - /tmp/scanner-worker-{device_id}-{timestamp}.log (device workers)
 ```
 
 **Debugging Subprocess Issues**:
@@ -1164,15 +1148,15 @@ ls -la /tmp/scanner-workers/
 Issue: Enumeration worker fails silently
 ```bash
 # Check exit status and stderr
-scanner worker enumerate
+scanner worker enumerate --backend soapy --socket-path /tmp/test.sock
 echo $?  # Non-zero indicates failure
 
 # Capture stderr (normally discarded)
-scanner worker enumerate 2>&1
+scanner worker enumerate --backend soapy --socket-path /tmp/test.sock 2>&1
 
 # Enable logging
-SCANNER_WORKER_LOG=/tmp/enum.log scanner scan --band fm
-cat /tmp/enum.log
+scanner scan --band fm --log-file /tmp/scanner.log
+cat /tmp/scanner-enum-soapy.log
 ```
 
 Issue: Device worker not responding
@@ -1184,10 +1168,7 @@ ps aux | grep "scanner worker device"
 ls -la /tmp/scanner-*.sock
 
 # Check worker logs
-tail -f /tmp/scanner-workers/worker-sdrplay-123456.log
-
-# Manually test IPC
-# (connect to socket and send test message)
+tail -f /tmp/scanner-worker-sdrplay-123456-*.log
 ```
 
 Issue: Subprocess zombie processes
@@ -1232,29 +1213,29 @@ fn validate_subprocess_state(handle: &SubprocessHandle) {
 **Troubleshooting Checklist**:
 
 Worker Won't Start:
-- [ ] Check device permissions (SDR hardware access)
-- [ ] Check SoapySDR driver installed
-- [ ] Check socket directory writable (`/tmp`)
-- [ ] Review worker logs for startup errors
-- [ ] Test worker command manually
+- Check device permissions (SDR hardware access)
+- Check SoapySDR driver installed
+- Check socket directory writable (/tmp)
+- Review worker logs for startup errors
+- Test worker command manually
 
 Worker Crashes:
-- [ ] Check worker logs for panic/error
-- [ ] Verify device args correct
-- [ ] Test with different device if available
-- [ ] Check system resources (memory, file descriptors)
+- Check worker logs for panic/error
+- Verify device args correct
+- Test with different device if available
+- Check system resources (memory, file descriptors)
 
 IPC Communication Fails:
-- [ ] Verify socket files exist
-- [ ] Check socket permissions
-- [ ] Review serialization errors in logs
-- [ ] Test with smaller sample buffer
+- Verify socket files exist
+- Check socket permissions
+- Review serialization errors in logs
+- Test with smaller sample buffer
 
 Performance Issues:
-- [ ] Profile serialization overhead
-- [ ] Check for socket buffer saturation
-- [ ] Monitor subprocess CPU usage
-- [ ] Verify no memory leaks in worker
+- Profile serialization overhead
+- Check for socket buffer saturation
+- Monitor subprocess CPU usage
+- Verify no memory leaks in worker
 
 **Development Utilities**:
 
@@ -1299,41 +1280,39 @@ pub mod debug {
 
 ## Performance Characteristics
 
-### Latency Breakdown
-- Unix socket: 2-6μs (verified)
-- postcard serialize: ~0.06μs (60ns, negligible)
-- postcard deserialize: ~0.18μs (180ns, negligible)
-- Context switch: 5-10μs
-- **Total**: 7-16μs per packet (negligible for SDR)
+Latency Breakdown:
+- Unix socket: 2-6 μs (verified)
+- postcard serialize: 0.06 μs (60 ns, negligible)
+- postcard deserialize: 0.18 μs (180 ns, negligible)
+- Context switch: 5-10 μs
+- Total: 7-16 μs per packet (negligible for SDR)
 
-### Throughput
+Throughput:
 - Unix sockets: 100+ Gbps capability
 - Typical SDR: 2 MSPS × 8 bytes = 16 MB/s = 0.128 Gbps
-- **Headroom**: 780x more bandwidth than needed
+- Headroom: 780x more bandwidth than needed
 
-### Memory
+Memory:
 - Per subprocess: 10-20 MB overhead
-- 3 devices: ~60 MB total (acceptable)
+- 3 devices: ~60 MB total
 
-### CPU
+CPU:
 - Serialization: <1% per device
 - Context switching: Minimal with Unix sockets
 
 ## Notes from Research
 
-### BladeRF Clarification
+BladeRF Clarification:
 libbladeRF is thread-safe with internal per-stream locks. No documented requirement for process isolation. Subprocess approach is precautionary for consistency across all devices.
 
-### RTL-SDR Terminal Output
+RTL-SDR Terminal Output:
 "Reattached kernel driver" can be fixed with udev blacklisting on modern Linux. Subprocess isolation is one solution; proper udev configuration is simpler but requires system configuration.
 
-### SoapySDRServer Comparison
-Choosing custom IPC over SoapySDRServer for: simpler deployment, Unix socket performance advantage, no network stack overhead, full control over protocol. SoapySDRServer is battle-tested alternative with TCP+UDP.
+SoapySDRServer Comparison:
+Choosing custom IPC over SoapySDRServer for simpler deployment, Unix socket performance advantage, no network stack overhead, and full control over protocol. SoapySDRServer is battle-tested alternative with TCP+UDP.
 
-### Serialization Choice: postcard
-
-Using postcard for IPC serialization:
-- 60ns serialize, 180ns deserialize (compared to bincode's 547μs)
+Serialization Choice (postcard):
+- 60 ns serialize, 180 ns deserialize (compared to bincode's 547 μs)
 - 70% message size of bincode (better for Unix socket bandwidth)
 - Built for embedded systems, well-suited for small I/Q packets
 - Fallback options: bincode (if compatibility issues), rkyv (if zero-copy needed)

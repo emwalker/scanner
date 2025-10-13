@@ -42,7 +42,7 @@ impl MainThread {
         let filter = PoolFilter::new()
             .with_driver("sdrplay")
             .with_mode(TuningMode::SingleTuner);
-        let pool = Pool::new(filter);
+        let pool = Pool::new(filter, None);
 
         Ok(MainThread {
             config,

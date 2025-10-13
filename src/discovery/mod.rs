@@ -21,15 +21,21 @@ pub enum DiscoveryMode {
     ForceUdev,
 }
 
-pub fn create(backends: Vec<hardware::types::Backend>, mode: DiscoveryMode) -> Box<dyn Service> {
+pub fn create(
+    backends: Vec<hardware::types::Backend>,
+    mode: DiscoveryMode,
+    parent_log_file: Option<String>,
+) -> Box<dyn Service> {
     use enumerator::{MultiEnumerator, SourcePriority, SubprocessEnumerator};
 
     let mut enumerators: Vec<(Box<dyn DeviceEnumerator>, SourcePriority)> = backends
         .into_iter()
         .map(|backend| {
             (
-                Box::new(SubprocessEnumerator::new(backend.as_str().to_string()))
-                    as Box<dyn DeviceEnumerator>,
+                Box::new(SubprocessEnumerator::new(
+                    backend.as_str().to_string(),
+                    parent_log_file.clone(),
+                )) as Box<dyn DeviceEnumerator>,
                 SourcePriority::Backend,
             )
         })
@@ -115,6 +121,7 @@ pub fn create_for_testing(
 pub fn enumerate_once_subprocess(
     backends: &[hardware::types::Backend],
     filter: Option<&str>,
+    parent_log_file: Option<String>,
 ) -> Result<Vec<hardware::DeviceInfo>> {
     use enumerator::{MultiEnumerator, SourcePriority, SubprocessEnumerator};
 
@@ -122,8 +129,10 @@ pub fn enumerate_once_subprocess(
         .iter()
         .map(|backend| {
             (
-                Box::new(SubprocessEnumerator::new(backend.as_str().to_string()))
-                    as Box<dyn DeviceEnumerator>,
+                Box::new(SubprocessEnumerator::new(
+                    backend.as_str().to_string(),
+                    parent_log_file.clone(),
+                )) as Box<dyn DeviceEnumerator>,
                 SourcePriority::Backend,
             )
         })

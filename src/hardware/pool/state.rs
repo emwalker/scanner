@@ -91,11 +91,14 @@ pub struct Pool {
 
     /// Device worker subprocesses (one per device, lazily spawned)
     pub(crate) subprocesses: Mutex<HashMap<hardware::DeviceId, Arc<SubprocessHandle>>>,
+
+    /// Parent process log file path (used to derive worker log paths)
+    pub(crate) parent_log_file: Option<String>,
 }
 
 impl Pool {
-    /// Create new pool with filter
-    pub fn new(filter: PoolFilter) -> Self {
+    /// Create new pool with filter and optional parent log file
+    pub fn new(filter: PoolFilter, parent_log_file: Option<String>) -> Self {
         let inner = PoolInner {
             devices: HashMap::new(),
             available_tuners: HashMap::new(),
@@ -109,12 +112,13 @@ impl Pool {
             shutdown_mode: Arc::new(AtomicBool::new(false)),
             on_state_change: Arc::new(Mutex::new(Vec::new())),
             subprocesses: Mutex::new(HashMap::new()),
+            parent_log_file,
         }
     }
 
     /// Create new pool allowing all tuners (convenience method)
     pub fn new_unfiltered() -> Self {
-        Self::new(PoolFilter::allow_all())
+        Self::new(PoolFilter::allow_all(), None)
     }
 
     /// Enter shutdown mode (makes pool reject all future operations)

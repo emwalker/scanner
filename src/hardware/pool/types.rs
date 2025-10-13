@@ -107,6 +107,16 @@ pub struct AllocationInfo {
     pub activity: TunerActivity,
 }
 
+/// Intermediate data from tuner allocation, used during subprocess spawning
+#[allow(dead_code)]
+pub(crate) struct TunerAllocation {
+    pub tuner_id: TunerId,
+    pub backend: hardware::types::Backend,
+    pub model: String,
+    pub capabilities: hardware::Capabilities,
+    pub activity: TunerActivity,
+}
+
 /// What a tuner is currently doing (replaces ActiveTuners.scanning/listening)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TunerActivity {

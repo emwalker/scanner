@@ -481,7 +481,10 @@ mod tests {
 
     #[test]
     fn test_filter_by_backend() {
-        let pool = Pool::new(PoolFilter::new().with_backend(hardware::types::Backend::Mock));
+        let pool = Pool::new(
+            PoolFilter::new().with_backend(hardware::types::Backend::Mock),
+            None,
+        );
 
         let mock_id = hardware::DeviceId::from_serial("mock", "test015");
         let mock_device = create_mock_device(&mock_id);
@@ -517,7 +520,7 @@ mod tests {
 
     #[test]
     fn test_filter_by_driver() {
-        let pool = Pool::new(PoolFilter::new().with_driver("mock"));
+        let pool = Pool::new(PoolFilter::new().with_driver("mock"), None);
 
         let mock_id1 = hardware::DeviceId::from_serial("mock", "test017");
         let mock_device1 = create_mock_device(&mock_id1);
@@ -569,7 +572,7 @@ mod tests {
         drop(pool);
 
         let tuner1 = TunerId::new(device1_id.clone(), 0);
-        let pool_filtered = Pool::new(PoolFilter::new().with_tuners(vec![tuner1.clone()]));
+        let pool_filtered = Pool::new(PoolFilter::new().with_tuners(vec![tuner1.clone()]), None);
 
         let device1_again = create_mock_device(&device1_id);
         pool_filtered
@@ -596,7 +599,7 @@ mod tests {
 
     #[test]
     fn test_filter_single_tuner_mode() {
-        let pool = Pool::new(PoolFilter::new().with_mode(TuningMode::SingleTuner));
+        let pool = Pool::new(PoolFilter::new().with_mode(TuningMode::SingleTuner), None);
 
         let device_id = hardware::DeviceId::from_serial("mock", "test021");
         let device = create_mock_device(&device_id);
@@ -634,6 +637,7 @@ mod tests {
             PoolFilter::new()
                 .with_driver("mock")
                 .with_mode(TuningMode::SingleTuner),
+            None,
         );
 
         let mock_id = hardware::DeviceId::from_serial("mock", "test022");

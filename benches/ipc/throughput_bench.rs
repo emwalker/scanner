@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rustradio::blocks::NullSink;
 use rustradio::graph::GraphRunner;
 use scanner::hardware::mock::MockDevice;

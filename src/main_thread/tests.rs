@@ -251,7 +251,7 @@ fn test_pool_device_population() {
     let filter = PoolFilter::new()
         .with_driver("mock")
         .with_mode(TuningMode::SingleTuner);
-    let pool = Pool::new(filter);
+    let pool = Pool::new(filter, None);
 
     let mock_backend = crate::hardware::Mock;
     let pool_tuner_id = crate::hardware::pool::TunerId::new(tuner_id, 0);
@@ -272,7 +272,7 @@ fn test_pool_acquire_and_use() {
     let filter = PoolFilter::new()
         .with_driver("mock")
         .with_mode(TuningMode::SingleTuner);
-    let pool = Pool::new(filter);
+    let pool = Pool::new(filter, None);
 
     let mock_backend = crate::hardware::Mock;
     let pool_tuner_id = crate::hardware::pool::TunerId::new(tuner_id, 0);

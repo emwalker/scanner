@@ -179,7 +179,7 @@ mod tests {
 
         // Setup: Create pool with one device
         let filter = PoolFilter::new().with_driver("mock");
-        let pool = Arc::new(Pool::new(filter));
+        let pool = Arc::new(Pool::new(filter, None));
 
         // Add a mock device to the pool
         let device_id = crate::hardware::DeviceId::from_serial("mock", "test-device");
