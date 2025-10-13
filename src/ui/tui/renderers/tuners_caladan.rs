@@ -141,6 +141,16 @@ fn render_tuner_block(
         }
     };
 
+    let status_style = match tuner.state {
+        crate::ui::tui::model::TunerState::Listening
+        | crate::ui::tui::model::TunerState::Scanning => Style::default()
+            .fg(ratatui::style::Color::Rgb(150, 255, 150))
+            .add_modifier(Modifier::BOLD),
+        crate::ui::tui::model::TunerState::Available => Style::default()
+            .fg(theme.foreground())
+            .add_modifier(Modifier::DIM),
+    };
+
     let lines = vec![
         Line::from(vec![Span::styled(
             &tuner.label,
@@ -152,12 +162,7 @@ fn render_tuner_block(
             &tuner_id_str,
             Style::default().fg(theme.secondary()),
         )]),
-        Line::from(vec![Span::styled(
-            tuner.state.display(),
-            Style::default()
-                .fg(theme.foreground())
-                .add_modifier(Modifier::DIM),
-        )]),
+        Line::from(vec![Span::styled(tuner.state.display(), status_style)]),
     ];
 
     let paragraph = Paragraph::new(lines);
