@@ -62,6 +62,7 @@ tracing-log = "0.2.0" # To bridge log macros to tracing
 tracing-subscriber = { version = "0.3.17", features = ["json"] }
 tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+dashmap = "6.1"
 smartcore = "0.4.2"
 num = { version = "0.4", features = ["serde"] }
 hound = "3.5"

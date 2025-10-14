@@ -74,6 +74,19 @@ Pool tries to add all 5 devices, but:
 
 ## Design
 
+### Event Flow Architecture
+
+With the integration of DeviceEnumerationTask (Plan 009), discovery events can come from two sources:
+
+1. **Direct Discovery Events**: USB hotplug detection (udev on Linux)
+2. **Backend Enumeration Events**: Emitted by DeviceEnumerationTask after polling backend APIs
+
+Both flow through the same `mpsc::Sender<discovery::Event>` channel to the TUI, maintaining unified event handling.
+
+**Key Principle**: Discovery events update the TUI device list. Pool allocation changes (via `add_device_metadata()` or `acquire()`) update tuner status but do NOT directly trigger TUI updates. This maintains clean separation:
+- Discovery events → TUI device list (add/remove devices)
+- Pool state changes → TUI tuner status (idle/busy/etc.)
+
 ### 1. Discovery Event Distinction
 
 Add flag to distinguish initial enumeration from hot-plug:
@@ -100,6 +113,8 @@ let initial_devices = discovery_service.enumerate_blocking()?;  // Blocks until 
 let (event_tx, event_rx) = mpsc::channel();
 discovery_service.start_monitoring(event_tx);  // Only fires for actual changes
 ```
+
+**Note on DeviceEnumerationTask**: When Discovery Service submits DeviceEnumerationTask, it passes the discovery event channel. The task emits `Event::Added` for successfully added devices, maintaining the unified event flow.
 
 ### 2. Pre-filter Before Opening
 
@@ -202,6 +217,9 @@ match event {
 
 **Complete flow with all checks**:
 
+There are two paths for discovery events reaching the TUI:
+
+**Path 1: Direct USB Events** (handled by Discovery Service)
 ```rust
 fn handle_discovery_event(
     event: Event,
@@ -278,6 +296,34 @@ fn handle_discovery_event(
     Ok(())
 }
 ```
+
+**Path 2: Backend Enumeration via DeviceEnumerationTask** (handled by task, see Plan 009)
+```rust
+// In DeviceEnumerationTask::run()
+for device_info in discovered_devices {
+    let capabilities = Capabilities::for_device(&device_info.id);
+
+    let result = self.pool.add_device_metadata(
+        device_info.id.clone(),
+        capabilities,
+        self.backend.clone(),
+    );
+
+    match result {
+        AddDeviceResult::Added { device_id, tuner_count } => {
+            // Emit discovery event - flows to same TUI handler as Path 1
+            let _ = self.discovery_tx.send(discovery::Event::Added(device_info));
+        }
+        // Other cases don't emit events
+        _ => {}
+    }
+}
+```
+
+**Unified Event Handling**: Both paths send events to the same channel, which forwards to the TUI. This ensures:
+- TUI device list stays synchronized with pool state
+- Same event handling logic for both discovery mechanisms
+- Clean separation: pool manages allocation, events manage UI updates
 
 ### 5. SingleTuner Mode Behavior
 

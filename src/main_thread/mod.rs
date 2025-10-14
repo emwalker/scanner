@@ -1,15 +1,11 @@
-mod audio_coordinator;
-mod commands;
+pub(crate) mod audio_coordinator;
 mod runner;
-mod state_manager;
-mod window_processing;
 
 use crate::core::types::{ConsoleWriter, Logger, Result, ScanningConfig};
 use crate::hardware::pool::{Pool, PoolFilter, TuningMode};
-use crate::scanner_state::{PauseSignal, ScannerState};
 use crate::shutdown::ShutdownCoordinator;
+use crate::task::TaskScheduler;
 use crate::ui::{NoOpProgressReporter, ProgressReporter, ScannerCommand, TuiEvent};
-use audio_coordinator::TuneParams;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use tracing::{debug, info};
@@ -23,10 +19,8 @@ pub struct MainThread {
     shutdown_coordinator: Arc<ShutdownCoordinator>,
     command_receiver: Option<Receiver<ScannerCommand>>,
     tui_event_sender: Option<Sender<TuiEvent>>,
-    scanner_state: ScannerState,
-    pause_signal: PauseSignal,
-    current_playing: Option<TuneParams>,
     pool: Arc<Pool>,
+    scheduler: Arc<TaskScheduler>,
     #[allow(dead_code)]
     discovered_devices: Vec<crate::hardware::DeviceInfo>,
 }
@@ -42,7 +36,11 @@ impl MainThread {
         let filter = PoolFilter::new()
             .with_driver("sdrplay")
             .with_mode(TuningMode::SingleTuner);
-        let pool = Pool::new(filter, None);
+        let pool = Arc::new(Pool::new(filter, None));
+        let scheduler = Arc::new(TaskScheduler::new(
+            pool.clone(),
+            shutdown_coordinator.clone(),
+        ));
 
         Ok(MainThread {
             config,
@@ -53,10 +51,8 @@ impl MainThread {
             shutdown_coordinator,
             command_receiver: None,
             tui_event_sender: None,
-            scanner_state: ScannerState::new(),
-            pause_signal: PauseSignal::new(),
-            current_playing: None,
-            pool: Arc::new(pool),
+            pool,
+            scheduler,
             discovered_devices: Vec::new(),
         })
     }
@@ -70,6 +66,7 @@ impl MainThread {
         progress_reporter: Arc<dyn ProgressReporter>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
         pool: Arc<Pool>,
+        scheduler: Arc<TaskScheduler>,
         discovered_devices: Vec<crate::hardware::DeviceInfo>,
     ) -> Result<Self> {
         let main_thread = MainThread {
@@ -81,10 +78,8 @@ impl MainThread {
             shutdown_coordinator,
             command_receiver: None,
             tui_event_sender: None,
-            scanner_state: ScannerState::new(),
-            pause_signal: PauseSignal::new(),
-            current_playing: None,
             pool,
+            scheduler,
             discovered_devices,
         };
 

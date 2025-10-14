@@ -1,10 +1,7 @@
 use super::MainThread;
-use super::state_manager;
 use crate::core::types::{Result, ScannerError};
-use crate::hardware::pool::TunerProvider;
-use crate::scanning::window::Window;
-use crate::signal;
-use std::sync::Arc;
+use crate::task::{ScanBandTask, ScanStationsTask, Task};
+use std::time::Duration;
 use tracing::debug;
 
 impl MainThread {
@@ -15,71 +12,56 @@ impl MainThread {
             .collect()
     }
 
-    pub(super) fn scan_stations(&self, stations_str: &str) -> Result<()> {
+    pub(super) fn scan_stations(&mut self, stations_str: &str) -> Result<()> {
         let stations = self.parse_stations(stations_str)?;
         debug!(
-            message = "Scanning stations",
-            stations = format!("{:?}", stations)
+            station_count = stations.len(),
+            "Creating ScanStationsTask for station scanning"
         );
-        let _total_stations = stations.len();
 
-        // Create a separate window for each station, using the station frequency as center frequency
-        for (station_idx, station_freq) in stations.into_iter().enumerate() {
-            debug!(
-                "Processing station {} of {} at {:.1} MHz",
-                station_idx + 1,
-                _total_stations,
-                station_freq / 1e6
-            );
+        let scan_task = ScanStationsTask::new_full(
+            (*self.config).clone(),
+            stations,
+            self.progress_reporter.clone(),
+            self.pool.clone(),
+            self.shutdown_coordinator.clone(),
+            self.command_receiver.take(),
+            self.tui_event_sender.clone(),
+        );
 
-            // Create a window for this specific station frequency (pool-based)
-            let window = Window::for_station(
-                station_freq,
-                station_idx + 1,
-                _total_stations,
-                Arc::clone(&self.pool) as Arc<dyn TunerProvider>,
-                self.config.clone(),
-                self.progress_reporter.clone(),
-                self.shutdown_coordinator.clone(),
-            );
+        let handle = self.scheduler.submit(Task::ScanStations(scan_task))?;
 
-            // Process using pool-based flow
-            window.process_with_pool()?;
+        while !handle.is_cancelled() && !self.shutdown_coordinator.is_shutdown() {
+            std::thread::sleep(Duration::from_millis(100));
         }
 
+        debug!("ScanStationsTask completed");
         Ok(())
     }
 
     pub(super) fn scan_band(&mut self) -> Result<()> {
-        signal::clear_processed_frequencies();
-
-        let window_centers = self.config.band.windows(
-            self.config.samp_rate,
-            self.config.signal_processing.window_overlap,
-        );
         debug!(
-            "Scanning {} windows across {:?} band",
-            window_centers.len(),
-            self.config.band
+            band = ?self.config.band,
+            "Creating ScanBandTask for band scanning"
         );
 
-        let windows_to_process = match self.config.scanning_windows {
-            Some(n) => n.min(window_centers.len()),
-            None => window_centers.len(),
-        };
+        let scan_task = ScanBandTask::new_full(
+            (*self.config).clone(),
+            self.config.band,
+            self.progress_reporter.clone(),
+            self.pool.clone(),
+            self.shutdown_coordinator.clone(),
+            self.command_receiver.take(),
+            self.tui_event_sender.clone(),
+        );
 
-        let mut context = state_manager::ScanContext::new(self, window_centers, windows_to_process);
+        let handle = self.scheduler.submit(Task::ScanBand(scan_task))?;
 
-        loop {
-            let control = context.determine_next_action()?;
-
-            match control {
-                state_manager::LoopControl::Break => break,
-                state_manager::LoopControl::Continue => continue,
-                state_manager::LoopControl::Advance => context.advance(),
-            }
+        while !handle.is_cancelled() && !self.shutdown_coordinator.is_shutdown() {
+            std::thread::sleep(Duration::from_millis(100));
         }
 
+        debug!("ScanBandTask completed");
         Ok(())
     }
 }

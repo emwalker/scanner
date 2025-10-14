@@ -14,6 +14,7 @@ pub mod scanner_state;
 pub mod scanning;
 pub mod shutdown;
 pub mod signal;
+pub mod task;
 pub mod testing;
 pub mod ui;
 

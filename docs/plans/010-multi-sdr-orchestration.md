@@ -87,7 +87,6 @@ Worker Subprocesses (one per device, Plan 008)
 ## Implementation Steps
 
 ### Step 1: Create Orchestration Layer
-**Time**: 2 hours
 
 Create `src/multi/mod.rs`:
 
@@ -235,6 +234,137 @@ impl Orchestrator {
     }
 }
 ```
+
+### Step 1b: Integrate Discovery with TaskScheduler
+
+**Goal**: Wire Discovery Service to use TaskScheduler for backend enumeration while maintaining discovery event flow
+
+**Current State**:
+- Discovery Service has MultiEnumerator that calls backends directly
+- No serialization of backend API access
+- Unsafe for concurrent discovery events
+- Discovery events flow to TUI for device list updates
+
+**New Architecture**:
+```rust
+impl Service for Udev {
+    fn run(&mut self, event_tx: mpsc::Sender<Event>, cancel: CancellationToken) {
+        // When USB event detected:
+
+        // OLD: self.enumerator.enumerate() → calls backends directly
+        // OLD: manually emit discovery events
+
+        // NEW: Submit DeviceEnumerationTask for each backend
+        // Pass the discovery event channel to the task so it can emit events
+        for backend in [Backend::Soapy, Backend::Mock] {
+            let task = Task::DeviceEnumeration(
+                DeviceEnumerationTask::new(
+                    backend,
+                    self.pool.clone(),
+                    event_tx.clone(),  // ← Task will emit discovery events
+                )
+            );
+            self.task_scheduler.submit(task)?;
+        }
+
+        // Task handles:
+        // 1. Pool updates via add_device_metadata()
+        // 2. Emitting discovery::Event::Added for successful additions
+        // 3. Backend serialization through TaskScheduler
+    }
+}
+```
+
+**Changes**:
+1. Discovery Service holds `Arc<TaskScheduler>` reference
+2. On discovery trigger (USB event or timer), submit DeviceEnumerationTask per backend
+3. Pass `event_tx` (discovery event channel) to DeviceEnumerationTask constructor
+4. DeviceEnumerationTask adds devices to pool AND emits discovery events
+5. Remove direct backend calls from MultiEnumerator (or keep only for USB inspection)
+6. Backend serialization now protects all enumeration
+7. Discovery event flow maintained: Task → event_tx → TUI handler → Device list update
+
+**Event Flow**:
+```
+USB Event → Discovery Service
+          ↓
+          Submit DeviceEnumerationTask(backend, pool, event_tx)
+          ↓
+          Task runs (serialized by backend)
+          ↓
+          For each discovered device:
+            1. Add to pool → AddDeviceResult::Added
+            2. Emit discovery::Event::Added(device_info)
+          ↓
+          TUI receives event → Updates device list
+```
+
+**Key Insight**: DeviceEnumerationTask bridges two worlds:
+- Pool management (allocation state)
+- Discovery events (TUI device list)
+
+This maintains clean separation while ensuring both systems stay in sync.
+
+**Alternative**: Keep MultiEnumerator for non-backend enumerators (USB inspection), use TaskScheduler only for backend enumeration.
+
+### Step 1c: Simplified TaskScheduler Implementation
+
+**Goal**: Show how unified task interface simplifies scheduling
+
+**Key simplification**: All tasks have the same signature, no tuner acquisition logic needed.
+
+```rust
+impl TaskScheduler {
+    pub fn submit(&self, task: Task) -> Result<TaskHandle> {
+        let task_id = TaskId::new();
+        let cancel_token = CancellationToken::new();
+
+        // Determine backend for serialization
+        let backend = self.determine_backend(&task)?;
+
+        // Acquire backend semaphore
+        let semaphore = self.acquire_backend_permit(&backend)?;
+
+        // Spawn task thread
+        let mut task = task;
+        let cancel = cancel_token.clone();
+        std::thread::spawn(move || {
+            let _permit = semaphore.acquire_blocking();
+
+            // Run task with lifecycle hooks
+            task.on_start();
+            match task.run(cancel) {
+                Ok(()) => task.on_complete(),
+                Err(e) => task.on_error(&e),
+            }
+        });
+
+        Ok(TaskHandle::new(task_id, cancel_token))
+    }
+}
+```
+
+**Benefits**:
+- No tuner acquisition logic in scheduler
+- All tasks treated uniformly
+- Tasks manage their own resource needs
+- Backend serialization still enforced via semaphores
+
+**Concurrent Operations Example**:
+
+```
+Timeline with multiple tasks:
+
+0s:    ScanTask starts (coordinator)
+0.1s:  ScanTask → Window 1 acquires tuner → processes (0.5s) → releases
+0.6s:  DeviceEnumerationTask(Soapy) can run! (0.2s)
+0.8s:  ScanTask → Window 2 acquires tuner → processes (0.5s) → releases
+1.3s:  ScanTask → Window 3 acquires tuner → processes (0.5s) → releases
+1.8s:  AudioTask starts, acquires tuner for station playback
+       (holds tuner for minutes while listening)
+```
+
+Without per-window allocation in ScanTask, DeviceEnumerationTask would be blocked for the entire 5-10 minute scan.
 
 ### Step 2: Update MainThread to Use Orchestrator
 **Time**: 2 hours

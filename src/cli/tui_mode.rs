@@ -3,6 +3,7 @@ use crate::hardware::pool::Pool;
 use crate::logging::DefaultLogger;
 use crate::main_thread::{DefaultConsoleWriter, MainThread};
 use crate::shutdown::ShutdownCoordinator;
+use crate::task::TaskScheduler;
 use crate::ui::tui::TuiProgressDisplay;
 use crate::ui::tui::themes::{ThemeName, create_theme};
 use crate::ui::{ChannelProgressReporter, ScannerCommand, TuiEvent};
@@ -109,6 +110,11 @@ pub fn run_with_tui(
     let console_writer = Arc::new(DefaultConsoleWriter);
     let backend = Arc::new(crate::hardware::Soapy);
 
+    let scheduler = Arc::new(TaskScheduler::new(
+        shared_pool.clone(),
+        shutdown_coordinator.clone(),
+    ));
+
     let main_thread = MainThread::new_with_progress(
         Arc::new(config),
         console_writer,
@@ -117,6 +123,7 @@ pub fn run_with_tui(
         tui_context.progress_reporter,
         shutdown_coordinator.clone(),
         shared_pool.clone(),
+        scheduler,
         discovered_devices,
     )?
     .with_command_receiver(tui_context.command_receiver)
