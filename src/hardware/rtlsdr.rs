@@ -4,7 +4,7 @@
 //! Implementation is optional and depends on whether Seify provides
 //! sufficient performance for RTL-SDR devices.
 
-use super::{Backend, DeviceError, DeviceErrorKind, DeviceId, DeviceInfo, DeviceTrait};
+use super::{Backend, DeviceError, DeviceErrorKind, DeviceInfo, DeviceTrait};
 use crate::core::types::Result;
 
 /// RTL-SDR native backend (future optimization)

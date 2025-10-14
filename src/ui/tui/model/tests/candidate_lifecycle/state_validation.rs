@@ -1,15 +1,12 @@
 use crate::ui::tui::model::{CandidateStatus, Model};
 use crate::ui::{ProgressEvent, ProgressEventType};
 use std::time::Instant;
-
 /// Test that candidates progress through all expected states
-
 /// Test that no candidates remain stuck in intermediate states
 #[test]
 fn test_no_stuck_intermediate_states() {
     let mut model = Model::new();
     let window_id = 1;
-
     // Create multiple candidates in different states
     let candidates = vec![
         ("88.1-1", 88_100_000.0),
@@ -18,7 +15,6 @@ fn test_no_stuck_intermediate_states() {
         ("88.7-1", 88_700_000.0),
         ("88.9-1", 88_900_000.0),
     ];
-
     // Create all candidates
     for (id, freq) in &candidates {
         model.update(ProgressEvent {
@@ -35,7 +31,6 @@ fn test_no_stuck_intermediate_states() {
             tuner_id: None,
         });
     }
-
     // Start analysis for all
     for (id, freq) in &candidates {
         model.update(ProgressEvent {
@@ -52,7 +47,6 @@ fn test_no_stuck_intermediate_states() {
             tuner_id: None,
         });
     }
-
     // Resolve all candidates to terminal states
     model.update(ProgressEvent {
         event_type: ProgressEventType::CandidateRejected,
@@ -67,7 +61,6 @@ fn test_no_stuck_intermediate_states() {
         timestamp: Instant::now(),
         tuner_id: None,
     });
-
     model.update(ProgressEvent {
         event_type: ProgressEventType::CandidateRejected,
         frequency_hz: candidates[1].1,
@@ -81,7 +74,6 @@ fn test_no_stuck_intermediate_states() {
         timestamp: Instant::now(),
         tuner_id: None,
     });
-
     // Complete signal paths for others
     for (id, freq) in &candidates[2..] {
         model.update(ProgressEvent {
@@ -97,7 +89,6 @@ fn test_no_stuck_intermediate_states() {
             timestamp: Instant::now(),
             tuner_id: None,
         });
-
         model.update(ProgressEvent {
             event_type: ProgressEventType::AudioPlaybackStarted,
             frequency_hz: *freq,
@@ -111,7 +102,6 @@ fn test_no_stuck_intermediate_states() {
             timestamp: Instant::now(),
             tuner_id: None,
         });
-
         model.update(ProgressEvent {
             event_type: ProgressEventType::AudioPlaybackCompleted,
             frequency_hz: *freq,
@@ -126,7 +116,6 @@ fn test_no_stuck_intermediate_states() {
             tuner_id: None,
         });
     }
-
     // Verify no candidates are stuck in intermediate states
     let window = model.windows.get(&window_id).unwrap();
     for candidate in &window.candidates {

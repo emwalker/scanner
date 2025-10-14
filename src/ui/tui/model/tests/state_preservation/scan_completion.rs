@@ -2,8 +2,6 @@ use crate::ui::tui::model::{CandidateStatus, Model};
 use crate::ui::{ProgressEvent, ProgressEventType};
 use std::time::Instant;
 
-/// Test quit functionality
-
 /// Test that rejected candidates disappear from the last window when scan completes
 /// This is a regression test for the behavior where rejected candidates should
 /// disappear as soon as all candidates finish processing, not just when entering

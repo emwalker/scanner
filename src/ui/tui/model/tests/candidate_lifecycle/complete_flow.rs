@@ -3,8 +3,6 @@ use crate::ui::{ProgressEvent, ProgressEventType};
 use std::time::Instant;
 
 /// Test that candidates progress through all expected states
-
-/// Test that candidates progress through all expected states
 #[test]
 fn test_complete_candidate_lifecycle() {
     let mut model = Model::new();

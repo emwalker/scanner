@@ -36,6 +36,7 @@ fn test_band_scanning_windows() {
 }
 
 #[test]
+#[allow(clippy::field_reassign_with_default)]
 fn test_collect_peaks_from_mock_source() {
     let mut config = ScanningConfig::default();
     config.duration = 1;

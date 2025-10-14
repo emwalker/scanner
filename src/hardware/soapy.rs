@@ -276,6 +276,101 @@ impl DeviceTrait for SoapyDevice {
     }
 }
 
+/// Reset SoapySDR module state by unloading and reloading all modules.
+/// This clears any stale mutex locks from previous runs.
+pub fn reset_soapysdr_state() {
+    unsafe {
+        soapysdr_sys::SoapySDR_unloadModules();
+        soapysdr_sys::SoapySDR_loadModules();
+    }
+}
+
+/// Cleanup SoapySDR state on shutdown by unloading all modules.
+pub fn cleanup_soapysdr_state() {
+    unsafe {
+        soapysdr_sys::SoapySDR_unloadModules();
+    }
+}
+
+pub struct SoapyStreamingDevice {
+    device: soapysdr::Device,
+    device_id: DeviceId,
+    channels: usize,
+    active_streams: std::collections::HashMap<usize, soapysdr::RxStream<Complex>>,
+}
+
+impl super::streaming::StreamingDevice for SoapyStreamingDevice {
+    fn device_id(&self) -> &DeviceId {
+        &self.device_id
+    }
+
+    fn channels(&self) -> usize {
+        self.channels
+    }
+
+    fn configure_rx(
+        &mut self,
+        channel: usize,
+        freq: f64,
+        rate: f64,
+        gain: f64,
+    ) -> Result<super::streaming::ActualConfig> {
+        if self
+            .device
+            .has_gain_mode(soapysdr::Direction::Rx, channel)?
+        {
+            self.device
+                .set_gain_mode(soapysdr::Direction::Rx, channel, false)?;
+        }
+
+        self.device
+            .set_sample_rate(soapysdr::Direction::Rx, channel, rate)?;
+        self.device
+            .set_frequency(soapysdr::Direction::Rx, channel, freq, "")?;
+        self.device
+            .set_gain(soapysdr::Direction::Rx, channel, gain)?;
+
+        let actual_rate = self.device.sample_rate(soapysdr::Direction::Rx, channel)?;
+        let actual_freq = self.device.frequency(soapysdr::Direction::Rx, channel)?;
+        let actual_gain = self.device.gain(soapysdr::Direction::Rx, channel)?;
+
+        Ok(super::streaming::ActualConfig {
+            freq_hz: actual_freq,
+            sample_rate: actual_rate,
+            gain_db: actual_gain,
+        })
+    }
+
+    fn start_stream(&mut self, channel: usize) -> Result<()> {
+        let mut stream = self.device.rx_stream::<Complex>(&[channel])?;
+        stream.activate(None)?;
+        self.active_streams.insert(channel, stream);
+        Ok(())
+    }
+
+    fn read_samples(
+        &mut self,
+        channel: usize,
+        buffer: &mut [Complex],
+        timeout_us: i64,
+    ) -> Result<usize> {
+        let stream = self
+            .active_streams
+            .get_mut(&channel)
+            .ok_or_else(|| ScannerError::Custom(format!("Channel {} not streaming", channel)))?;
+
+        let n = stream.read(&mut [buffer], timeout_us)?;
+        Ok(n)
+    }
+
+    fn stop_stream(&mut self, channel: usize) -> Result<()> {
+        if let Some(mut stream) = self.active_streams.remove(&channel) {
+            stream.deactivate(None)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,100 +489,5 @@ mod tests {
                 expected_id
             );
         }
-    }
-}
-
-/// Reset SoapySDR module state by unloading and reloading all modules.
-/// This clears any stale mutex locks from previous runs.
-pub fn reset_soapysdr_state() {
-    unsafe {
-        soapysdr_sys::SoapySDR_unloadModules();
-        soapysdr_sys::SoapySDR_loadModules();
-    }
-}
-
-/// Cleanup SoapySDR state on shutdown by unloading all modules.
-pub fn cleanup_soapysdr_state() {
-    unsafe {
-        soapysdr_sys::SoapySDR_unloadModules();
-    }
-}
-
-pub struct SoapyStreamingDevice {
-    device: soapysdr::Device,
-    device_id: DeviceId,
-    channels: usize,
-    active_streams: std::collections::HashMap<usize, soapysdr::RxStream<Complex>>,
-}
-
-impl super::streaming::StreamingDevice for SoapyStreamingDevice {
-    fn device_id(&self) -> &DeviceId {
-        &self.device_id
-    }
-
-    fn channels(&self) -> usize {
-        self.channels
-    }
-
-    fn configure_rx(
-        &mut self,
-        channel: usize,
-        freq: f64,
-        rate: f64,
-        gain: f64,
-    ) -> Result<super::streaming::ActualConfig> {
-        if self
-            .device
-            .has_gain_mode(soapysdr::Direction::Rx, channel)?
-        {
-            self.device
-                .set_gain_mode(soapysdr::Direction::Rx, channel, false)?;
-        }
-
-        self.device
-            .set_sample_rate(soapysdr::Direction::Rx, channel, rate)?;
-        self.device
-            .set_frequency(soapysdr::Direction::Rx, channel, freq, "")?;
-        self.device
-            .set_gain(soapysdr::Direction::Rx, channel, gain)?;
-
-        let actual_rate = self.device.sample_rate(soapysdr::Direction::Rx, channel)?;
-        let actual_freq = self.device.frequency(soapysdr::Direction::Rx, channel)?;
-        let actual_gain = self.device.gain(soapysdr::Direction::Rx, channel)?;
-
-        Ok(super::streaming::ActualConfig {
-            freq_hz: actual_freq,
-            sample_rate: actual_rate,
-            gain_db: actual_gain,
-        })
-    }
-
-    fn start_stream(&mut self, channel: usize) -> Result<()> {
-        let mut stream = self.device.rx_stream::<Complex>(&[channel])?;
-        stream.activate(None)?;
-        self.active_streams.insert(channel, stream);
-        Ok(())
-    }
-
-    fn read_samples(
-        &mut self,
-        channel: usize,
-        buffer: &mut [Complex],
-        timeout_us: i64,
-    ) -> Result<usize> {
-        let stream = self
-            .active_streams
-            .get_mut(&channel)
-            .ok_or_else(|| ScannerError::Custom(format!("Channel {} not streaming", channel)))?;
-
-        let n = stream.read(&mut [buffer], timeout_us)?;
-        Ok(n)
-    }
-
-    fn stop_stream(&mut self, channel: usize) -> Result<()> {
-        if let Some(mut stream) = self.active_streams.remove(&channel) {
-            stream.deactivate(None)?;
-        }
-        Ok(())
     }
 }

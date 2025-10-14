@@ -180,6 +180,69 @@ impl DeviceTrait for MockDevice {
     }
 }
 
+pub struct MockStreamingDevice {
+    device_id: DeviceId,
+    sample_rate: f64,
+    phase: f32,
+}
+
+impl super::streaming::StreamingDevice for MockStreamingDevice {
+    fn device_id(&self) -> &DeviceId {
+        &self.device_id
+    }
+
+    fn channels(&self) -> usize {
+        1
+    }
+
+    fn configure_rx(
+        &mut self,
+        _channel: usize,
+        freq: f64,
+        rate: f64,
+        gain: f64,
+    ) -> Result<super::streaming::ActualConfig> {
+        self.sample_rate = rate;
+        Ok(super::streaming::ActualConfig {
+            freq_hz: freq,
+            sample_rate: rate,
+            gain_db: gain,
+        })
+    }
+
+    fn start_stream(&mut self, _channel: usize) -> Result<()> {
+        self.phase = 0.0;
+        Ok(())
+    }
+
+    fn read_samples(
+        &mut self,
+        _channel: usize,
+        buffer: &mut [Complex],
+        _timeout_us: i64,
+    ) -> Result<usize> {
+        let freq = 1000.0;
+        let phase_inc = 2.0 * PI * freq / self.sample_rate as f32;
+
+        for sample in buffer.iter_mut() {
+            *sample = Complex::new(self.phase.cos(), self.phase.sin());
+            self.phase += phase_inc;
+            if self.phase > 2.0 * PI {
+                self.phase -= 2.0 * PI;
+            }
+        }
+
+        let duration_ms = (buffer.len() as f64 / self.sample_rate) * 1000.0;
+        std::thread::sleep(std::time::Duration::from_millis(duration_ms as u64));
+
+        Ok(buffer.len())
+    }
+
+    fn stop_stream(&mut self, _channel: usize) -> Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,68 +326,5 @@ mod tests {
         let raw = device.into_inner();
         let device_id = raw.downcast::<DeviceId>().unwrap();
         assert_eq!(*device_id, DeviceId::from_serial("mock", "001"));
-    }
-}
-
-pub struct MockStreamingDevice {
-    device_id: DeviceId,
-    sample_rate: f64,
-    phase: f32,
-}
-
-impl super::streaming::StreamingDevice for MockStreamingDevice {
-    fn device_id(&self) -> &DeviceId {
-        &self.device_id
-    }
-
-    fn channels(&self) -> usize {
-        1
-    }
-
-    fn configure_rx(
-        &mut self,
-        _channel: usize,
-        freq: f64,
-        rate: f64,
-        gain: f64,
-    ) -> Result<super::streaming::ActualConfig> {
-        self.sample_rate = rate;
-        Ok(super::streaming::ActualConfig {
-            freq_hz: freq,
-            sample_rate: rate,
-            gain_db: gain,
-        })
-    }
-
-    fn start_stream(&mut self, _channel: usize) -> Result<()> {
-        self.phase = 0.0;
-        Ok(())
-    }
-
-    fn read_samples(
-        &mut self,
-        _channel: usize,
-        buffer: &mut [Complex],
-        _timeout_us: i64,
-    ) -> Result<usize> {
-        let freq = 1000.0;
-        let phase_inc = 2.0 * PI * freq / self.sample_rate as f32;
-
-        for sample in buffer.iter_mut() {
-            *sample = Complex::new(self.phase.cos(), self.phase.sin());
-            self.phase += phase_inc;
-            if self.phase > 2.0 * PI {
-                self.phase -= 2.0 * PI;
-            }
-        }
-
-        let duration_ms = (buffer.len() as f64 / self.sample_rate) * 1000.0;
-        std::thread::sleep(std::time::Duration::from_millis(duration_ms as u64));
-
-        Ok(buffer.len())
-    }
-
-    fn stop_stream(&mut self, _channel: usize) -> Result<()> {
-        Ok(())
     }
 }

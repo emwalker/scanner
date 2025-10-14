@@ -2,8 +2,6 @@ use crate::ui::tui::model::{CandidateStatus, Model, UiMode};
 use crate::ui::{ProgressEvent, ProgressEventType};
 use std::time::Instant;
 
-/// Test quit functionality
-
 /// Regression test: Navigating between windows with arrow keys should not stop playback
 /// This tests the fix for the bug where a playing station would lose its Playing status
 /// when the user navigated to a different window or candidate using arrow keys.

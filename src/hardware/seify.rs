@@ -8,7 +8,7 @@
 //!
 //! This stub will be implemented in Phase 2 (2025-2026) when Seify v1.0 is released.
 
-use super::{Backend, DeviceError, DeviceErrorKind, DeviceId, DeviceInfo, DeviceTrait};
+use super::{Backend, DeviceError, DeviceErrorKind, DeviceInfo, DeviceTrait};
 use crate::core::types::Result;
 
 /// Seify backend (native Rust)

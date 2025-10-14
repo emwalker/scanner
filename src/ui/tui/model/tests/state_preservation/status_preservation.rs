@@ -2,8 +2,6 @@ use crate::ui::tui::model::{CandidateStatus, Model};
 use crate::ui::{ProgressEvent, ProgressEventType};
 use std::time::Instant;
 
-/// Test quit functionality
-
 /// Test AudioAnalysisCompleted event handling preserves Signal status
 #[test]
 fn test_audio_analysis_completed_preserves_signal() {

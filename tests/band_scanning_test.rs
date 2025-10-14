@@ -7,8 +7,10 @@ use tracing::debug;
 /// Test the band scanning window calculation logic in isolation
 #[test]
 fn test_band_scanning_window_calculation() {
-    let mut config = ScanningConfig::default();
-    config.samp_rate = 1_000_000.0; // 1 MHz
+    let config = ScanningConfig {
+        samp_rate: 1_000_000.0, // 1 MHz
+        ..Default::default()
+    };
 
     let band = Band::Fm;
     let windows = band.windows(config.samp_rate, config.signal_processing.window_overlap);
@@ -206,6 +208,7 @@ fn test_freq_xlating_fir_dc_signal_retention() {
 
 /// Test peak detection with synthetic signal
 #[test]
+#[allow(clippy::field_reassign_with_default)]
 fn test_peak_detection_with_synthetic_signal() {
     // Create synthetic signal source with known frequency
     let mut sample_source = MockSampleSource::new(
