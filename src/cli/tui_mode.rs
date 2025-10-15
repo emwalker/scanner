@@ -67,7 +67,6 @@ pub fn start_tui(
     shutdown_coordinator: Arc<ShutdownCoordinator>,
     theme_name: ThemeName,
     command_sender: mpsc::Sender<ScannerCommand>,
-    cached_devices: Vec<crate::hardware::DeviceInfo>,
 ) -> thread::JoinHandle<std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>> {
     let theme = create_theme(&theme_name);
 
@@ -78,7 +77,6 @@ pub fn start_tui(
             theme,
             theme_name,
         )
-        .with_cached_devices(cached_devices)
         .with_command_sender(command_sender);
         tui_display.run()
     })
@@ -94,46 +92,44 @@ pub fn create_logger(args: &ScanArgs) -> Arc<dyn Logger + Send + Sync> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+pub struct TuiRunContext {
+    pub config: ScanningConfig,
+    pub stations: Option<String>,
+    pub shutdown_coordinator: Arc<ShutdownCoordinator>,
+    pub pool: Arc<Pool>,
+    pub scheduler: Arc<TaskScheduler>,
+    pub logger: Arc<dyn Logger + Send + Sync>,
+}
+
 pub fn run_with_tui(
-    config: ScanningConfig,
-    stations: Option<String>,
-    shutdown_coordinator: Arc<ShutdownCoordinator>,
-    shared_pool: Arc<Pool>,
+    context: TuiRunContext,
     tui_context: TuiContext,
     tui_handle: thread::JoinHandle<
         std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>,
     >,
-    logger: Arc<dyn Logger + Send + Sync>,
-    discovered_devices: Vec<crate::hardware::DeviceInfo>,
 ) -> Result<()> {
     let console_writer = Arc::new(DefaultConsoleWriter);
     let backend = Arc::new(crate::hardware::Soapy);
 
-    let scheduler = Arc::new(TaskScheduler::new(
-        shared_pool.clone(),
-        shutdown_coordinator.clone(),
-    ));
-
     let main_thread = MainThread::new_with_progress(
-        Arc::new(config),
+        Arc::new(context.config),
         console_writer,
-        logger,
+        context.logger,
         backend,
         tui_context.progress_reporter,
-        shutdown_coordinator.clone(),
-        shared_pool.clone(),
-        scheduler,
-        discovered_devices,
+        context.shutdown_coordinator.clone(),
+        context.pool.clone(),
+        context.scheduler,
+        Vec::new(),
     )?
     .with_command_receiver(tui_context.command_receiver)
     .with_tui_event_sender(tui_context.tui_event_sender);
 
-    let main_handle = thread::spawn(move || main_thread.run(stations));
+    let main_handle = thread::spawn(move || main_thread.run(context.stations));
 
     let _ = tui_handle.join();
-    shutdown_coordinator.shutdown();
-    shared_pool.shutdown();
+    context.shutdown_coordinator.shutdown();
+    context.pool.shutdown();
 
     match main_handle.join() {
         Ok(r) => r?,

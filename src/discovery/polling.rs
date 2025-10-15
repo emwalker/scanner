@@ -1,60 +1,77 @@
 use super::{
-    common,
-    enumerator::MultiEnumerator,
     service::{Event, Service},
+    tracker::DeviceTracker,
 };
-use crate::hardware;
+use crate::hardware::pool::Pool;
+use crate::hardware::types::Backend;
+use crate::task::{DeviceEnumerationTask, Task, TaskScheduler};
 use std::collections::HashMap;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 pub struct Polling {
-    enumerator: MultiEnumerator,
-    known_devices: HashMap<hardware::DeviceId, hardware::DeviceInfo>,
+    scheduler: Arc<TaskScheduler>,
+    pool: Arc<Pool>,
+    backends: Vec<Backend>,
     poll_interval: Duration,
+    trackers: HashMap<Backend, Arc<Mutex<DeviceTracker>>>,
 }
 
 impl Polling {
-    pub fn new(enumerator: MultiEnumerator, poll_interval: Duration) -> Self {
+    pub fn new(
+        scheduler: Arc<TaskScheduler>,
+        pool: Arc<Pool>,
+        backends: Vec<Backend>,
+        poll_interval: Duration,
+    ) -> Self {
+        let trackers = backends
+            .iter()
+            .map(|backend| (backend.clone(), Arc::new(Mutex::new(DeviceTracker::new()))))
+            .collect();
+
         Self {
-            enumerator,
-            known_devices: HashMap::new(),
+            scheduler,
+            pool,
+            backends,
             poll_interval,
+            trackers,
         }
     }
 
-    fn rescan_devices(&mut self, event_tx: &mpsc::Sender<Event>) -> Result<(), ()> {
-        let devices = self.enumerator.enumerate();
-        let mut current_devices = HashMap::new();
+    fn submit_enumeration_tasks(&mut self, event_tx: &mpsc::Sender<Event>) -> Result<(), ()> {
+        for backend in &self.backends {
+            debug!(backend = ?backend, "Submitting device enumeration task");
 
-        for device in devices {
-            current_devices.insert(device.id.clone(), device);
+            let tracker = self
+                .trackers
+                .get(backend)
+                .cloned()
+                .expect("Tracker should exist for backend");
+
+            let task = DeviceEnumerationTask::with_tracker(
+                backend.clone(),
+                self.pool.clone(),
+                event_tx.clone(),
+                tracker,
+            );
+
+            self.scheduler
+                .submit(Task::DeviceEnumeration(task))
+                .map_err(|e| {
+                    debug!(error = ?e, "Failed to submit enumeration task");
+                })?;
         }
 
-        let (added, removed) = common::detect_changes(&self.known_devices, &current_devices);
-
-        for device in added {
-            debug!(tuner_id = ?device.id, "new device detected");
-            event_tx
-                .send(Event::Added(device.clone()))
-                .map_err(|_| ())?;
-        }
-
-        for id in removed {
-            debug!(tuner_id = ?id, "device removed");
-            event_tx.send(Event::Removed(id.clone())).map_err(|_| ())?;
-        }
-
-        self.known_devices = current_devices;
         Ok(())
     }
 }
 
 impl Service for Polling {
     fn run(&mut self, event_tx: mpsc::Sender<Event>, cancel: CancellationToken) {
-        if self.rescan_devices(&event_tx).is_err() {
+        if self.submit_enumeration_tasks(&event_tx).is_err() {
             return;
         }
 
@@ -63,7 +80,6 @@ impl Service for Polling {
                 break;
             }
 
-            // Sleep in small chunks to ensure responsive shutdown
             let sleep_chunk = Duration::from_millis(100);
             let mut remaining = self.poll_interval;
             while remaining > Duration::ZERO {
@@ -79,7 +95,7 @@ impl Service for Polling {
                 break;
             }
 
-            if self.rescan_devices(&event_tx).is_err() {
+            if self.submit_enumeration_tasks(&event_tx).is_err() {
                 break;
             }
         }

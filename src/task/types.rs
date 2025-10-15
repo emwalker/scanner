@@ -6,26 +6,56 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+/// Controls task execution flow
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskContinuation {
+    /// Task completed successfully
+    Complete,
+
+    /// Task has more work - resubmit to allow other tasks to run
+    Resubmit,
+
+    /// Task has more work - resubmit after delaying for specified duration
+    /// The delay allows other tasks to acquire resources (e.g., backend semaphore)
+    /// before this task reacquires them
+    ResubmitAfter(Duration),
+}
+
 /// Task wrapper using enum dispatch (faster than dyn trait)
 #[allow(dead_code)]
 pub enum Task {
-    ScanBand(super::ScanBandTask),
+    ScanBand(Box<super::ScanBandTask>),
     ScanStations(super::ScanStationsTask),
     Audio(super::AudioTask),
     DeviceEnumeration(super::DeviceEnumerationTask),
+    #[cfg(test)]
+    Mock(Box<dyn MockTaskTrait>),
+}
+
+#[cfg(test)]
+pub trait MockTaskTrait: Send {
+    fn backend(&self) -> Backend;
+    fn run(&mut self, shutdown: CancellationToken) -> Result<TaskContinuation>;
+    fn description(&self) -> String;
+    fn on_start(&mut self);
+    fn on_complete(&mut self);
+    fn on_error(&mut self, error: &ScannerError);
 }
 
 impl Task {
     /// Run the task with shutdown signal
     ///
     /// All tasks have the same signature - they manage their own resource acquisition.
+    /// Returns TaskContinuation to enable cooperative yielding.
     #[allow(dead_code)]
-    pub fn run(&mut self, shutdown: CancellationToken) -> Result<()> {
+    pub fn run(&mut self, shutdown: CancellationToken) -> Result<TaskContinuation> {
         match self {
             Task::ScanBand(t) => t.run(shutdown),
             Task::ScanStations(t) => t.run(shutdown),
             Task::Audio(t) => t.run(shutdown),
             Task::DeviceEnumeration(t) => t.run(shutdown),
+            #[cfg(test)]
+            Task::Mock(t) => t.run(shutdown),
         }
     }
 
@@ -37,6 +67,8 @@ impl Task {
             Task::ScanStations(t) => t.backend(),
             Task::Audio(t) => t.backend(),
             Task::DeviceEnumeration(t) => t.backend().clone(),
+            #[cfg(test)]
+            Task::Mock(t) => t.backend(),
         }
     }
 
@@ -48,6 +80,8 @@ impl Task {
             Task::ScanStations(_) => TaskType::ScanningStations,
             Task::Audio(_) => TaskType::Audio,
             Task::DeviceEnumeration(_) => TaskType::DeviceEnumeration,
+            #[cfg(test)]
+            Task::Mock(_) => TaskType::Mock,
         }
     }
 
@@ -59,6 +93,8 @@ impl Task {
             Task::ScanStations(t) => t.description(),
             Task::Audio(t) => t.description(),
             Task::DeviceEnumeration(t) => t.description(),
+            #[cfg(test)]
+            Task::Mock(t) => t.description(),
         }
     }
 
@@ -70,6 +106,8 @@ impl Task {
             Task::ScanStations(t) => t.on_start(),
             Task::Audio(t) => t.on_start(),
             Task::DeviceEnumeration(t) => t.on_start(),
+            #[cfg(test)]
+            Task::Mock(t) => t.on_start(),
         }
     }
 
@@ -81,6 +119,8 @@ impl Task {
             Task::ScanStations(t) => t.on_complete(),
             Task::Audio(t) => t.on_complete(),
             Task::DeviceEnumeration(t) => t.on_complete(),
+            #[cfg(test)]
+            Task::Mock(t) => t.on_complete(),
         }
     }
 
@@ -92,6 +132,8 @@ impl Task {
             Task::ScanStations(t) => t.on_error(error),
             Task::Audio(t) => t.on_error(error),
             Task::DeviceEnumeration(t) => t.on_error(error),
+            #[cfg(test)]
+            Task::Mock(t) => t.on_error(error),
         }
     }
 }
@@ -104,6 +146,8 @@ pub enum TaskType {
     ScanningStations,
     Audio,
     DeviceEnumeration,
+    #[cfg(test)]
+    Mock,
 }
 
 /// Task priority for scheduling

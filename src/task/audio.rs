@@ -6,6 +6,7 @@ use crate::core::types::{ModulationType, Result, ScannerError, ScanningConfig, S
 use crate::hardware::pool::{Pool, Segment};
 use crate::hardware::types::Backend;
 use crate::shutdown::ShutdownCoordinator;
+use crate::task::TaskContinuation;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio_util::sync::CancellationToken;
@@ -41,15 +42,15 @@ impl AudioTask {
     }
 
     #[allow(dead_code)]
-    pub fn run(&mut self, shutdown: CancellationToken) -> Result<()> {
+    pub fn run(&mut self, shutdown: CancellationToken) -> Result<TaskContinuation> {
         if shutdown.is_cancelled() {
-            return Ok(());
+            return Ok(TaskContinuation::Complete);
         }
 
         let mut audio_session = AudioSession::new(&self.config, self.shutdown_coordinator.clone())?;
 
         if shutdown.is_cancelled() {
-            return Ok(());
+            return Ok(TaskContinuation::Complete);
         }
 
         let segment = Segment::new(
@@ -77,7 +78,7 @@ impl AudioTask {
             std::thread::sleep(Duration::from_millis(100));
         }
 
-        Ok(())
+        Ok(TaskContinuation::Complete)
     }
 
     #[allow(dead_code)]

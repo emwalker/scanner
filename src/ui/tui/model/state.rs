@@ -40,7 +40,6 @@ pub struct Model {
     pub tuners: BTreeSet<TunerInfo>,
     pub pool_info: HashMap<TunerId, crate::hardware::pool::TunerStatus>,
     pub pool_status: Option<crate::hardware::pool::PoolStatus>,
-    pub cached_devices: HashMap<crate::hardware::DeviceId, crate::hardware::DeviceInfo>,
     pub devices: HashMap<crate::hardware::DeviceId, crate::hardware::DeviceInfo>,
 }
 
@@ -66,39 +65,7 @@ impl Model {
             tuners: BTreeSet::new(),
             pool_info: HashMap::new(),
             pool_status: None,
-            cached_devices: HashMap::new(),
             devices: HashMap::new(),
         }
-    }
-
-    pub fn with_cached_devices(mut self, devices: Vec<crate::hardware::DeviceInfo>) -> Self {
-        use tracing::debug;
-        debug!(
-            device_count = devices.len(),
-            "Initializing model with cached devices"
-        );
-        for device in &devices {
-            debug!(
-                device_id = ?device.id,
-                label = %device.label,
-                tuner_count = device.tuners.len(),
-                "Caching device"
-            );
-
-            for tuner in &device.tuners {
-                let tuner_info = super::TunerInfo {
-                    id: tuner.id.clone(),
-                    label: tuner.label.clone(),
-                };
-                self.tuners.insert(tuner_info);
-                debug!(
-                    tuner_id = ?tuner.id,
-                    label = %tuner.label,
-                    "Populating tuner from cached device"
-                );
-            }
-        }
-        self.cached_devices = devices.into_iter().map(|d| (d.id.clone(), d)).collect();
-        self
     }
 }

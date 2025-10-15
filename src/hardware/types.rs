@@ -71,7 +71,11 @@ impl FromStr for Backend {
 ///
 /// Identifies a physical SDR device. Multi-tuner devices (like SDRplay RSPduo)
 /// have a single DeviceId but multiple tuners (channels) within that device.
-#[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
+///
+/// Equality and hashing are based on serial number when available, so the same
+/// physical device discovered via different backends (USB vs Soapy) will have
+/// equal DeviceIds.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum DeviceId {
     /// Driver-based identification (SoapySDR drivers)
     Driver {
@@ -154,6 +158,50 @@ impl DeviceId {
 impl fmt::Display for DeviceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
+    }
+}
+
+/// Custom equality based on serial number for cross-backend device matching
+impl PartialEq for DeviceId {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (DeviceId::Driver { serial: s1, .. }, DeviceId::Driver { serial: s2, .. }) => s1 == s2,
+            (DeviceId::Usb { serial: s1, .. }, DeviceId::Usb { serial: s2, .. }) => s1 == s2,
+            (DeviceId::Driver { serial: s1, .. }, DeviceId::Usb { serial: s2, .. })
+            | (DeviceId::Usb { serial: s1, .. }, DeviceId::Driver { serial: s2, .. }) => s1 == s2,
+        }
+    }
+}
+
+impl Eq for DeviceId {}
+
+/// Custom hash based on serial number for cross-backend device matching
+impl std::hash::Hash for DeviceId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            DeviceId::Driver { serial, .. } => serial.hash(state),
+            DeviceId::Usb { serial, .. } => serial.hash(state),
+        }
+    }
+}
+
+/// Custom ordering based on serial number
+impl PartialOrd for DeviceId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DeviceId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (DeviceId::Driver { serial: s1, .. }, DeviceId::Driver { serial: s2, .. }) => {
+                s1.cmp(s2)
+            }
+            (DeviceId::Usb { serial: s1, .. }, DeviceId::Usb { serial: s2, .. }) => s1.cmp(s2),
+            (DeviceId::Driver { serial: s1, .. }, DeviceId::Usb { serial: s2, .. })
+            | (DeviceId::Usb { serial: s1, .. }, DeviceId::Driver { serial: s2, .. }) => s1.cmp(s2),
+        }
     }
 }
 

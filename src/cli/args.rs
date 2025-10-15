@@ -102,10 +102,6 @@ pub struct ScanArgs {
     #[arg(long, help = "SDR gain in dB (0 to 48 for SDRplay, default 24)")]
     pub gain: Option<f64>,
 
-    /// Run without TUI interface (default: false, show TUI)
-    #[arg(long)]
-    pub headless: bool,
-
     /// Output format: JSON
     #[arg(long, group = "output_format")]
     pub json: bool,

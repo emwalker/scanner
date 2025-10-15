@@ -59,17 +59,14 @@ pub fn handle_enumerate_command(
 
     debug!("Parent connected, enumerating devices");
 
+    use crate::hardware::Usb;
     use crate::hardware::types::Backend as BackendEnum;
 
     let backend_enum: BackendEnum = backend_name.parse().unwrap();
     let backend: Box<dyn Backend> = match backend_enum {
         BackendEnum::Soapy => Box::new(Soapy),
         BackendEnum::Mock => Box::new(Mock),
-        BackendEnum::Usb => {
-            return Err(ScannerError::Custom(
-                "USB backend not supported for enumeration".to_string(),
-            ));
-        }
+        BackendEnum::Usb => Box::new(Usb::new()),
         BackendEnum::Unknown(name) => {
             return Err(ScannerError::Custom(format!("Unknown backend: {}", name)));
         }
@@ -526,4 +523,53 @@ fn main_loop(
         .map_err(|_| ScannerError::Custom("Data thread panicked".to_string()))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn test_usb_backend_enumeration_completes() {
+        let socket_path = "/tmp/test-usb-enum-regression.sock";
+        let _ = std::fs::remove_file(socket_path);
+
+        let server_thread =
+            thread::spawn(move || handle_enumerate_command("usb", socket_path, None));
+
+        thread::sleep(Duration::from_millis(100));
+
+        let stream = UnixStream::connect(socket_path).expect("Failed to connect to worker socket");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut channel = crate::ipc::UnixControlChannel::new(stream);
+
+        let message = channel.recv().expect("Worker should send a response");
+
+        match message {
+            ControlMessage::DeviceList { devices } => {
+                println!("USB enumeration succeeded with {} devices", devices.len());
+            }
+            ControlMessage::Error { message, .. } => {
+                panic!(
+                    "USB enumeration should not return error (regression: worker explicitly rejected USB backend). Error: {}",
+                    message
+                );
+            }
+            _ => {
+                panic!("Unexpected message type from worker");
+            }
+        }
+
+        server_thread
+            .join()
+            .expect("Worker thread should complete")
+            .expect("Worker should not return error");
+
+        let _ = std::fs::remove_file(socket_path);
+    }
 }

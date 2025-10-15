@@ -1,73 +1,30 @@
-use crate::core::types::{Result, ScannerError};
+use crate::core::types::Result;
 use crate::discovery::{self, DiscoveryMode};
-use crate::hardware::pool::{AddDeviceResult, Pool, PoolFilter, TuningMode};
+use crate::hardware::pool::Pool;
 use crate::shutdown::ShutdownCoordinator;
 use crate::ui::TuiEvent;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
+use tracing::debug;
 
 pub struct DiscoverySetup {
     pub discovery_handle: thread::JoinHandle<()>,
     pub discovery_forwarder: thread::JoinHandle<()>,
 }
 
-pub fn initialize_pool_with_device(
-    tuner_id: &crate::hardware::pool::TunerId,
-    backend: crate::hardware::types::Backend,
-    parent_log_file: Option<String>,
-) -> Result<Arc<Pool>> {
-    let filter = PoolFilter::new()
-        .with_driver("sdrplay")
-        .with_mode(TuningMode::SingleTuner);
-    let pool = Pool::new(filter, parent_log_file);
-    let pool = Arc::new(pool);
-
-    let capabilities = crate::hardware::Capabilities::for_device(&tuner_id.device_id);
-    let result = pool.add_device_metadata(tuner_id.device_id.clone(), capabilities, backend);
-
-    match result {
-        AddDeviceResult::Added {
-            device_id,
-            tuner_count,
-        } => {
-            tracing::debug!(
-                device_id = ?device_id,
-                tuner_count = tuner_count,
-                "Initial device added to pool"
-            );
-        }
-        AddDeviceResult::FilteredOut { device_id, reason } => {
-            return Err(ScannerError::DeviceFilteredOut { device_id, reason });
-        }
-        AddDeviceResult::ShutdownMode => {
-            return Err(ScannerError::PoolShutdown);
-        }
-        AddDeviceResult::PoolBusy => {
-            return Err(ScannerError::PoolLockTimeout);
-        }
-    }
-
-    Ok(pool)
-}
-
-/// Start discovery service with pre-enumerated devices
-///
-/// SDRplay driver limitation: Opening an SDRplay device prevents subsequent enumerations
-/// from seeing any SDRplay devices, even in separate processes. To work around this:
-/// 1. Enumerate all devices once at startup before opening any devices
-/// 2. Send those cached devices to the TUI immediately
-/// 3. Discovery service continues monitoring for USB hotplug events for other device types
-///
-/// See docs/research/2025-10-process-safety.md for details.
+/// Start discovery service that monitors for device add/remove events
 pub fn start_discovery_service(
     tui_event_sender: mpsc::Sender<TuiEvent>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
-    initial_devices: Vec<crate::hardware::DeviceInfo>,
-    parent_log_file: Option<String>,
+    scheduler: Arc<crate::task::TaskScheduler>,
+    pool: Arc<Pool>,
 ) -> Result<DiscoverySetup> {
-    let backends = vec![];
-    let mut discovery_service = discovery::create(backends, DiscoveryMode::Auto, parent_log_file);
+    let backends = vec![
+        crate::hardware::types::Backend::Usb,
+        crate::hardware::types::Backend::Soapy,
+    ];
+    let mut discovery_service = discovery::create(backends, DiscoveryMode::Auto, scheduler, pool);
 
     let (discovery_sender, discovery_receiver) = mpsc::channel();
 
@@ -76,36 +33,40 @@ pub fn start_discovery_service(
         let shutdown = shutdown_coordinator.clone();
 
         thread::spawn(move || {
-            // Send pre-enumerated devices immediately (workaround for SDRplay limitation)
-            for device in initial_devices {
+            debug!("Discovery forwarder thread started");
+            loop {
                 if shutdown.is_shutdown() {
-                    return;
+                    debug!("Discovery forwarder shutting down");
+                    break;
                 }
 
-                let tui_event = TuiEvent::TunerAdded(device);
-                if tui_sender.send(tui_event).is_err() {
-                    return;
-                }
-            }
+                match discovery_receiver.recv_timeout(std::time::Duration::from_millis(100)) {
+                    Ok(event) => {
+                        debug!(event_type = ?std::mem::discriminant(&event), "Discovery forwarder received event");
 
-            // Continue monitoring for hotplug events
-            while let Ok(event) = discovery_receiver.recv() {
-                if shutdown.is_shutdown() {
-                    return;
-                }
-
-                match &event {
-                    discovery::Event::Added(device_info) => {
-                        let tui_event = TuiEvent::TunerAdded(device_info.clone());
-                        if tui_sender.send(tui_event).is_err() {
-                            return;
+                        match &event {
+                            discovery::Event::Added(device_info) => {
+                                debug!(device_id = ?device_info.id, "Forwarding TunerAdded event to TUI");
+                                let tui_event = TuiEvent::TunerAdded(device_info.clone());
+                                if tui_sender.send(tui_event).is_err() {
+                                    debug!("Failed to send TunerAdded to TUI (channel closed)");
+                                    return;
+                                }
+                            }
+                            discovery::Event::Removed(device_id) => {
+                                debug!(device_id = ?device_id, "Forwarding TunerRemoved event to TUI");
+                                let tui_event = TuiEvent::TunerRemoved(device_id.clone());
+                                if tui_sender.send(tui_event).is_err() {
+                                    debug!("Failed to send TunerRemoved to TUI (channel closed)");
+                                    return;
+                                }
+                            }
                         }
                     }
-                    discovery::Event::Removed(device_id) => {
-                        let tui_event = TuiEvent::TunerRemoved(device_id.clone());
-                        if tui_sender.send(tui_event).is_err() {
-                            return;
-                        }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        debug!("Discovery channel disconnected");
+                        break;
                     }
                 }
             }

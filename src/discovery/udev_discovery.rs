@@ -1,13 +1,15 @@
 use super::{
-    common,
-    enumerator::MultiEnumerator,
     polling::Polling,
     service::{Event, Service},
+    tracker::DeviceTracker,
 };
-use crate::hardware;
+use crate::hardware::pool::Pool;
+use crate::hardware::types::Backend;
+use crate::task::{DeviceEnumerationTask, Task, TaskScheduler};
 use nix::poll::{PollFd, PollFlags, poll};
 use std::collections::HashMap;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -16,43 +18,53 @@ use udev::{EventType, MonitorBuilder};
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(150);
 
 pub struct Udev {
-    enumerator: MultiEnumerator,
-    known_devices: HashMap<hardware::DeviceId, hardware::DeviceInfo>,
+    scheduler: Arc<TaskScheduler>,
+    pool: Arc<Pool>,
+    backends: Vec<Backend>,
     pending_rescan: bool,
+    trackers: HashMap<Backend, Arc<Mutex<DeviceTracker>>>,
 }
 
 impl Udev {
-    pub fn new(enumerator: MultiEnumerator) -> Self {
+    pub fn new(scheduler: Arc<TaskScheduler>, pool: Arc<Pool>, backends: Vec<Backend>) -> Self {
+        let trackers = backends
+            .iter()
+            .map(|backend| (backend.clone(), Arc::new(Mutex::new(DeviceTracker::new()))))
+            .collect();
+
         Self {
-            enumerator,
-            known_devices: HashMap::new(),
+            scheduler,
+            pool,
+            backends,
             pending_rescan: false,
+            trackers,
         }
     }
 
-    fn rescan_devices(&mut self, event_tx: &mpsc::Sender<Event>) -> Result<(), ()> {
-        let devices = self.enumerator.enumerate();
-        let mut current_devices = HashMap::new();
+    fn submit_enumeration_tasks(&mut self, event_tx: &mpsc::Sender<Event>) -> Result<(), ()> {
+        for backend in &self.backends {
+            debug!(backend = ?backend, "Submitting device enumeration task");
 
-        for device in devices {
-            current_devices.insert(device.id.clone(), device);
+            let tracker = self
+                .trackers
+                .get(backend)
+                .cloned()
+                .expect("Tracker should exist for backend");
+
+            let task = DeviceEnumerationTask::with_tracker(
+                backend.clone(),
+                self.pool.clone(),
+                event_tx.clone(),
+                tracker,
+            );
+
+            self.scheduler
+                .submit(Task::DeviceEnumeration(task))
+                .map_err(|e| {
+                    debug!(error = ?e, "Failed to submit enumeration task");
+                })?;
         }
 
-        let (added, removed) = common::detect_changes(&self.known_devices, &current_devices);
-
-        for device in added {
-            debug!(tuner_id = ?device.id, "new device detected");
-            event_tx
-                .send(Event::Added(device.clone()))
-                .map_err(|_| ())?;
-        }
-
-        for id in removed {
-            debug!(tuner_id = ?id, "device removed");
-            event_tx.send(Event::Removed(id.clone())).map_err(|_| ())?;
-        }
-
-        self.known_devices = current_devices;
         Ok(())
     }
 }
@@ -66,20 +78,21 @@ impl Service for Udev {
             Ok(s) => s,
             Err(e) => {
                 debug!(error = %e, "failed to create udev monitor, falling back to polling");
-                let enumerator = std::mem::replace(
-                    &mut self.enumerator,
-                    MultiEnumerator {
-                        enumerators: Vec::new(),
-                    },
+                let mut polling = Polling::new(
+                    self.scheduler.clone(),
+                    self.pool.clone(),
+                    self.backends.clone(),
+                    Duration::from_secs(3),
                 );
-                let mut polling = Polling::new(enumerator, Duration::from_secs(3));
                 return polling.run(event_tx, cancel);
             }
         };
 
-        if self.rescan_devices(&event_tx).is_err() {
+        if self.submit_enumeration_tasks(&event_tx).is_err() {
             return;
         }
+
+        debug!("Udev discovery service started, monitoring USB subsystem");
 
         use std::os::unix::io::AsFd;
         let mut fds = [PollFd::new(socket.as_fd(), PollFlags::POLLIN)];
@@ -95,7 +108,15 @@ impl Service for Udev {
                     while let Some(event) = socket.iter().next() {
                         match event.event_type() {
                             EventType::Add | EventType::Remove => {
-                                debug!(event_type = ?event.event_type(), "USB event detected");
+                                debug!(
+                                    event_type = ?event.event_type(),
+                                    devpath = ?event.devpath(),
+                                    devtype = ?event.devtype(),
+                                    subsystem = ?event.subsystem(),
+                                    sysname = ?event.sysname(),
+                                    syspath = ?event.syspath(),
+                                    "USB event detected, will trigger re-enumeration"
+                                );
                                 self.pending_rescan = true;
                                 last_event_time = Instant::now();
                             }
@@ -105,8 +126,9 @@ impl Service for Udev {
                 }
                 Ok(_) => {
                     if self.pending_rescan && last_event_time.elapsed() >= DEBOUNCE_DURATION {
+                        debug!("USB event debounce period elapsed, triggering re-enumeration");
                         self.pending_rescan = false;
-                        if self.rescan_devices(&event_tx).is_err() {
+                        if self.submit_enumeration_tasks(&event_tx).is_err() {
                             break;
                         }
                     }

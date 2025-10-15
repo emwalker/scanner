@@ -1,12 +1,15 @@
 //! Band scanning task
 
 use super::context::{LoopControl, ScanContext};
+use crate::audio::session::AudioSession;
 use crate::core::types::{Band, Result, ScannerError, ScanningConfig};
 use crate::hardware::pool::Pool;
 use crate::hardware::types::Backend;
+use crate::main_thread::audio_coordinator::TuneParams;
 use crate::scanner_state::{PauseSignal, ScanMode, ScannerState};
 use crate::shutdown::ShutdownCoordinator;
 use crate::signal;
+use crate::task::TaskContinuation;
 use crate::ui::{ProgressReporter, ScannerCommand, TuiEvent};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -26,6 +29,13 @@ pub struct ScanBandTask {
 
     command_receiver: Option<Receiver<ScannerCommand>>,
     tui_event_sender: Option<Sender<TuiEvent>>,
+
+    scanner_state: Option<ScannerState>,
+    audio_session: Option<AudioSession>,
+    current_playing: Option<TuneParams>,
+    window_centers: Vec<f64>,
+    windows_to_process: usize,
+    window_index: usize,
 }
 
 impl ScanBandTask {
@@ -47,6 +57,12 @@ impl ScanBandTask {
             shutdown_coordinator,
             command_receiver: None,
             tui_event_sender: None,
+            scanner_state: None,
+            audio_session: None,
+            current_playing: None,
+            window_centers: Vec::new(),
+            windows_to_process: 0,
+            window_index: 0,
         }
     }
 
@@ -70,6 +86,12 @@ impl ScanBandTask {
             shutdown_coordinator,
             command_receiver,
             tui_event_sender,
+            scanner_state: None,
+            audio_session: None,
+            current_playing: None,
+            window_centers: Vec::new(),
+            windows_to_process: 0,
+            window_index: 0,
         }
     }
 
@@ -85,23 +107,37 @@ impl ScanBandTask {
     }
 
     #[allow(dead_code)]
-    pub fn run(&mut self, shutdown: CancellationToken) -> Result<()> {
+    pub fn run(&mut self, shutdown: CancellationToken) -> Result<TaskContinuation> {
+        debug!(
+            band = ?self.band,
+            has_scanner_state = self.scanner_state.is_some(),
+            has_command_receiver = self.command_receiver.is_some(),
+            has_tui_sender = self.tui_event_sender.is_some(),
+            "ScanBandTask.run() called"
+        );
+
         if self.command_receiver.is_none() && self.tui_event_sender.is_none() {
             return self.run_simple(shutdown);
         }
 
-        debug!(band = ?self.band, "ScanBandTask starting with state machine");
-        signal::clear_processed_frequencies();
+        if self.scanner_state.is_none() {
+            debug!(band = ?self.band, "ScanBandTask initializing state machine");
+            signal::clear_processed_frequencies();
 
-        let window_centers = self.band.windows(
-            self.config.samp_rate,
-            self.config.signal_processing.window_overlap,
-        );
-        let windows_to_process = self
-            .config
-            .scanning_windows
-            .map(|n| n.min(window_centers.len()))
-            .unwrap_or(window_centers.len());
+            self.window_centers = self.band.windows(
+                self.config.samp_rate,
+                self.config.signal_processing.window_overlap,
+            );
+            self.windows_to_process = self
+                .config
+                .scanning_windows
+                .map(|n| n.min(self.window_centers.len()))
+                .unwrap_or(self.window_centers.len());
+
+            self.scanner_state = Some(ScannerState::new());
+            self.current_playing = None;
+            self.window_index = 0;
+        }
 
         let mut context = ScanContext {
             config: &self.config,
@@ -111,40 +147,67 @@ impl ScanBandTask {
             pause_signal: &self.pause_signal,
             command_receiver: &mut self.command_receiver,
             tui_event_sender: &self.tui_event_sender,
-            scanner_state: ScannerState::new(),
-            current_playing: None,
-            audio_session: None,
-            window_centers,
-            windows_to_process,
-            window_index: 0,
+            scanner_state: self.scanner_state.take().unwrap(),
+            current_playing: self.current_playing.clone(),
+            audio_session: self.audio_session.take(),
+            window_centers: self.window_centers.clone(),
+            windows_to_process: self.windows_to_process,
+            window_index: self.window_index,
         };
 
-        loop {
-            if shutdown.is_cancelled() || self.shutdown_coordinator.is_shutdown() {
-                context.scanner_state.shutdown();
-            }
-
-            let control = match &context.scanner_state.mode {
-                ScanMode::ShuttingDown(_) => context.handle_shutting_down_mode(),
-                ScanMode::ScanComplete(_) => context.handle_scan_complete_mode(),
-                ScanMode::ScanCompletePaused(_) => context.handle_scan_complete_paused_mode(),
-                ScanMode::Paused(_) => context.handle_paused_mode(),
-                ScanMode::Listening(_) => context.handle_listening_mode(),
-                ScanMode::Scanning(_) => context.handle_scanning_mode(),
-            }?;
-
-            match control {
-                LoopControl::Break => break,
-                LoopControl::Continue => continue,
-                LoopControl::Advance => context.window_index += 1,
-            }
+        if shutdown.is_cancelled() || self.shutdown_coordinator.is_shutdown() {
+            context.scanner_state.shutdown();
         }
 
-        debug!(band = ?self.band, "ScanBandTask completed");
-        Ok(())
+        let mode_debug = format!("{:?}", context.scanner_state.mode);
+
+        let control = match &context.scanner_state.mode {
+            ScanMode::ShuttingDown(_) => context.handle_shutting_down_mode(),
+            ScanMode::ScanComplete(_) => context.handle_scan_complete_mode(),
+            ScanMode::ScanCompletePaused(_) => context.handle_scan_complete_paused_mode(),
+            ScanMode::Paused(_) => context.handle_paused_mode(),
+            ScanMode::Listening(_) => context.handle_listening_mode(),
+            ScanMode::Scanning(_) => context.handle_scanning_mode(),
+        }?;
+
+        self.scanner_state = Some(context.scanner_state);
+        self.current_playing = context.current_playing;
+        self.audio_session = context.audio_session;
+        self.window_index = context.window_index;
+
+        match control {
+            LoopControl::Break => {
+                debug!(band = ?self.band, "ScanBandTask completed");
+                Ok(TaskContinuation::Complete)
+            }
+            LoopControl::Continue => {
+                debug!(
+                    mode = mode_debug,
+                    "ScanBandTask yielding (Continue) - will resubmit"
+                );
+                Ok(TaskContinuation::Resubmit)
+            }
+            LoopControl::Advance => {
+                self.window_index += 1;
+                debug!(
+                    window_index = self.window_index,
+                    windows_to_process = self.windows_to_process,
+                    "ScanBandTask yielding (Advance) - will resubmit"
+                );
+                Ok(TaskContinuation::Resubmit)
+            }
+            LoopControl::ResubmitAfter(delay) => {
+                debug!(
+                    mode = mode_debug,
+                    delay_ms = delay.as_millis(),
+                    "ScanBandTask yielding with delay - will resubmit after delay"
+                );
+                Ok(TaskContinuation::ResubmitAfter(delay))
+            }
+        }
     }
 
-    fn run_simple(&mut self, shutdown: CancellationToken) -> Result<()> {
+    fn run_simple(&mut self, shutdown: CancellationToken) -> Result<TaskContinuation> {
         debug!(band = ?self.band, "Starting band scan task");
 
         let window_centers = self.band.windows(
@@ -163,7 +226,7 @@ impl ScanBandTask {
             while self.pause_signal.is_paused() {
                 if shutdown.is_cancelled() {
                     debug!("Shutdown requested during pause, stopping scan");
-                    return Ok(());
+                    return Ok(TaskContinuation::Complete);
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -191,7 +254,7 @@ impl ScanBandTask {
         }
 
         debug!(band = ?self.band, "Band scan task completed");
-        Ok(())
+        Ok(TaskContinuation::Complete)
     }
 
     #[allow(dead_code)]

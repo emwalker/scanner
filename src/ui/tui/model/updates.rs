@@ -14,10 +14,16 @@ impl Model {
     pub fn update_tui_event(&mut self, event: TuiEvent) {
         match event {
             TuiEvent::Progress(progress_event) => self.update(progress_event),
-            TuiEvent::TunerAdded(tuner) => self.add_device(tuner),
-            TuiEvent::TunerRemoved(tuner_id) => self.remove_device(&tuner_id),
+            TuiEvent::TunerAdded(tuner) => {
+                debug!(device_id = ?tuner.id, "TUI Model received TunerAdded event");
+                self.add_device(tuner);
+            }
+            TuiEvent::TunerRemoved(tuner_id) => {
+                debug!(device_id = ?tuner_id, "TUI Model received TunerRemoved event");
+                self.remove_device(&tuner_id);
+            }
             TuiEvent::Paused { tuner_id } => {
-                debug!(tuner_id = ?tuner_id, "Scanning paused, tuner now available");
+                debug!(tuner_id = ?tuner_id, ui_mode = ?self.ui_mode, "Scanning paused, tuner now available");
             }
             TuiEvent::ActiveTunersUpdated { status } => {
                 debug!(
@@ -66,8 +72,8 @@ impl Model {
                     .map(|t| (t.id.clone(), t.clone()))
                     .collect();
 
-                // Populate tuners from all devices (both cached and dynamic)
-                for device in self.cached_devices.values().chain(self.devices.values()) {
+                // Populate tuners from all devices
+                for device in self.devices.values() {
                     for tuner in &device.tuners {
                         let tuner_info = crate::ui::tui::model::TunerInfo {
                             id: tuner.id.clone(),

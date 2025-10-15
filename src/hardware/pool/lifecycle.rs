@@ -225,6 +225,8 @@ impl Pool {
             };
         }
 
+        self.notify_state_change();
+
         AddDeviceResult::Added {
             device_id,
             tuner_count: exposed_count,
@@ -276,6 +278,9 @@ impl Pool {
         inner.devices.remove(device_id);
 
         debug!(device_id = ?device_id, "Device and all tuners removed");
+        drop(inner);
+
+        self.notify_state_change();
         Ok(())
     }
 

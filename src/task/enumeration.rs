@@ -1,12 +1,14 @@
 //! Device enumeration task - discovers available SDR devices for a backend
 
 use crate::core::types::{Result, ScannerError};
+use crate::discovery::tracker::DeviceTracker;
 use crate::hardware::Capabilities;
 use crate::hardware::backend::Backend as BackendTrait;
 use crate::hardware::pool::{AddDeviceResult, Pool};
 use crate::hardware::types::Backend;
-use std::sync::Arc;
+use crate::task::TaskContinuation;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
@@ -20,6 +22,7 @@ pub struct DeviceEnumerationTask {
     backend: Backend,
     pool: Arc<Pool>,
     discovery_tx: mpsc::Sender<crate::discovery::Event>,
+    tracker: Option<Arc<Mutex<DeviceTracker>>>,
 }
 
 impl DeviceEnumerationTask {
@@ -33,6 +36,22 @@ impl DeviceEnumerationTask {
             backend,
             pool,
             discovery_tx,
+            tracker: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_tracker(
+        backend: Backend,
+        pool: Arc<Pool>,
+        discovery_tx: mpsc::Sender<crate::discovery::Event>,
+        tracker: Arc<Mutex<DeviceTracker>>,
+    ) -> Self {
+        Self {
+            backend,
+            pool,
+            discovery_tx,
+            tracker: Some(tracker),
         }
     }
 
@@ -43,17 +62,27 @@ impl DeviceEnumerationTask {
     }
 
     #[allow(dead_code)]
-    pub fn run(&mut self, shutdown: CancellationToken) -> Result<()> {
+    pub fn run(&mut self, shutdown: CancellationToken) -> Result<TaskContinuation> {
         debug!(backend = ?self.backend, "Starting device enumeration task");
 
         if shutdown.is_cancelled() {
-            return Ok(());
+            return Ok(TaskContinuation::Complete);
         }
 
         let discovered_devices = match &self.backend {
-            Backend::Soapy => {
-                let backend = crate::hardware::Soapy;
-                backend.enumerate_devices()?
+            Backend::Soapy | Backend::Usb => {
+                use crate::discovery::{DeviceEnumerator, SubprocessEnumerator};
+
+                let parent_log_file = self.pool.parent_log_file();
+                let enumerator =
+                    SubprocessEnumerator::new(self.backend.as_str().to_string(), parent_log_file);
+
+                enumerator.enumerate().map_err(|e| {
+                    ScannerError::ConfigurationError(format!(
+                        "Enumeration failed for {:?}: {}",
+                        self.backend, e
+                    ))
+                })?
             }
             Backend::Mock => {
                 let backend = crate::hardware::Mock;
@@ -65,11 +94,6 @@ impl DeviceEnumerationTask {
                     name
                 )));
             }
-            Backend::Usb => {
-                return Err(ScannerError::ConfigurationError(
-                    "USB is not a device backend".to_string(),
-                ));
-            }
         };
 
         debug!(
@@ -78,7 +102,27 @@ impl DeviceEnumerationTask {
             "Discovered devices"
         );
 
-        for device_info in discovered_devices {
+        let (added_devices, removed_device_ids) = if let Some(tracker) = &self.tracker {
+            let mut tracker_guard = tracker.lock().unwrap();
+            tracker_guard.update(discovered_devices)
+        } else {
+            (discovered_devices, Vec::new())
+        };
+
+        for device_id in removed_device_ids {
+            debug!(device_id = ?device_id, "Sending device removal event");
+            match self
+                .discovery_tx
+                .send(crate::discovery::Event::Removed(device_id))
+            {
+                Ok(_) => debug!("Device removal event sent successfully"),
+                Err(e) => {
+                    debug!(error = ?e, "Failed to send device removal event (channel closed?)")
+                }
+            }
+        }
+
+        for device_info in added_devices {
             let capabilities = Capabilities::for_device(&device_info.id);
 
             let result = self.pool.add_device_metadata(
@@ -106,8 +150,12 @@ impl DeviceEnumerationTask {
                     debug!(
                         device_id = ?device_id,
                         reason = reason,
-                        "Device filtered out"
+                        "Device filtered out by pool but still showing in TUI"
                     );
+
+                    let _ = self
+                        .discovery_tx
+                        .send(crate::discovery::Event::Added(device_info));
                 }
                 AddDeviceResult::ShutdownMode => {
                     debug!("Pool in shutdown mode, stopping enumeration");
@@ -120,7 +168,7 @@ impl DeviceEnumerationTask {
         }
 
         debug!(backend = ?self.backend, "Device enumeration task completed");
-        Ok(())
+        Ok(TaskContinuation::Complete)
     }
 
     #[allow(dead_code)]

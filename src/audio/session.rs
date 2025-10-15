@@ -1,8 +1,7 @@
-use crate::core::types::{Result, ScannerError, ScanningConfig, Signal};
-use crate::scanning::window::{create_audio_fm_graph, create_audio_stream, setup_audio_device};
+use crate::audio::thread::AudioThread;
+use crate::core::types::{Result, ScanningConfig, Signal};
+use crate::scanning::window::create_audio_fm_graph;
 use crate::shutdown::ShutdownCoordinator;
-use cpal::traits::StreamTrait;
-use cpal::{BufferSize, SampleFormat, StreamConfig};
 use rustradio::graph::GraphRunner;
 use std::sync::Arc;
 use tracing::debug;
@@ -10,7 +9,7 @@ use tracing::debug;
 pub struct AudioSession {
     audio_tx: std::sync::mpsc::SyncSender<crate::mpsc::AudioPacket>,
     audio_packet_size: usize,
-    _stream: cpal::Stream,
+    audio_thread: Option<AudioThread>,
     current_graph_cancel: Option<rustradio::graph::CancellationToken>,
     current_graph_thread: Option<std::thread::JoinHandle<()>>,
     current_segment: Option<Box<dyn crate::hardware::pool::SegmentTrait>>,
@@ -27,27 +26,14 @@ impl AudioSession {
         let (audio_tx, audio_rx) =
             std::sync::mpsc::sync_channel::<crate::mpsc::AudioPacket>(audio_buffer_packets);
 
-        let (audio_device, supported_config) = setup_audio_device(config.audio.sample_rate)?;
-        let sample_format = supported_config.sample_format();
-        let mut stream_config: StreamConfig = supported_config.into();
-        stream_config.buffer_size = BufferSize::Fixed(config.audio.buffer_size);
-
-        let stream = match sample_format {
-            SampleFormat::F32 => create_audio_stream(&audio_device, &stream_config, audio_rx)?,
-            _ => {
-                return Err(ScannerError::UnsupportedAudioFormat(
-                    "WAV format required".to_string(),
-                ));
-            }
-        };
-
-        stream.play()?;
-        debug!("AudioSession created: audio stream playing");
+        let audio_thread =
+            AudioThread::new(config.audio.sample_rate, config.audio.buffer_size, audio_rx)?;
+        debug!("AudioSession created: AudioThread started");
 
         Ok(Self {
             audio_tx,
             audio_packet_size,
-            _stream: stream,
+            audio_thread: Some(audio_thread),
             current_graph_cancel: None,
             current_graph_thread: None,
             current_segment: None,
@@ -149,9 +135,20 @@ impl Drop for AudioSession {
     fn drop(&mut self) {
         debug!("AudioSession: Dropping");
         self.stop_current_station();
-        debug!("AudioSession: Audio stream will stop");
+        if let Some(mut audio_thread) = self.audio_thread.take() {
+            audio_thread.shutdown();
+        }
+        debug!("AudioSession: AudioThread stopped");
     }
 }
+
+#[allow(dead_code)]
+const _: () = {
+    fn assert_send<T: Send>() {}
+    fn assert_all() {
+        assert_send::<AudioSession>();
+    }
+};
 
 #[cfg(test)]
 mod tests {

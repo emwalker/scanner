@@ -13,6 +13,7 @@ pub mod types;
 // Backend implementations
 pub mod mock;
 pub mod soapy;
+pub mod usb;
 
 // Future backend stubs
 #[cfg(feature = "seify")]
@@ -33,6 +34,7 @@ pub use types::{Capabilities, DeviceError, DeviceErrorKind, DeviceId, DeviceInfo
 // Re-export backend implementations
 pub use mock::Mock;
 pub use soapy::Soapy;
+pub use usb::Usb;
 
 #[cfg(feature = "seify")]
 pub use seify::Seify;

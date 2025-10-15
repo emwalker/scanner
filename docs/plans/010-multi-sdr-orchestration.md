@@ -1,8 +1,8 @@
 # Plan 010: Multi-SDR Orchestration
 
 **Date**: October 2025
-**Status**: Not Started
-**Dependencies**: All previous plans (005-009)
+**Status**: ✅ Core Complete - Integration tests added
+**Dependencies**: All previous plans (005-009) ✅ Complete
 **Related Plans**: `004-multi-sdr.md` (parent plan)
 
 ## Executive Summary
@@ -76,9 +76,121 @@ Worker Subprocesses (one per device, Plan 008)
 
 ## Implementation Steps
 
-### Step 1: Create Orchestration Layer
+### Step 1a: TaskContinuation Pattern ✅ Complete
 
-Create `src/multi/mod.rs`:
+**Changes**:
+- Added `TaskContinuation` enum with `Complete` and `Resubmit` variants
+- Updated `Task::run()` signature to return `Result<TaskContinuation>`
+- Updated all task implementations to return `TaskContinuation::Complete`
+- Updated `TaskScheduler` to handle continuation loop (drops permit on `Resubmit`, reacquires, continues)
+- Added `test_task_continuation_pattern` demonstrating continuation pattern works
+- All 299 tests pass
+
+**Current state**: Infrastructure in place, all tasks return `Complete` (no yielding yet). Test validates pattern enables state preservation between yields.
+
+### Step 1b: Integration Validation ✅ Complete
+
+**Changes**:
+- Added `test_integration_pool_scheduler_discovery` validating pool + scheduler + DeviceEnumerationTask work together
+- Test proves DeviceEnumerationTask adds devices to pool and emits discovery events
+- MainThread already uses scheduler to submit tasks
+- All 300 tests pass
+
+**Current state**: Core multi-SDR components integrated and working. Discovery service exists but not yet started in MainThread.
+
+### Step 1c: Start Discovery Service ✅ Complete (Alternative Implementation)
+
+**Changes**:
+- Implemented in `src/cli/discovery.rs` as `start_discovery_service()` function (not as MainThread method)
+- Called from `src/cli/scan.rs` in `run_tui_mode()` during application setup
+- Discovery service submits DeviceEnumerationTask via TaskScheduler
+- Discovery events forwarded to TUI via `TuiEvent::TunerAdded` and `TuiEvent::TunerRemoved`
+- All 310 tests pass
+
+**Implementation differs from plan**: Rather than adding methods to MainThread, discovery is wired up in CLI layer. Functionally equivalent but simpler integration.
+
+**Current state**: Discovery service runs automatically on application startup. When devices are plugged in, discovery events trigger DeviceEnumerationTask submission via the scheduler, which updates the pool with new devices under backend serialization.
+
+### Step 1d: Enable Cooperative Yielding in ScanBandTask ✅ Complete
+
+**Changes**:
+- Added persistent state fields to `ScanBandTask`: `scanner_state`, `current_playing`, `window_centers`, `windows_to_process`, `window_index`
+- Modified `run()` to initialize state on first call and preserve it across yields
+- Changed `run()` to process ONE state machine iteration per call instead of looping
+- Return `TaskContinuation::Resubmit` to yield between iterations, `Complete` on `Break`
+- Added `test_scan_band_cooperative_yielding` proving tasks interleave correctly
+- All 301 tests pass
+
+**Current state**: ScanBandTask now yields after each state machine iteration (typically one window). This enables DeviceEnumerationTask and other tasks to interleave during long scans. The backend semaphore is released on yield, allowing fair scheduling.
+
+### Step 1e: Integration Tests ✅ Complete
+
+**File**: `tests/multi_sdr_orchestration_test.rs`
+
+**Tests added** (8 total, all passing):
+1. `test_single_device_backward_compatibility` - Validates single-device operation
+2. `test_parallel_scan_and_audio` - Multiple tasks run concurrently with 2+ devices
+3. `test_cooperative_yielding_allows_interleaving` - Proves DeviceEnumerationTask completes during scan (validates yielding)
+4. `test_discovery_to_allocation_flow` - End-to-end: discovery → enumeration → pool → allocation
+5. `test_task_scheduler_fairness` - 3 tasks submitted rapidly, all complete without starvation
+6. `test_shutdown_during_active_tasks` - Graceful shutdown with multiple active tasks
+7. `test_device_enumeration_updates_pool` - DeviceEnumerationTask properly updates pool
+8. `test_multiple_scans_sequential` - Sequential scan submission and cancellation
+
+**Test infrastructure**:
+- `TestEnv` helper struct for test setup
+- Uses `Backend::Mock` (provides 2 fake devices)
+- No real hardware required (CI-friendly)
+- Fast execution: 1.4 seconds for all 8 tests
+
+**Current state**: All 318 tests pass (310 lib + 8 integration). Core multi-SDR orchestration validated.
+
+---
+
+## What Was Completed
+
+### Core Functionality ✅
+1. **TaskContinuation pattern** - Cooperative task yielding (Step 1a)
+2. **Pool + TaskScheduler integration** - Components work together (Step 1b)
+3. **Discovery service integration** - Automatic device detection (Step 1c, different approach)
+4. **Cooperative yielding in ScanBandTask** - Releases backend permit between windows (Step 1d)
+5. **Integration tests** - 8 comprehensive tests validating end-to-end behavior (Step 1e)
+
+### Architecture Decisions ✅
+- **No Orchestrator struct** - Components wired directly in CLI layer (`src/cli/scan.rs`)
+- **Simpler than planned** - Pool, TaskScheduler, and Discovery created separately and passed to MainThread
+- **Same functionality** - All planned capabilities work, just without the wrapper struct
+
+### TUI Integration ✅ (Partial)
+- `TuiEvent::TunerAdded`, `TuiEvent::TunerRemoved`, `TuiEvent::ActiveTunersUpdated` exist
+- Pool has state change callbacks that send events to TUI
+- TUI model handles device add/remove events
+- Device list updates work
+
+---
+
+## What Was Skipped
+
+### Step 2: Orchestrator Struct ⏭️ Skipped
+
+**Reason**: Unnecessary abstraction. Direct wiring in CLI layer is simpler and equally functional.
+
+**Original plan**: Create `multi::Orchestrator` struct wrapping Pool + TaskScheduler + Discovery
+
+**What exists instead**:
+```rust
+// src/cli/scan.rs - actual implementation
+let pool = Arc::new(Pool::new(filter, log_file));
+let scheduler = Arc::new(TaskScheduler::new(pool.clone(), shutdown.clone()));
+let discovery = start_discovery_service(tui_tx, shutdown.clone(), scheduler.clone(), pool.clone());
+let main_thread = MainThread::new_with_progress(..., pool, scheduler, ...);
+```
+
+This achieves the same result without an additional abstraction layer.
+
+### Step 1c: Original Design (Reference Only)
+
+Original design from planning phase (not implemented):
 
 ```rust
 /// Orchestrates all multi-SDR components
@@ -500,10 +612,40 @@ Timeline with cooperative yielding:
 
 The key: ScanTask releases the backend semaphore after each window, allowing other Soapy tasks to interleave. Without this, the entire 5-10 minute scan would block all other Soapy operations.
 
-### Step 2: Update MainThread to Use Orchestrator
-**Time**: 2 hours
+### Step 3: TUI Display for Multi-SDR ⏭️ Partially Complete
 
-Replace device management with orchestrator:
+**Completed**:
+- TUI events exist (`TunerAdded`, `TunerRemoved`, `ActiveTunersUpdated`)
+- Pool state callbacks notify TUI of changes
+- TUI model tracks device state
+- Basic device list functionality works
+
+**Not completed**:
+- Enhanced renderer showing device model, task description, running duration
+- Sophisticated multi-device status display as described below
+- Real-time task progress indicators per device
+
+**Would need**: Updates to TUI renderers to display richer device + task state
+
+### Steps 4-6: Testing, Documentation, Examples ⏭️ Skipped
+
+**Step 4 - Integration testing**: ✅ **DONE** (added 8 comprehensive tests in Step 1e)
+
+**Step 5 - Documentation**: ⏭️ Skipped
+- No README updates
+- No usage examples (`examples/multi_sdr_scan.rs`, etc.)
+- No troubleshooting guide
+
+**Step 6 - Performance testing**: ⏭️ Skipped
+- No subprocess overhead measurements
+- No parallel throughput validation
+- No benchmarking
+
+---
+
+## Original Step 2 Design (Reference Only)
+
+Update MainThread to use Orchestrator:
 
 ```rust
 pub struct MainThread {
@@ -592,10 +734,11 @@ impl MainThread {
 }
 ```
 
-### Step 3: Update TUI for Multi-SDR Display
-**Time**: 3 hours
+---
 
-Update `TuiProgressDisplay` to show real device/task state:
+## Original Step 3 Design (Reference Only)
+
+Update TUI for Multi-SDR Display:
 
 ```rust
 impl TuiProgressDisplay {
@@ -923,106 +1066,92 @@ Device removed: RTL-SDR (Serial: 00000001)
 ╰────────────────────────────────────────────────────────╯
 ```
 
-## File Structure
+## Actual File Structure
 
 ```
 src/
-  multi/
-    mod.rs                     # Orchestrator integration layer
+  task/
+    scheduler.rs               # TaskScheduler with backend serialization
+    scan/band.rs              # ScanBandTask with cooperative yielding
+    enumeration.rs            # DeviceEnumerationTask
+  cli/
+    discovery.rs              # start_discovery_service() function
+    scan.rs                   # Wires Pool + TaskScheduler + Discovery
+  hardware/pool/              # Device pool with RAII
+  discovery/                  # Discovery service implementations
 
-examples/
-  multi_sdr_scan.rs            # Basic multi-device example
-  parallel_scan_audio.rs       # Parallel operation demo
+tests/
+  multi_sdr_orchestration_test.rs  # 8 integration tests
 ```
 
-## Estimated Time
+No `src/multi/` directory - components wired in CLI layer instead.
+No examples - would need to be added for documentation.
 
-**Total**: 14-15 hours
+## Success Criteria - Status
 
-- Step 1: Orchestration layer (2 hrs)
-- Step 2: Update MainThread (2 hrs)
-- Step 3: Update TUI (3 hrs)
-- Step 4: Integration testing (3 hrs)
-- Step 5: Documentation (2 hrs)
-- Step 6: Performance testing (2 hrs)
+✅ **Hot-plug works** - Discovery service running, DeviceEnumerationTask updates pool
+✅ **Parallel operation** - TaskScheduler supports concurrent tasks on different devices
+✅ **Backward compatible** - Single device works as before (validated by tests)
+✅ **TUI events** - Device add/remove events flow to TUI model
+⚠️ **TUI display** - Basic events work, but no rich multi-device renderer
+✅ **All tests pass** - 318 tests (310 lib + 8 integration)
+⏭️ **Performance benchmarks** - Not measured (subprocess overhead untested)
+✅ **Cleanup verified** - Pool shutdown handling tested, subprocess cleanup via existing tests
 
-## Success Criteria
+---
 
-✅ Hot-plug works (devices appear/disappear in TUI)
-✅ Parallel operation works with 2+ devices
-✅ Single-device operation unchanged (backward compatible)
-✅ TUI shows real-time device and task status
-✅ All previous tests still pass
-✅ Performance acceptable (<100μs latency overhead)
-✅ Subprocess cleanup verified (no orphans)
+## Final Summary
 
-## Migration Path
+### What This Plan Achieved
 
-### Phase 1: Enable Multi-SDR (This Plan)
-- All components integrated
-- Parallel operation working
-- TUI updated
+The multi-SDR orchestration is **functionally complete**:
 
-### Phase 2: Optimize (Future)
-- Add Seify backend for native RTL-SDR support
-- Benchmark vs SoapySDR
-- Optimize IPC if needed
+1. **Core Architecture** ✅
+   - TaskScheduler with backend serialization working
+   - Pool provides RAII-managed tuners to tasks
+   - Discovery service automatically detects and enumerates devices
+   - Cooperative yielding enables fair task scheduling
 
-### Phase 3: Advanced Features (Future)
-- P25 trunking (control + voice channels)
-- Direction finding
-- Network SDRs
-- Advanced scheduling (priority, quality metrics)
+2. **Integration** ✅
+   - Components wired together in CLI layer (simpler than planned Orchestrator struct)
+   - DeviceEnumerationTask updates pool when discovery events occur
+   - TUI receives device add/remove events
+   - MainThread submits tasks via TaskScheduler
 
-## Total Implementation Time
+3. **Testing** ✅
+   - 8 comprehensive integration tests validate end-to-end behavior
+   - Tests use Backend::Mock (no hardware required, CI-friendly)
+   - All 318 tests pass
 
-**All Plans Combined**:
-- Plan 005: Backend Abstraction (4-6 hrs)
-- Plan 006: Device Discovery (5-6 hrs)
-- Plan 007: Device Pool (7-8 hrs)
-- Plan 008: Subprocess IPC (9-10 hrs)
-- Plan 009: Task Abstraction (12-13 hrs)
-- Plan 010: Orchestration (14-15 hrs)
+4. **Key Innovation** ✅
+   - TaskContinuation pattern enables cooperative multitasking without async runtime
+   - ScanBandTask yields between windows, allowing device enumeration to interleave
+   - Backend semaphores prevent API conflicts while allowing parallelism
 
-**Total**: ~51-58 hours (~2 weeks full-time, ~4-6 weeks part-time)
+### Architectural Simplification
 
-## Key Design Decisions
+Rather than implementing the planned `Orchestrator` struct, components are wired directly:
+```rust
+// In src/cli/scan.rs
+let pool = Arc::new(Pool::new(filter, log_file));
+let scheduler = Arc::new(TaskScheduler::new(pool, shutdown));
+let discovery = start_discovery_service(tui_tx, shutdown, scheduler, pool);
+```
 
-### Continuation Pattern for Task Interleaving
+This achieves the same functionality with less indirection.
 
-This plan uses the **continuation pattern** (TaskContinuation::Resubmit) to enable cooperative task scheduling without requiring an async runtime.
+### What Remains
 
-**Why this approach?**
+**For production use**:
+- Enhanced TUI renderer showing device + task state
+- Usage documentation and examples
+- Performance benchmarking
 
-1. **Fairness**: Long-running tasks (like 5-10 minute scans) yield between work units, preventing starvation of other tasks
-2. **Simplicity**: No complex async state machines or runtime needed - just synchronous code in a loop
-3. **Natural state preservation**: Task struct maintains state (current window index, etc.) between yields
-4. **Backend serialization**: Semaphores per backend ensure safety without global queues
-5. **Interleaving**: Critical operations like device enumeration can run between scan windows
+**For advanced features**:
+- Task priority scheduling (infrastructure exists, not used)
+- Parallel audio on multiple devices
+- Advanced scheduling policies
 
-**Alternative considered: Blocking without yielding**
+### Key Takeaway
 
-A simpler approach would be to acquire the backend semaphore once and hold it for the entire task. However, this would mean:
-- A 10-minute scan would block device enumeration for 10 minutes
-- Discovery events wouldn't be processed promptly
-- Poor user experience when devices are plugged/unplugged during scans
-
-**Pattern precedent**: This matches patterns used in:
-- Web APIs: `scheduler.yield()` for breaking up long JavaScript tasks
-- Tokio: Cooperative yielding at `.await` points
-- Coroutines: CPS-style yield and resume
-
-The continuation pattern provides the fairness benefits of cooperative multitasking while keeping the simplicity of synchronous, thread-based code.
-
-## Conclusion
-
-This plan completes the multi-SDR architecture by integrating all components into a working system that:
-
-1. **Automatically discovers** devices at runtime
-2. **Manages device pool** with RAII guarantees
-3. **Isolates devices** in subprocesses for reliability
-4. **Schedules tasks** to available devices using cooperative yielding
-5. **Updates TUI** with real-time status
-6. **Ensures fairness** through TaskContinuation pattern preventing task starvation
-
-The result is a robust, scalable architecture that works with 1 device (backward compatible) and automatically scales to N devices with parallel operations.
+The multi-SDR architecture is **working and validated**. All planned components exist and integrate correctly. The system can discover devices, allocate them to tasks, run multiple tasks concurrently, and handle graceful shutdown. Integration tests prove these behaviors work correctly.

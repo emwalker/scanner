@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::hardware;
 use std::collections::HashMap;
 use tracing::debug;
@@ -205,6 +207,25 @@ impl DeviceEnumerator for SubprocessEnumerator {
     }
 }
 
+fn format_device_label(
+    udev_vendor: Option<&str>,
+    udev_product: Option<&str>,
+    device_vendor: Option<&str>,
+    device_product: Option<&str>,
+    friendly_name: &str,
+    serial: &str,
+) -> String {
+    let manufacturer = udev_vendor.or(device_vendor);
+    let product = udev_product.or(device_product);
+
+    match (manufacturer, product) {
+        (Some(mfg), Some(prod)) => format!("{} {} :: {}", mfg, prod, serial),
+        (None, Some(prod)) => format!("{} :: {}", prod, serial),
+        (Some(mfg), None) => format!("{} :: {}", mfg, serial),
+        (None, None) => format!("{} :: {}", friendly_name, serial),
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub struct UsbEnumerator {
     known_devices: HashMap<(u16, u16), &'static str>,
@@ -239,6 +260,12 @@ impl UsbEnumerator {
         // BladeRF
         db.insert((0x2cf0, 0x5246), "BladeRF");
         db.insert((0x1d50, 0x6066), "BladeRF 2.0");
+        // SDRplay
+        db.insert((0x1df7, 0x2500), "SDRplay RSP1");
+        db.insert((0x1df7, 0x3000), "SDRplay RSP1A");
+        db.insert((0x1df7, 0x3010), "SDRplay RSP2");
+        db.insert((0x1df7, 0x3020), "SDRplay RSPduo");
+        db.insert((0x1df7, 0x3030), "SDRplay RSPdx");
         db
     }
 
@@ -251,7 +278,7 @@ impl UsbEnumerator {
         let vid = u16::from_str_radix(vid_str.to_str()?, 16).ok()?;
         let pid = u16::from_str_radix(pid_str.to_str()?, 16).ok()?;
 
-        let model = self.known_devices.get(&(vid, pid))?;
+        let friendly_name = self.known_devices.get(&(vid, pid))?;
 
         let serial = device
             .property_value("ID_SERIAL_SHORT")
@@ -268,6 +295,29 @@ impl UsbEnumerator {
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
 
+        let udev_vendor = device
+            .property_value("ID_VENDOR_FROM_DATABASE")
+            .and_then(|s| s.to_str());
+
+        let udev_product = device
+            .property_value("ID_MODEL_FROM_DATABASE")
+            .and_then(|s| s.to_str());
+
+        let device_vendor = device
+            .attribute_value("manufacturer")
+            .and_then(|s| s.to_str());
+
+        let device_product = device.attribute_value("product").and_then(|s| s.to_str());
+
+        let label = format_device_label(
+            udev_vendor,
+            udev_product,
+            device_vendor,
+            device_product,
+            friendly_name,
+            serial,
+        );
+
         let device_id = hardware::DeviceId::Usb {
             vid,
             pid,
@@ -275,12 +325,20 @@ impl UsbEnumerator {
             bus_port: format!("{}-{}", bus, port),
         };
 
+        debug!(
+            vid = format!("{:04x}", vid),
+            pid = format!("{:04x}", pid),
+            serial = serial,
+            label = %label,
+            "USB device detected"
+        );
+
         Some(hardware::DeviceInfo {
             id: device_id.clone(),
-            label: format!("{} (USB VID={:04x} PID={:04x})", model, vid, pid),
+            label: label.clone(),
             tuners: vec![hardware::types::TunerInfo {
                 id: hardware::pool::TunerId::new(device_id, 0),
-                label: format!("{} (USB VID={:04x} PID={:04x})", model, vid, pid),
+                label,
                 mode: String::new(),
             }],
         })
@@ -404,5 +462,96 @@ mod tests {
         assert!(db.contains_key(&(0x1d50, 0x6108)));
         assert!(db.contains_key(&(0x0456, 0xb673)));
         assert!(db.contains_key(&(0x2cf0, 0x5246)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_usb_enumerator_includes_sdrplay_devices() {
+        let db = UsbEnumerator::default_database();
+
+        assert!(
+            db.contains_key(&(0x1df7, 0x2500)),
+            "SDRplay RSP1 should be in database"
+        );
+        assert!(
+            db.contains_key(&(0x1df7, 0x3000)),
+            "SDRplay RSP1A should be in database"
+        );
+        assert!(
+            db.contains_key(&(0x1df7, 0x3010)),
+            "SDRplay RSP2 should be in database"
+        );
+        assert!(
+            db.contains_key(&(0x1df7, 0x3020)),
+            "SDRplay RSPduo should be in database"
+        );
+        assert!(
+            db.contains_key(&(0x1df7, 0x3030)),
+            "SDRplay RSPdx should be in database"
+        );
+
+        assert_eq!(db.get(&(0x1df7, 0x2500)), Some(&"SDRplay RSP1"));
+        assert_eq!(db.get(&(0x1df7, 0x3000)), Some(&"SDRplay RSP1A"));
+        assert_eq!(db.get(&(0x1df7, 0x3010)), Some(&"SDRplay RSP2"));
+        assert_eq!(db.get(&(0x1df7, 0x3020)), Some(&"SDRplay RSPduo"));
+        assert_eq!(db.get(&(0x1df7, 0x3030)), Some(&"SDRplay RSPdx"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_usb_enumerator_sdrplay_vendor_id() {
+        let db = UsbEnumerator::default_database();
+
+        let sdrplay_devices: Vec<_> = db.iter().filter(|((vid, _), _)| *vid == 0x1df7).collect();
+
+        assert!(
+            sdrplay_devices.len() >= 5,
+            "Should have at least 5 SDRplay devices with VID 0x1df7"
+        );
+    }
+
+    #[test]
+    fn test_format_device_label_udev_database_priority() {
+        let label = super::format_device_label(
+            Some("SDRplay"),
+            Some("RSPduo"),
+            Some("Ignored"),
+            Some("Ignored"),
+            "Fallback",
+            "2301034E34",
+        );
+        assert_eq!(label, "SDRplay RSPduo :: 2301034E34");
+    }
+
+    #[test]
+    fn test_format_device_label_fallback_to_device_strings() {
+        let label = super::format_device_label(
+            None,
+            None,
+            Some("Device Vendor"),
+            Some("Device Product"),
+            "Fallback",
+            "ABC123",
+        );
+        assert_eq!(label, "Device Vendor Device Product :: ABC123");
+    }
+
+    #[test]
+    fn test_format_device_label_fallback_to_friendly_name() {
+        let label = super::format_device_label(None, None, None, None, "SDRplay RSPduo", "XYZ");
+        assert_eq!(label, "SDRplay RSPduo :: XYZ");
+    }
+
+    #[test]
+    fn test_format_device_label_mixed_sources() {
+        let label = super::format_device_label(
+            Some("Udev Vendor"),
+            None,
+            None,
+            Some("Device Product"),
+            "Fallback",
+            "123",
+        );
+        assert_eq!(label, "Udev Vendor Device Product :: 123");
     }
 }

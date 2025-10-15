@@ -121,6 +121,11 @@ impl Pool {
         Self::new(PoolFilter::allow_all(), None)
     }
 
+    /// Get parent log file path for worker log derivation
+    pub fn parent_log_file(&self) -> Option<String> {
+        self.parent_log_file.clone()
+    }
+
     /// Enter shutdown mode (makes pool reject all future operations)
     ///
     /// Transitions from Active → ShuttingDown. Idempotent if already shutting down.

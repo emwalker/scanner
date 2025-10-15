@@ -7,6 +7,7 @@ use crate::hardware::types::Backend;
 use crate::scanner_state::{PauseSignal, ScanMode, ScannerState};
 use crate::shutdown::ShutdownCoordinator;
 use crate::signal;
+use crate::task::TaskContinuation;
 use crate::ui::{ProgressReporter, ScannerCommand, TuiEvent};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -26,6 +27,8 @@ pub struct ScanStationsTask {
 
     command_receiver: Option<Receiver<ScannerCommand>>,
     tui_event_sender: Option<Sender<TuiEvent>>,
+
+    window_index: usize,
 }
 
 impl ScanStationsTask {
@@ -47,6 +50,7 @@ impl ScanStationsTask {
             shutdown_coordinator,
             command_receiver: None,
             tui_event_sender: None,
+            window_index: 0,
         }
     }
 
@@ -70,6 +74,7 @@ impl ScanStationsTask {
             shutdown_coordinator,
             command_receiver,
             tui_event_sender,
+            window_index: 0,
         }
     }
 
@@ -85,16 +90,24 @@ impl ScanStationsTask {
     }
 
     #[allow(dead_code)]
-    pub fn run(&mut self, shutdown: CancellationToken) -> Result<()> {
+    pub fn run(&mut self, shutdown: CancellationToken) -> Result<TaskContinuation> {
         if self.command_receiver.is_none() && self.tui_event_sender.is_none() {
             return self.run_simple(shutdown);
         }
 
-        debug!(
-            station_count = self.stations.len(),
-            "ScanStationsTask starting with state machine"
-        );
-        signal::clear_processed_frequencies();
+        if self.window_index == 0 {
+            debug!(
+                station_count = self.stations.len(),
+                "ScanStationsTask starting with state machine"
+            );
+            signal::clear_processed_frequencies();
+        } else {
+            debug!(
+                window_index = self.window_index,
+                total_windows = self.stations.len(),
+                "ScanStationsTask resuming from window"
+            );
+        }
 
         let window_centers = self.stations.clone();
         let windows_to_process = window_centers.len();
@@ -112,7 +125,7 @@ impl ScanStationsTask {
             audio_session: None,
             window_centers,
             windows_to_process,
-            window_index: 0,
+            window_index: self.window_index,
         };
 
         loop {
@@ -132,7 +145,26 @@ impl ScanStationsTask {
             match control {
                 LoopControl::Break => break,
                 LoopControl::Continue => continue,
-                LoopControl::Advance => context.window_index += 1,
+                LoopControl::Advance => {
+                    context.window_index += 1;
+                    self.window_index = context.window_index;
+                    // Yield backend semaphore after each window to allow enumeration
+                    if context.window_index < context.windows_to_process {
+                        debug!(
+                            completed_window = context.window_index,
+                            remaining_windows = context.windows_to_process - context.window_index,
+                            "Yielding backend semaphore to allow enumeration"
+                        );
+                        return Ok(TaskContinuation::Resubmit);
+                    }
+                }
+                LoopControl::ResubmitAfter(delay) => {
+                    debug!(
+                        delay_ms = delay.as_millis(),
+                        "ScanStationsTask yielding with delay - will resubmit after delay"
+                    );
+                    return Ok(TaskContinuation::ResubmitAfter(delay));
+                }
             }
         }
 
@@ -140,10 +172,10 @@ impl ScanStationsTask {
             station_count = self.stations.len(),
             "ScanStationsTask completed"
         );
-        Ok(())
+        Ok(TaskContinuation::Complete)
     }
 
-    fn run_simple(&mut self, shutdown: CancellationToken) -> Result<()> {
+    fn run_simple(&mut self, shutdown: CancellationToken) -> Result<TaskContinuation> {
         debug!(
             station_count = self.stations.len(),
             "Starting station scan task"
@@ -158,7 +190,7 @@ impl ScanStationsTask {
             while self.pause_signal.is_paused() {
                 if shutdown.is_cancelled() {
                     debug!("Shutdown requested during pause, stopping scan");
-                    return Ok(());
+                    return Ok(TaskContinuation::Complete);
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -187,7 +219,7 @@ impl ScanStationsTask {
             station_count = self.stations.len(),
             "Station scan task completed"
         );
-        Ok(())
+        Ok(TaskContinuation::Complete)
     }
 
     #[allow(dead_code)]

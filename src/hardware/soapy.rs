@@ -86,8 +86,50 @@ impl Backend for Soapy {
             });
         }
 
+        // For devices without modes, check if they support multiple channels
+        let mut expanded_device_map: HashMap<(String, String), (String, Vec<TunerInfo>)> =
+            HashMap::new();
+
+        for ((driver, serial), (model, tuners)) in device_map {
+            if tuners.len() == 1 && tuners[0].mode.is_empty() {
+                let args = format!("driver={},serial={}", driver, serial);
+                if let Ok(device) = soapysdr::Device::new(soapysdr::Args::from(args.as_str()))
+                    && let Ok(num_channels) = device.num_channels(soapysdr::Direction::Rx)
+                    && num_channels > 1
+                {
+                    tracing::debug!(
+                        driver = %driver,
+                        serial = %serial,
+                        num_channels = num_channels,
+                        "Device supports multiple channels"
+                    );
+
+                    let device_id = DeviceId::from_serial(&driver, &serial);
+                    let mut channel_tuners = Vec::new();
+
+                    for channel_index in 0..num_channels {
+                        let tuner_label =
+                            format!("{} Ch{} ({}:{})", model, channel_index, driver, serial);
+                        channel_tuners.push(TunerInfo {
+                            id: crate::hardware::pool::TunerId::new(
+                                device_id.clone(),
+                                channel_index,
+                            ),
+                            label: tuner_label,
+                            mode: String::new(),
+                        });
+                    }
+
+                    expanded_device_map.insert((driver, serial), (model, channel_tuners));
+                    continue;
+                }
+            }
+
+            expanded_device_map.insert((driver, serial), (model, tuners));
+        }
+
         // Convert grouped devices to DeviceInfo
-        let devices: Vec<DeviceInfo> = device_map
+        let devices: Vec<DeviceInfo> = expanded_device_map
             .into_iter()
             .map(|((driver, serial), (model, tuners))| DeviceInfo {
                 id: DeviceId::from_serial(&driver, &serial),

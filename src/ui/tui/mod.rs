@@ -79,12 +79,6 @@ impl TuiProgressDisplay {
         self
     }
 
-    /// Pre-populate the model with cached devices
-    pub fn with_cached_devices(mut self, devices: Vec<crate::hardware::DeviceInfo>) -> Self {
-        self.model = self.model.with_cached_devices(devices);
-        self
-    }
-
     /// Run the TUI display loop
     pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Check if we're in an interactive terminal
@@ -303,20 +297,35 @@ impl TuiProgressDisplay {
             *iterations = 0; // Reset iteration counter when we get events
 
             // If we received Paused event and we're awaiting tune, send it now
-            if is_paused_event
-                && matches!(self.model.ui_mode, model::UiMode::AwaitingTune { .. })
-                && let Some(info) = self.model.selected_candidate_info()
-                && let Some(sender) = &self.command_sender
-            {
-                let _ = sender.send(crate::ui::ScannerCommand::TuneToCandidate {
-                    candidate_id: info.candidate_id,
-                    window_id: info.metadata.window_id,
-                    center_frequency: info.metadata.center_frequency_hz,
-                    candidate_frequency: info.candidate_frequency,
-                    signal_strength: info.signal_strength,
-                    audio_quality: info.audio_quality,
-                });
-                self.model.playback_active = true;
+            if is_paused_event {
+                if matches!(self.model.ui_mode, model::UiMode::AwaitingTune { .. }) {
+                    if let Some(info) = self.model.selected_candidate_info() {
+                        if let Some(sender) = &self.command_sender {
+                            debug!(
+                                candidate_id = ?info.candidate_id,
+                                window_id = info.metadata.window_id,
+                                frequency_mhz = info.candidate_frequency / 1e6,
+                                "TUI: Sending TuneToCandidate command after receiving Paused event"
+                            );
+                            let _ = sender.send(crate::ui::ScannerCommand::TuneToCandidate {
+                                candidate_id: info.candidate_id,
+                                window_id: info.metadata.window_id,
+                                center_frequency: info.metadata.center_frequency_hz,
+                                candidate_frequency: info.candidate_frequency,
+                                signal_strength: info.signal_strength,
+                                audio_quality: info.audio_quality,
+                            });
+                            self.model.playback_active = true;
+                        }
+                    } else {
+                        debug!("TUI: Paused event received but selected_candidate_info is None");
+                    }
+                } else {
+                    debug!(
+                        ui_mode = ?self.model.ui_mode,
+                        "TUI: Paused event received but not in AwaitingTune mode, ignoring"
+                    );
+                }
             }
         }
         Ok(())

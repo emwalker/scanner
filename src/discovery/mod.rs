@@ -1,14 +1,16 @@
 mod common;
 mod enumerator;
 mod service;
+pub mod tracker;
 
 #[cfg(target_os = "linux")]
 mod udev_discovery;
 
 mod polling;
 
-pub use enumerator::{DeviceEnumerator, MultiEnumerator, SourcePriority};
+pub use enumerator::{DeviceEnumerator, MultiEnumerator, SourcePriority, SubprocessEnumerator};
 pub use service::{Event, Service};
+pub use tracker::DeviceTracker;
 
 use crate::core::types::Result;
 use crate::hardware;
@@ -24,87 +26,43 @@ pub enum DiscoveryMode {
 pub fn create(
     backends: Vec<hardware::types::Backend>,
     mode: DiscoveryMode,
-    parent_log_file: Option<String>,
+    scheduler: std::sync::Arc<crate::task::TaskScheduler>,
+    pool: std::sync::Arc<crate::hardware::pool::Pool>,
 ) -> Box<dyn Service> {
-    use enumerator::{MultiEnumerator, SourcePriority, SubprocessEnumerator};
-
-    let mut enumerators: Vec<(Box<dyn DeviceEnumerator>, SourcePriority)> = backends
-        .into_iter()
-        .map(|backend| {
-            (
-                Box::new(SubprocessEnumerator::new(
-                    backend.as_str().to_string(),
-                    parent_log_file.clone(),
-                )) as Box<dyn DeviceEnumerator>,
-                SourcePriority::Backend,
-            )
-        })
-        .collect();
-
-    #[cfg(target_os = "linux")]
-    {
-        use enumerator::UsbEnumerator;
-        enumerators.push((
-            Box::new(UsbEnumerator::new()),
-            SourcePriority::UsbInspection,
-        ));
-    }
-
-    let enumerator = MultiEnumerator { enumerators };
-
     match mode {
         DiscoveryMode::ForcePolling(interval) => {
-            Box::new(polling::Polling::new(enumerator, interval))
+            Box::new(polling::Polling::new(scheduler, pool, backends, interval))
         }
         #[cfg(target_os = "linux")]
-        DiscoveryMode::ForceUdev => Box::new(udev_discovery::Udev::new(enumerator)),
+        DiscoveryMode::ForceUdev => Box::new(udev_discovery::Udev::new(scheduler, pool, backends)),
         DiscoveryMode::Auto => {
             #[cfg(target_os = "linux")]
             {
-                Box::new(udev_discovery::Udev::new(enumerator))
+                Box::new(udev_discovery::Udev::new(scheduler, pool, backends))
             }
             #[cfg(not(target_os = "linux"))]
             {
-                Box::new(polling::Polling::new(enumerator, Duration::from_secs(3)))
+                Box::new(polling::Polling::new(
+                    scheduler,
+                    pool,
+                    backends,
+                    Duration::from_secs(3),
+                ))
             }
         }
     }
 }
 
-/// Create a discovery service for testing that only uses backend enumeration
+/// Create a discovery service for testing
 ///
-/// This bypasses USB enumeration to avoid detecting real hardware during tests.
-/// Intended for test use only.
+/// For testing, use Backend::Mock and pass a scheduler/pool configured for testing.
 pub fn create_for_testing(
-    backends: Vec<Box<dyn hardware::Backend>>,
+    backends: Vec<hardware::types::Backend>,
     mode: DiscoveryMode,
+    scheduler: std::sync::Arc<crate::task::TaskScheduler>,
+    pool: std::sync::Arc<crate::hardware::pool::Pool>,
 ) -> Box<dyn Service> {
-    use enumerator::{DirectEnumerator, MultiEnumerator, SourcePriority};
-
-    let enumerators: Vec<(Box<dyn DeviceEnumerator>, SourcePriority)> = vec![(
-        Box::new(DirectEnumerator { backends }),
-        SourcePriority::Backend,
-    )];
-
-    let enumerator = MultiEnumerator { enumerators };
-
-    match mode {
-        DiscoveryMode::ForcePolling(interval) => {
-            Box::new(polling::Polling::new(enumerator, interval))
-        }
-        #[cfg(target_os = "linux")]
-        DiscoveryMode::ForceUdev => Box::new(udev_discovery::Udev::new(enumerator)),
-        DiscoveryMode::Auto => {
-            #[cfg(target_os = "linux")]
-            {
-                Box::new(udev_discovery::Udev::new(enumerator))
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                Box::new(polling::Polling::new(enumerator, Duration::from_secs(3)))
-            }
-        }
-    }
+    create(backends, mode, scheduler, pool)
 }
 
 /// Synchronously enumerate devices via subprocess worker matching an optional filter

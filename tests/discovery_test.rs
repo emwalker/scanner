@@ -1,6 +1,9 @@
 use scanner::discovery::{self, DiscoveryMode, Event};
-use scanner::hardware::{Backend, Mock};
+use scanner::hardware::pool::{Pool, PoolFilter, TuningMode};
+use scanner::hardware::types::Backend;
 use scanner::shutdown::ShutdownCoordinator;
+use scanner::task::TaskScheduler;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -8,12 +11,19 @@ use std::time::Duration;
 fn test_polling_discovery_integration() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    let coordinator = ShutdownCoordinator::new();
-    let backends: Vec<Box<dyn Backend>> = vec![Box::new(Mock)];
+    let coordinator = Arc::new(ShutdownCoordinator::new());
+
+    let filter = PoolFilter::new()
+        .with_driver("mock")
+        .with_mode(TuningMode::SingleTuner);
+    let pool = Arc::new(Pool::new(filter, None));
+    let scheduler = Arc::new(TaskScheduler::new(pool.clone(), coordinator.clone()));
 
     let mut service = discovery::create_for_testing(
-        backends,
+        vec![Backend::Mock],
         DiscoveryMode::ForcePolling(Duration::from_millis(100)),
+        scheduler,
+        pool.clone(),
     );
     let (event_tx, event_rx) = mpsc::channel();
 
@@ -50,10 +60,20 @@ fn test_polling_discovery_integration() {
 fn test_udev_discovery_integration() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    let coordinator = ShutdownCoordinator::new();
-    let backends: Vec<Box<dyn Backend>> = vec![Box::new(Mock)];
+    let coordinator = Arc::new(ShutdownCoordinator::new());
 
-    let mut service = discovery::create_for_testing(backends, DiscoveryMode::Auto);
+    let filter = PoolFilter::new()
+        .with_driver("mock")
+        .with_mode(TuningMode::SingleTuner);
+    let pool = Arc::new(Pool::new(filter, None));
+    let scheduler = Arc::new(TaskScheduler::new(pool.clone(), coordinator.clone()));
+
+    let mut service = discovery::create_for_testing(
+        vec![Backend::Mock],
+        DiscoveryMode::Auto,
+        scheduler,
+        pool.clone(),
+    );
     let (event_tx, event_rx) = mpsc::channel();
 
     coordinator
@@ -85,12 +105,19 @@ fn test_udev_discovery_integration() {
 fn test_discovery_shutdown_responsiveness() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    let coordinator = ShutdownCoordinator::new();
-    let backends: Vec<Box<dyn Backend>> = vec![Box::new(Mock)];
+    let coordinator = Arc::new(ShutdownCoordinator::new());
+
+    let filter = PoolFilter::new()
+        .with_driver("mock")
+        .with_mode(TuningMode::SingleTuner);
+    let pool = Arc::new(Pool::new(filter, None));
+    let scheduler = Arc::new(TaskScheduler::new(pool.clone(), coordinator.clone()));
 
     let mut service = discovery::create_for_testing(
-        backends,
+        vec![Backend::Mock],
         DiscoveryMode::ForcePolling(Duration::from_secs(10)),
+        scheduler,
+        pool.clone(),
     );
     let (event_tx, _event_rx) = mpsc::channel();
 

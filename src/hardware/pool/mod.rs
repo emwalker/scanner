@@ -24,7 +24,7 @@ use tokio::sync::broadcast;
 /// This trait defines the interface for objects that provide audio samples
 /// via a broadcast channel. Both legacy (SoapySdrManager) and pool-based
 /// (pool::Segment) implementations use this trait.
-pub trait SegmentTrait {
+pub trait SegmentTrait: Send {
     fn audio_subscriber(&self) -> broadcast::Receiver<crate::broadcast::SamplePacket>;
 }
 

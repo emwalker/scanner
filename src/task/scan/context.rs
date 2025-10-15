@@ -11,12 +11,14 @@ use crate::shutdown::ShutdownCoordinator;
 use crate::ui::{ProgressReporter, ScannerCommand, TuiEvent};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::Duration;
 use tracing::debug;
 
 pub enum LoopControl {
     Continue,
     Break,
     Advance,
+    ResubmitAfter(Duration),
 }
 
 pub struct ScanContext<'a> {
@@ -43,7 +45,7 @@ impl<'a> ScanContext<'a> {
     }
 
     pub fn handle_scan_complete_mode(&mut self) -> Result<LoopControl> {
-        self.check_and_handle_command(self.windows_to_process)?;
+        self.process_commands(self.windows_to_process, self.window_centers.len())?;
         std::thread::sleep(std::time::Duration::from_millis(100));
         Ok(LoopControl::Continue)
     }
@@ -90,25 +92,34 @@ impl<'a> ScanContext<'a> {
         if self
             .process_commands_with_pause_check(self.window_index + 1, self.window_centers.len())?
         {
+            debug!("Pause detected during scanning, transitioning to Paused mode");
             return Ok(LoopControl::Continue);
         }
 
         let center_freq = self.window_centers[self.window_index];
-        self.process_window(
+        match self.process_window(
             self.window_index + 1,
             center_freq,
             self.window_centers.len(),
-        )?;
-        self.process_commands(self.window_index + 1, self.window_centers.len())?;
+        ) {
+            Ok(()) => {
+                self.process_commands(self.window_index + 1, self.window_centers.len())?;
 
-        debug!(
-            completed_window = self.window_index + 1,
-            next_window = self.window_index + 2,
-            remaining = self.windows_to_process - self.window_index - 1,
-            "Window complete, advancing to next"
-        );
+                debug!(
+                    completed_window = self.window_index + 1,
+                    next_window = self.window_index + 2,
+                    remaining = self.windows_to_process - self.window_index - 1,
+                    "Window complete, advancing to next"
+                );
 
-        Ok(LoopControl::Advance)
+                Ok(LoopControl::Advance)
+            }
+            Err(crate::core::types::ScannerError::NoAvailableTuner(_)) => {
+                debug!("No tuners available, yielding semaphore to allow device discovery");
+                Ok(LoopControl::ResubmitAfter(Duration::from_millis(100)))
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn process_window(
@@ -241,7 +252,10 @@ impl<'a> ScanContext<'a> {
                 .first()
                 .map(|t| t.id.clone())
                 .unwrap_or_else(|| TunerId::new(DeviceId::from_serial("unknown", "0"), 0));
+            debug!(tuner_id = ?tuner_id, "Sending Paused event to TUI");
             let _ = sender.send(TuiEvent::Paused { tuner_id });
+        } else {
+            debug!("No TUI event sender available, cannot send Paused event");
         }
 
         Ok(())

@@ -55,7 +55,7 @@ impl MainThread {
             self.tui_event_sender.clone(),
         );
 
-        let handle = self.scheduler.submit(Task::ScanBand(scan_task))?;
+        let handle = self.scheduler.submit(Task::ScanBand(Box::new(scan_task)))?;
 
         while !handle.is_cancelled() && !self.shutdown_coordinator.is_shutdown() {
             std::thread::sleep(Duration::from_millis(100));

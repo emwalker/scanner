@@ -20,7 +20,9 @@ pub use audio::AudioTask;
 pub use enumeration::DeviceEnumerationTask;
 pub use scan::{ScanBandTask, ScanStationsTask};
 pub use scheduler::TaskScheduler;
-pub use types::{Task, TaskError, TaskHandle, TaskId, TaskPriority, TaskStatus, TaskType};
+pub use types::{
+    Task, TaskContinuation, TaskError, TaskHandle, TaskId, TaskPriority, TaskStatus, TaskType,
+};
 
 #[cfg(test)]
 mod tests;

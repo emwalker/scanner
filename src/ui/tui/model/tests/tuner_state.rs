@@ -692,7 +692,7 @@ fn test_multi_channel_device_shows_different_states_per_channel() {
 }
 
 #[test]
-fn test_cached_devices_populate_tuners_immediately() {
+fn test_added_devices_populate_tuners() {
     let sdrplay_device = DeviceInfo {
         id: DeviceId::from_serial("sdrplay", "2301034E34"),
         label: "SDRplay RSPduo".to_string(),
@@ -713,13 +713,14 @@ fn test_cached_devices_populate_tuners_immediately() {
         }],
     };
 
-    let model =
-        Model::new().with_cached_devices(vec![sdrplay_device.clone(), rtlsdr_device.clone()]);
+    let mut model = Model::new();
+    model.add_device(sdrplay_device.clone());
+    model.add_device(rtlsdr_device.clone());
 
     assert_eq!(
         model.device_count(),
         2,
-        "Should have 2 tuners from cached devices without waiting for pool status"
+        "Should have 2 tuners from added devices"
     );
 
     let sdrplay_tuner_id = TunerId::new(sdrplay_device.id.clone(), 0);
