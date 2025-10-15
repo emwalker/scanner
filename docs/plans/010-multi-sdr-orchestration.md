@@ -5,16 +5,6 @@
 **Dependencies**: All previous plans (005-009)
 **Related Plans**: `004-multi-sdr.md` (parent plan)
 
-## Prerequisites Status
-
-- ✅ Plan 005: Backend abstraction complete
-- ✅ Plan 006: Device discovery complete
-- ⏸️  Plan 007: Device pool not started
-- ⏸️  Plan 008: Subprocess IPC not started
-- ⏸️  Plan 009: Task abstraction not started
-
-Waiting on Plans 007, 008, and 009 before starting integration.
-
 ## Executive Summary
 
 Bring all multi-SDR components together into working system.
@@ -214,7 +204,8 @@ impl Orchestrator {
     }
 
     /// Submit a task for execution
-    pub fn submit_task(&self, task: Box<dyn task::Task>) -> Result<task::TaskId> {
+    /// Task will be executed cooperatively, yielding to other tasks as needed
+    pub fn submit_task(&self, task: Box<dyn task::Task>) -> Result<task::TaskHandle> {
         self.scheduler.submit(task)
     }
 
@@ -305,13 +296,80 @@ USB Event → Discovery Service
 
 This maintains clean separation while ensuring both systems stay in sync.
 
+**DeviceEnumerationTask Implementation**:
+
+```rust
+impl Task for DeviceEnumerationTask {
+    fn run(&mut self, _cancel: CancellationToken) -> Result<TaskContinuation> {
+        // Enumerate all devices for this backend
+        let devices = self.backend.enumerate_devices()?;
+
+        for device_info in devices {
+            // Add to pool
+            match self.pool.add_device_metadata(device_info.clone()) {
+                Ok(AddDeviceResult::Added) => {
+                    // Emit discovery event for TUI
+                    self.event_tx.send(Event::Added(device_info))?;
+                }
+                Ok(AddDeviceResult::AlreadyExists) => {
+                    // Skip - already in pool
+                }
+                Err(e) => {
+                    debug!(error = ?e, "Failed to add device to pool");
+                }
+            }
+        }
+
+        // Enumeration is a one-shot task
+        Ok(TaskContinuation::Complete)
+    }
+
+    fn backend(&self) -> Backend {
+        self.backend_type
+    }
+}
+```
+
 **Alternative**: Keep MultiEnumerator for non-backend enumerators (USB inspection), use TaskScheduler only for backend enumeration.
 
-### Step 1c: Simplified TaskScheduler Implementation
+### Step 1c: TaskScheduler with Continuation Pattern
 
-**Goal**: Show how unified task interface simplifies scheduling
+**Goal**: Enable task interleaving through cooperative yielding
 
-**Key simplification**: All tasks have the same signature, no tuner acquisition logic needed.
+**Key insight**: Long-running tasks (like ScanTask) must yield between work units to allow other tasks to run. This is achieved through the continuation pattern where tasks can request resubmission.
+
+**Task Continuation API**:
+
+```rust
+/// Controls task execution flow
+pub enum TaskContinuation {
+    /// Task completed successfully
+    Complete,
+
+    /// Task has more work - resubmit to allow other tasks to run
+    Resubmit,
+}
+
+pub trait Task {
+    /// Execute one unit of work
+    /// Returns whether task should continue or is complete
+    fn run(&mut self, cancel: CancellationToken) -> Result<TaskContinuation>;
+
+    /// Called when task starts
+    fn on_start(&mut self) {}
+
+    /// Called when task completes
+    fn on_complete(&mut self) {}
+
+    /// Called on error
+    fn on_error(&mut self, error: &Error) {}
+
+    /// Backend this task needs (for serialization)
+    fn backend(&self) -> Backend;
+}
+```
+
+**TaskScheduler Implementation**:
 
 ```rust
 impl TaskScheduler {
@@ -320,22 +378,50 @@ impl TaskScheduler {
         let cancel_token = CancellationToken::new();
 
         // Determine backend for serialization
-        let backend = self.determine_backend(&task)?;
+        let backend = task.backend();
 
-        // Acquire backend semaphore
-        let semaphore = self.acquire_backend_permit(&backend)?;
+        // Get backend semaphore
+        let semaphore = self.backend_semaphores.get(&backend)
+            .ok_or("Unknown backend")?
+            .clone();
 
         // Spawn task thread
         let mut task = task;
         let cancel = cancel_token.clone();
         std::thread::spawn(move || {
-            let _permit = semaphore.acquire_blocking();
-
-            // Run task with lifecycle hooks
             task.on_start();
-            match task.run(cancel) {
-                Ok(()) => task.on_complete(),
-                Err(e) => task.on_error(&e),
+
+            // Task execution loop - allows cooperative yielding
+            loop {
+                // Acquire backend permit (blocks if other task using backend)
+                let _permit = semaphore.acquire_blocking();
+
+                // Run one unit of work
+                match task.run(cancel.clone()) {
+                    Ok(TaskContinuation::Complete) => {
+                        // Task done - permit released automatically via Drop
+                        task.on_complete();
+                        break;
+                    }
+                    Ok(TaskContinuation::Resubmit) => {
+                        // Task has more work but yields to allow fairness
+                        // Drop permit explicitly to release backend immediately
+                        drop(_permit);
+
+                        // Check for cancellation before reacquiring
+                        if cancel.is_cancelled() {
+                            break;
+                        }
+
+                        // Continue loop - will reacquire permit and run again
+                        // Other tasks can acquire the permit in between
+                        continue;
+                    }
+                    Err(e) => {
+                        task.on_error(&e);
+                        break;
+                    }
+                }
             }
         });
 
@@ -344,27 +430,75 @@ impl TaskScheduler {
 }
 ```
 
+**Example: ScanTask with Cooperative Yielding**:
+
+```rust
+impl Task for ScanTask {
+    fn run(&mut self, cancel: CancellationToken) -> Result<TaskContinuation> {
+        // Process ONE window per call
+        let window = &self.windows[self.current_window_index];
+
+        // Acquire device from pool
+        let device = self.pool.acquire()?;
+
+        // Process this window
+        self.process_window(device, window)?;
+
+        // Release device back to pool
+        drop(device);
+
+        // Move to next window
+        self.current_window_index += 1;
+
+        // More windows to scan?
+        if self.current_window_index < self.windows.len() {
+            Ok(TaskContinuation::Resubmit)  // Yield, will continue later
+        } else {
+            Ok(TaskContinuation::Complete)  // All done
+        }
+    }
+
+    fn backend(&self) -> Backend {
+        Backend::Soapy
+    }
+}
+```
+
 **Benefits**:
-- No tuner acquisition logic in scheduler
-- All tasks treated uniformly
-- Tasks manage their own resource needs
-- Backend serialization still enforced via semaphores
+- **Fairness**: Tasks yield between work units, preventing starvation
+- **Interleaving**: DeviceEnumerationTask can run between scan windows
+- **Simplicity**: No complex continuation management or async runtime needed
+- **Natural state preservation**: Task struct maintains state between yields
+- **Backend serialization**: Semaphores ensure only one task per backend at a time
 
-**Concurrent Operations Example**:
+**How Interleaving Works**:
 
 ```
-Timeline with multiple tasks:
+Timeline with cooperative yielding:
 
-0s:    ScanTask starts (coordinator)
-0.1s:  ScanTask → Window 1 acquires tuner → processes (0.5s) → releases
-0.6s:  DeviceEnumerationTask(Soapy) can run! (0.2s)
-0.8s:  ScanTask → Window 2 acquires tuner → processes (0.5s) → releases
-1.3s:  ScanTask → Window 3 acquires tuner → processes (0.5s) → releases
-1.8s:  AudioTask starts, acquires tuner for station playback
-       (holds tuner for minutes while listening)
+0.0s:  ScanTask acquires Soapy permit
+0.0s:    → Processes window 1 (0.5s)
+0.5s:    → Returns TaskContinuation::Resubmit
+0.5s:    → Releases Soapy permit
+0.5s:    → Loops back to reacquire permit (blocks in queue)
+
+0.5s:  DeviceEnumerationTask acquires Soapy permit (gets it first!)
+0.5s:    → Enumerates devices (0.2s)
+0.7s:    → Returns TaskContinuation::Complete
+0.7s:    → Releases Soapy permit
+
+0.7s:  ScanTask reacquires Soapy permit
+0.7s:    → Processes window 2 (0.5s)
+1.2s:    → Returns TaskContinuation::Resubmit
+1.2s:    → Releases Soapy permit
+
+1.2s:  ScanTask reacquires Soapy permit (no competition)
+1.2s:    → Processes window 3 (0.5s)
+1.7s:    → Returns TaskContinuation::Complete
+1.7s:    → Task ends
 ```
 
-Without per-window allocation in ScanTask, DeviceEnumerationTask would be blocked for the entire 5-10 minute scan.
+The key: ScanTask releases the backend semaphore after each window, allowing other Soapy tasks to interleave. Without this, the entire 5-10 minute scan would block all other Soapy operations.
 
 ### Step 2: Update MainThread to Use Orchestrator
 **Time**: 2 hours
@@ -409,13 +543,14 @@ impl MainThread {
 
     pub fn run(&mut self) -> Result<()> {
         // Start scanning task
+        // Note: ScanTask will yield between windows via TaskContinuation::Resubmit
         let scan_task = task::ScanTask::new(
             self.config.clone(),
             FrequencyBand::fm(),
             Arc::clone(&self.progress_display) as Arc<dyn ProgressReporter>,
         );
 
-        let scan_task_id = self.orchestrator.submit_task(Box::new(scan_task))?;
+        let scan_handle = self.orchestrator.submit_task(Box::new(scan_task))?;
 
         // Main loop - handle user input
         loop {
@@ -595,6 +730,60 @@ fn test_hotplug() {
     println!("  Available: {}", after_remove.available_count);
 
     assert_eq!(after_remove.available_count, initial.available_count);
+}
+
+#[test]
+fn test_task_continuation_interleaving() {
+    // Test that tasks properly yield via TaskContinuation::Resubmit
+    let coordinator = Arc::new(ShutdownCoordinator::new());
+    let mut orchestrator = multi::Orchestrator::new(coordinator).unwrap();
+
+    orchestrator.start().unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+
+    // Track execution order
+    let execution_log = Arc::new(Mutex::new(Vec::new()));
+
+    // Create a multi-window scan task that yields between windows
+    let log1 = Arc::clone(&execution_log);
+    let scan_task = MockScanTask::new(3, move |window| {
+        log1.lock().unwrap().push(format!("scan-window-{}", window));
+    });
+
+    // Create a quick enumeration task
+    let log2 = Arc::clone(&execution_log);
+    let enum_task = MockEnumerationTask::new(move || {
+        log2.lock().unwrap().push("enumeration".to_string());
+    });
+
+    // Submit scan task first
+    let scan_handle = orchestrator.submit_task(Box::new(scan_task)).unwrap();
+
+    // Wait for first window to complete
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Submit enumeration task - should interleave between scan windows
+    let enum_handle = orchestrator.submit_task(Box::new(enum_task)).unwrap();
+
+    // Wait for both to complete
+    scan_handle.wait().unwrap();
+    enum_handle.wait().unwrap();
+
+    // Check execution log
+    let log = execution_log.lock().unwrap();
+    println!("Execution order: {:?}", log);
+
+    // Should see interleaving:
+    // scan-window-0, enumeration, scan-window-1, scan-window-2
+    // (or other interleaved patterns)
+    assert_eq!(log.len(), 4);
+    assert!(log.contains(&"scan-window-0".to_string()));
+    assert!(log.contains(&"scan-window-1".to_string()));
+    assert!(log.contains(&"scan-window-2".to_string()));
+    assert!(log.contains(&"enumeration".to_string()));
+
+    // Enumeration should NOT be at the end (would indicate no interleaving)
+    assert_ne!(log[3], "enumeration");
 }
 ```
 
@@ -797,6 +986,34 @@ examples/
 
 **Total**: ~51-58 hours (~2 weeks full-time, ~4-6 weeks part-time)
 
+## Key Design Decisions
+
+### Continuation Pattern for Task Interleaving
+
+This plan uses the **continuation pattern** (TaskContinuation::Resubmit) to enable cooperative task scheduling without requiring an async runtime.
+
+**Why this approach?**
+
+1. **Fairness**: Long-running tasks (like 5-10 minute scans) yield between work units, preventing starvation of other tasks
+2. **Simplicity**: No complex async state machines or runtime needed - just synchronous code in a loop
+3. **Natural state preservation**: Task struct maintains state (current window index, etc.) between yields
+4. **Backend serialization**: Semaphores per backend ensure safety without global queues
+5. **Interleaving**: Critical operations like device enumeration can run between scan windows
+
+**Alternative considered: Blocking without yielding**
+
+A simpler approach would be to acquire the backend semaphore once and hold it for the entire task. However, this would mean:
+- A 10-minute scan would block device enumeration for 10 minutes
+- Discovery events wouldn't be processed promptly
+- Poor user experience when devices are plugged/unplugged during scans
+
+**Pattern precedent**: This matches patterns used in:
+- Web APIs: `scheduler.yield()` for breaking up long JavaScript tasks
+- Tokio: Cooperative yielding at `.await` points
+- Coroutines: CPS-style yield and resume
+
+The continuation pattern provides the fairness benefits of cooperative multitasking while keeping the simplicity of synchronous, thread-based code.
+
 ## Conclusion
 
 This plan completes the multi-SDR architecture by integrating all components into a working system that:
@@ -804,7 +1021,8 @@ This plan completes the multi-SDR architecture by integrating all components int
 1. **Automatically discovers** devices at runtime
 2. **Manages device pool** with RAII guarantees
 3. **Isolates devices** in subprocesses for reliability
-4. **Schedules tasks** to available devices
+4. **Schedules tasks** to available devices using cooperative yielding
 5. **Updates TUI** with real-time status
+6. **Ensures fairness** through TaskContinuation pattern preventing task starvation
 
 The result is a robust, scalable architecture that works with 1 device (backward compatible) and automatically scales to N devices with parallel operations.
