@@ -3,9 +3,10 @@
 use super::context::{LoopControl, ScanContext};
 use crate::audio::session::AudioSession;
 use crate::core::types::{Band, Result, ScannerError, ScanningConfig};
-use crate::ecs::{ScanEntity, ScanType};
+use crate::ecs::{ScanEntity, ScanId, ScanType};
 use crate::hardware::pool::Pool;
 use crate::hardware::types::Backend;
+use crate::main_thread::WorkerHandle;
 use crate::pause_signal::PauseSignal;
 use crate::shutdown::ShutdownCoordinator;
 use crate::signal;
@@ -17,7 +18,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-/// Band scanning task (coordinator - doesn't hold tuners)
+/// Band scanning task (worker - communicates with main thread coordinator)
 #[allow(dead_code)]
 pub struct ScanBandTask {
     config: ScanningConfig,
@@ -35,6 +36,9 @@ pub struct ScanBandTask {
     window_centers: Vec<f64>,
     windows_to_process: usize,
     window_index: usize,
+
+    worker_handle: Option<WorkerHandle>,
+    scan_id: ScanId,
 }
 
 impl ScanBandTask {
@@ -61,6 +65,8 @@ impl ScanBandTask {
             window_centers: Vec::new(),
             windows_to_process: 0,
             window_index: 0,
+            worker_handle: None,
+            scan_id: ScanId::new(),
         }
     }
 
@@ -89,7 +95,18 @@ impl ScanBandTask {
             window_centers: Vec::new(),
             windows_to_process: 0,
             window_index: 0,
+            worker_handle: None,
+            scan_id: ScanId::new(),
         }
+    }
+
+    pub fn with_worker_handle(mut self, worker_handle: WorkerHandle) -> Self {
+        self.worker_handle = Some(worker_handle);
+        self
+    }
+
+    pub fn scan_id(&self) -> ScanId {
+        self.scan_id
     }
 
     /// Access to pause signal (for external control)

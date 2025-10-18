@@ -73,6 +73,33 @@ pub fn render_spectrum(
         *char = window_char; // Use theme window character
     }
 
+    // Add station markers to spectrum
+    let mut station_markers: Vec<(usize, char, bool, f32)> = Vec::new();
+    for station in &model.spectrum_stations {
+        let station_freq_mhz = station.frequency_hz / 1e6;
+        let station_pos =
+            ((station_freq_mhz - fm_start) / fm_range * spectrum_width as f64) as usize;
+        if station_pos < spectrum_width {
+            let marker_char = if station.signal_strength > 0.7 {
+                '█'
+            } else if station.signal_strength > 0.4 {
+                '▌'
+            } else {
+                '░'
+            };
+            station_markers.push((
+                station_pos,
+                marker_char,
+                station.is_active,
+                station.signal_strength,
+            ));
+        }
+    }
+
+    for (pos, marker, _is_active, _strength) in &station_markers {
+        spectrum_chars[*pos] = *marker;
+    }
+
     // Create layout for spectrum visualization
     let spectrum_layout = SpectrumLayout::new(area);
 
@@ -90,7 +117,7 @@ pub fn render_spectrum(
     // Create spans for proper coloring
     let mut spans = vec![Span::raw(" ")]; // Leading space
 
-    for ch in spectrum_chars.iter() {
+    for (idx, ch) in spectrum_chars.iter().enumerate() {
         if *ch == theme.spectrum_window_char() {
             // Highlight scanning window with theme color
             spans.push(Span::styled(
@@ -99,6 +126,21 @@ pub fn render_spectrum(
                     .fg(theme.spectrum_window())
                     .add_modifier(Modifier::BOLD),
             ));
+        } else if let Some((_, marker, is_active, _)) =
+            station_markers.iter().find(|(pos, _, _, _)| *pos == idx)
+        {
+            // Station marker with theme colors
+            let color = if *is_active {
+                theme.status_playing()
+            } else {
+                theme.status_signal()
+            };
+            let style = if *is_active {
+                Style::default().fg(color).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(color)
+            };
+            spans.push(Span::styled(marker.to_string(), style));
         } else {
             // Default color for baseline
             spans.push(Span::raw(ch.to_string()));

@@ -13,6 +13,7 @@
 
 pub mod components;
 pub mod entities;
+pub mod messages;
 pub mod systems;
 
 mod coordinator;
@@ -23,6 +24,7 @@ mod world;
 
 pub use coordinator::Coordinator;
 pub use entity::Entity;
+pub use messages::{CommandError, WorkerCommand, WorkerEvent};
 pub use schedule::Scheduler;
 pub use system::{System, SystemContext};
 pub use world::EntityWorld;

@@ -25,6 +25,8 @@ pub struct AllocationRequest {
     pub sample_rate_hz: f64,
     pub priority: Priority,
     pub for_audio: bool,
+    pub filter: Option<std::sync::Arc<crate::hardware::pool::PoolFilter>>,
+    pub allocated_count: usize,
 }
 
 impl Default for AllocationSystem {
@@ -75,11 +77,24 @@ impl System for AllocationSystem {
 
         for request in &self.pending_requests {
             let tuner_id = {
-                let entities = tuner_entities.lock().unwrap();
+                let entities = match tuner_entities.try_lock() {
+                    Ok(entities) => entities,
+                    Err(_) => return Ok(()),
+                };
                 let mut best_tuner: Option<TunerId> = None;
 
                 for entity in entities.iter() {
                     if !entity.is_available() {
+                        continue;
+                    }
+
+                    if let Some(ref filter) = request.filter
+                        && !filter.is_allowed(
+                            entity.id(),
+                            &entity.device.backend,
+                            request.allocated_count,
+                        )
+                    {
                         continue;
                     }
 
@@ -108,7 +123,10 @@ impl System for AllocationSystem {
             };
 
             if let Some(tuner_id) = tuner_id {
-                let mut entities = tuner_entities.lock().unwrap();
+                let mut entities = match tuner_entities.try_lock() {
+                    Ok(entities) => entities,
+                    Err(_) => return Ok(()),
+                };
                 if let Some(entity) = entities.get_mut(&tuner_id) {
                     entity.allocation.allocate(request.requester_id.clone());
                     if request.for_audio {
@@ -184,6 +202,8 @@ mod tests {
             sample_rate_hz: 2_000_000.0,
             priority: Priority::Medium,
             for_audio: false,
+            filter: None,
+            allocated_count: 0,
         });
 
         let result = system.run(&mut context);
@@ -217,6 +237,8 @@ mod tests {
             sample_rate_hz: 2_000_000.0,
             priority: Priority::Medium,
             for_audio: false,
+            filter: None,
+            allocated_count: 0,
         });
 
         let result = system.run(&mut context);
@@ -258,6 +280,8 @@ mod tests {
             sample_rate_hz: 2_000_000.0,
             priority: Priority::Medium,
             for_audio: false,
+            filter: None,
+            allocated_count: 0,
         });
 
         let result = system.run(&mut context);
@@ -292,6 +316,8 @@ mod tests {
             sample_rate_hz: 2_000_000.0,
             priority: Priority::Medium,
             for_audio: false,
+            filter: None,
+            allocated_count: 0,
         });
 
         let result = system.run(&mut context);

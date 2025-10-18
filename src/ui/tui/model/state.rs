@@ -3,7 +3,7 @@
 use crate::hardware::pool::TunerId;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use super::types::{FocusState, UiMode, WindowProgress};
+use super::types::{FocusState, SpectrumStation, UiMode, WindowProgress};
 
 /// Information about an individual tuner (channel) for UI display
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -41,6 +41,8 @@ pub struct Model {
     pub pool_info: HashMap<TunerId, crate::hardware::pool::TunerStatus>,
     pub pool_status: Option<crate::hardware::pool::PoolStatus>,
     pub devices: HashMap<crate::hardware::DeviceId, crate::hardware::DeviceInfo>,
+    pub spectrum_stations: Vec<SpectrumStation>,
+    pub active_audio_frequency: Option<f64>,
 }
 
 impl Default for Model {
@@ -66,6 +68,8 @@ impl Model {
             pool_info: HashMap::new(),
             pool_status: None,
             devices: HashMap::new(),
+            spectrum_stations: Vec::new(),
+            active_audio_frequency: None,
         }
     }
 }

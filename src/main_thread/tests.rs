@@ -315,3 +315,104 @@ fn test_pool_acquire_and_use() {
     );
     assert_eq!(status.allocated_tuner_count, 0, "No tuners allocated");
 }
+
+#[test]
+fn test_coordinator_thread_lifecycle() {
+    use std::sync::atomic::Ordering;
+
+    let config = create_test_config();
+    let console_writer = Arc::new(MockConsoleWriter::new());
+    let logger = Arc::new(MockLogger::new());
+    let backend = create_test_backend();
+    let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
+
+    let mut main_thread = MainThread::new(
+        Arc::new(config),
+        console_writer,
+        logger,
+        backend,
+        shutdown_coordinator,
+    )
+    .unwrap();
+
+    assert!(
+        main_thread.coordinator_handle.is_none(),
+        "Coordinator should not be spawned yet"
+    );
+
+    main_thread.spawn_coordinator();
+
+    assert!(
+        main_thread.coordinator_handle.is_some(),
+        "Coordinator should be spawned"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(250));
+
+    assert!(
+        !main_thread.coordinator_shutdown.load(Ordering::SeqCst),
+        "Coordinator should still be running"
+    );
+
+    drop(main_thread);
+}
+
+#[test]
+fn test_coordinator_shutdown_on_drop() {
+    use std::sync::atomic::Ordering;
+
+    let config = create_test_config();
+    let console_writer = Arc::new(MockConsoleWriter::new());
+    let logger = Arc::new(MockLogger::new());
+    let backend = create_test_backend();
+    let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
+
+    let mut main_thread = MainThread::new(
+        Arc::new(config),
+        console_writer,
+        logger,
+        backend,
+        shutdown_coordinator,
+    )
+    .unwrap();
+
+    let shutdown_flag = Arc::clone(&main_thread.coordinator_shutdown);
+
+    main_thread.spawn_coordinator();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    assert!(
+        !shutdown_flag.load(Ordering::SeqCst),
+        "Coordinator should be running"
+    );
+
+    drop(main_thread);
+
+    assert!(
+        shutdown_flag.load(Ordering::SeqCst),
+        "Coordinator should be shut down after drop"
+    );
+}
+
+#[test]
+fn test_worker_channels_creation() {
+    let (channels, handle) = WorkerChannels::new();
+
+    assert!(channels.event_rx.try_recv().is_err(), "No events yet");
+
+    handle
+        .event_tx
+        .send(WorkerEvent::ScanStarted {
+            scan_id: ScanId::new(),
+        })
+        .unwrap();
+
+    assert!(channels.event_rx.try_recv().is_ok(), "Should receive event");
+
+    channels.command_tx.send(WorkerCommand::PauseScan).unwrap();
+
+    assert!(
+        handle.command_rx.try_recv().is_ok(),
+        "Should receive command"
+    );
+}

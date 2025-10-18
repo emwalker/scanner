@@ -37,6 +37,12 @@ pub struct TuiProgressDisplay {
     shutdown_token: CancellationToken,
     theme: Box<dyn Theme>,
     current_theme: ThemeName,
+    ui_update_system: Option<crate::ecs::systems::UIUpdateSystem>,
+    station_entities: Option<
+        std::sync::Arc<std::sync::Mutex<crate::ecs::EntityWorld<crate::ecs::StationEntity>>>,
+    >,
+    audio_entities:
+        Option<std::sync::Arc<std::sync::Mutex<crate::ecs::EntityWorld<crate::ecs::AudioEntity>>>>,
 }
 
 impl TuiProgressDisplay {
@@ -52,6 +58,9 @@ impl TuiProgressDisplay {
             shutdown_token,
             theme,
             current_theme,
+            ui_update_system: None,
+            station_entities: None,
+            audio_entities: None,
         }
     }
 
@@ -70,12 +79,31 @@ impl TuiProgressDisplay {
             shutdown_token,
             theme,
             current_theme,
+            ui_update_system: None,
+            station_entities: None,
+            audio_entities: None,
         }
     }
 
     /// Set the command sender for interactive control
     pub fn with_command_sender(mut self, sender: mpsc::Sender<crate::ui::ScannerCommand>) -> Self {
         self.command_sender = Some(sender);
+        self
+    }
+
+    /// Set entity worlds for spectrum display integration
+    pub fn with_entities(
+        mut self,
+        station_entities: std::sync::Arc<
+            std::sync::Mutex<crate::ecs::EntityWorld<crate::ecs::StationEntity>>,
+        >,
+        audio_entities: std::sync::Arc<
+            std::sync::Mutex<crate::ecs::EntityWorld<crate::ecs::AudioEntity>>,
+        >,
+    ) -> Self {
+        self.station_entities = Some(station_entities);
+        self.audio_entities = Some(audio_entities);
+        self.ui_update_system = Some(crate::ecs::systems::UIUpdateSystem::new());
         self
     }
 
@@ -172,6 +200,25 @@ impl TuiProgressDisplay {
                 self.model.close_theme_selector();
             }
             _ => {}
+        }
+    }
+
+    /// Update spectrum display data from entity worlds
+    fn update_spectrum_from_entities(&mut self) {
+        if let Some(system) = &mut self.ui_update_system
+            && let (Some(station_entities), Some(audio_entities)) =
+                (&self.station_entities, &self.audio_entities)
+        {
+            use crate::ecs::{System, SystemContext};
+
+            let mut context = SystemContext::new()
+                .with_station_entities(std::sync::Arc::clone(station_entities))
+                .with_audio_entities(std::sync::Arc::clone(audio_entities));
+
+            if system.run(&mut context).is_ok() {
+                self.model.spectrum_stations = system.stations().to_vec();
+                self.model.active_audio_frequency = system.active_frequency();
+            }
         }
     }
 
@@ -385,6 +432,9 @@ impl TuiProgressDisplay {
         let animation_interval = Duration::from_millis(100); // 10 FPS for slower, smoother animation
 
         loop {
+            // Update spectrum data from entities
+            self.update_spectrum_from_entities();
+
             // Always redraw for animation
             terminal.draw(|f| self.ui(f))?;
             iterations += 1;

@@ -64,6 +64,9 @@ pub struct Pool {
 
     /// ECS tuner entities (authoritative source of tuner state)
     pub(crate) tuner_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>>,
+
+    /// ECS allocation system (drives tuner allocation decisions)
+    pub(crate) allocation_system: Mutex<crate::ecs::systems::AllocationSystem>,
 }
 
 impl Pool {
@@ -82,6 +85,7 @@ impl Pool {
             subprocesses: Mutex::new(HashMap::new()),
             parent_log_file,
             tuner_entities: Arc::new(Mutex::new(crate::ecs::EntityWorld::new())),
+            allocation_system: Mutex::new(crate::ecs::systems::AllocationSystem::new()),
         }
     }
 

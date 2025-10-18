@@ -1,4 +1,4 @@
-use super::MainThread;
+use super::{MainThread, WorkerChannels};
 use crate::core::types::{Result, ScannerError};
 use crate::task::{ScanBandTask, ScanStationsTask, Task};
 use std::time::Duration;
@@ -19,6 +19,8 @@ impl MainThread {
             "Creating ScanStationsTask for station scanning"
         );
 
+        let (worker_channels, worker_handle) = WorkerChannels::new();
+
         let scan_task = ScanStationsTask::new_full(
             (*self.config).clone(),
             stations,
@@ -29,10 +31,22 @@ impl MainThread {
             self.tui_event_sender.clone(),
         );
 
+        let scan_id = scan_task.scan_id();
+        self.worker_channels
+            .lock()
+            .unwrap()
+            .insert(scan_id, worker_channels);
+
+        let scan_task = scan_task.with_worker_handle(worker_handle);
+
         let handle = self.scheduler.submit(Task::ScanStations(scan_task))?;
 
         while !handle.is_cancelled() && !self.shutdown_coordinator.is_shutdown() {
             std::thread::sleep(Duration::from_millis(100));
+        }
+
+        if let Ok(mut channels) = self.worker_channels.try_lock() {
+            channels.remove(&scan_id);
         }
 
         debug!("ScanStationsTask completed");
@@ -45,6 +59,8 @@ impl MainThread {
             "Creating ScanBandTask for band scanning"
         );
 
+        let (worker_channels, worker_handle) = WorkerChannels::new();
+
         let scan_task = ScanBandTask::new_full(
             (*self.config).clone(),
             self.config.band,
@@ -55,10 +71,22 @@ impl MainThread {
             self.tui_event_sender.clone(),
         );
 
+        let scan_id = scan_task.scan_id();
+        self.worker_channels
+            .lock()
+            .unwrap()
+            .insert(scan_id, worker_channels);
+
+        let scan_task = scan_task.with_worker_handle(worker_handle);
+
         let handle = self.scheduler.submit(Task::ScanBand(Box::new(scan_task)))?;
 
         while !handle.is_cancelled() && !self.shutdown_coordinator.is_shutdown() {
             std::thread::sleep(Duration::from_millis(100));
+        }
+
+        if let Ok(mut channels) = self.worker_channels.try_lock() {
+            channels.remove(&scan_id);
         }
 
         debug!("ScanBandTask completed");

@@ -37,7 +37,10 @@ impl System for DiscoverySystem {
             }
         };
 
-        let entities = tuner_entities.lock().unwrap();
+        let entities = match tuner_entities.try_lock() {
+            Ok(entities) => entities,
+            Err(_) => return Ok(()),
+        };
         let connected_count = entities.iter().filter(|e| e.is_connected()).count();
         let available_count = entities.iter().filter(|e| e.is_available()).count();
 

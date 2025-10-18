@@ -311,50 +311,6 @@ impl Pool {
             .ok_or_else(|| ScannerError::NoAvailableTuner(requirements.clone()))
     }
 
-    fn find_best_matching_entity(
-        &self,
-        entities: &crate::ecs::EntityWorld<crate::ecs::TunerEntity>,
-        requirements: &TaskRequirements,
-        allocated_count: usize,
-    ) -> Option<TunerId> {
-        entities
-            .iter()
-            .filter(|entity| entity.is_available())
-            .filter_map(|entity| {
-                let tuner_id = entity.id();
-                let filter_allowed =
-                    self.filter
-                        .is_allowed(tuner_id, &entity.device.backend, allocated_count);
-                let can_handle = entity.device.capabilities.can_handle_task(requirements);
-
-                debug!(
-                    tuner_id = ?tuner_id,
-                    backend = ?entity.device.backend,
-                    filter_allowed = filter_allowed,
-                    can_handle = can_handle,
-                    "Pool acquire: evaluated tuner entity"
-                );
-
-                if filter_allowed && can_handle {
-                    Some((tuner_id.clone(), entity))
-                } else {
-                    None
-                }
-            })
-            .min_by_key(|(_, entity)| {
-                let range_size = entity
-                    .device
-                    .capabilities
-                    .rx_frequency_ranges
-                    .iter()
-                    .map(|(min, max)| (max - min) as u64)
-                    .sum::<u64>();
-
-                (range_size, entity.device.channel_index)
-            })
-            .map(|(tuner_id, _)| tuner_id)
-    }
-
     /// Check if pool is in valid state for acquisition
     ///
     /// Returns None if pool state is not Active, shutdown mode is enabled,
@@ -394,8 +350,11 @@ impl Pool {
         requirements: &TaskRequirements,
         activity: TunerActivity,
     ) -> Option<TunerAllocation> {
-        let mut entities = self.tuner_entities.try_lock().ok()?;
+        use crate::ecs::components::Priority;
+        use crate::ecs::systems::AllocationRequest;
+        use crate::ecs::{System, SystemContext};
 
+        let entities = self.tuner_entities.try_lock().ok()?;
         let allocated_count = entities
             .iter()
             .filter(|e| e.allocation.is_allocated())
@@ -408,15 +367,46 @@ impl Pool {
             requirements = ?requirements,
             "Pool acquire: checking available tuners"
         );
+        drop(entities);
 
-        let tuner_id =
-            match self.find_best_matching_entity(&entities, requirements, allocated_count) {
-                Some(tuner_id) => tuner_id,
-                None => {
-                    debug!(requirements = ?requirements, "No tuner available");
-                    return None;
-                }
-            };
+        let requester_id = format!(
+            "pool_task_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        {
+            let mut system = self.allocation_system.lock().unwrap();
+            system.request_allocation(AllocationRequest {
+                requester_id: requester_id.clone(),
+                frequency_hz: requirements.frequency_hz,
+                sample_rate_hz: requirements.bandwidth_hz,
+                priority: Priority::Medium,
+                for_audio: activity == TunerActivity::Listening,
+                filter: Some(Arc::clone(&self.filter)),
+                allocated_count,
+            });
+
+            let mut context =
+                SystemContext::new().with_tuner_entities(Arc::clone(&self.tuner_entities));
+
+            if let Err(e) = System::run(&mut *system, &mut context) {
+                debug!(error = ?e, "AllocationSystem failed");
+                return None;
+            }
+        }
+
+        let entities = self.tuner_entities.try_lock().ok()?;
+        let tuner_id = entities
+            .iter()
+            .find(|e| {
+                e.allocation.is_allocated()
+                    && e.allocation.allocated_to.as_ref() == Some(&requester_id)
+            })?
+            .id()
+            .clone();
 
         let device_entry = match inner.devices.get(&tuner_id.device_id) {
             Some(d) => d,
@@ -434,20 +424,7 @@ impl Pool {
         let model = device_entry.capabilities.device_id.to_string();
         let capabilities = device_entry.capabilities.clone();
 
-        if let Some(entity) = entities.get_mut(&tuner_id) {
-            entity
-                .allocation
-                .allocate(format!("task_{}", tuner_id.channel_index));
-            match activity {
-                TunerActivity::Scanning => entity.status.start_scanning(),
-                TunerActivity::Listening => entity.status.start_listening(),
-                TunerActivity::Other => {}
-            }
-            debug!(tuner_id = ?tuner_id, "Tuner acquired from pool");
-        } else {
-            error!(tuner_id = ?tuner_id, "TunerEntity not found for allocation");
-            return None;
-        }
+        debug!(tuner_id = ?tuner_id, "Tuner acquired via AllocationSystem");
 
         Some(TunerAllocation {
             tuner_id,

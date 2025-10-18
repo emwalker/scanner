@@ -46,6 +46,8 @@ fn test_allocation_system_integration() {
         sample_rate_hz: 2_000_000.0,
         priority: Priority::Medium,
         for_audio: false,
+        filter: None,
+        allocated_count: 0,
     });
 
     let result = system.run(&mut context);

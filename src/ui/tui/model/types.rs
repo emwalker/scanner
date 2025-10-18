@@ -183,3 +183,11 @@ pub struct TunerDisplayInfo {
     pub label: String,
     pub state: TunerState,
 }
+
+/// Station marker for spectrum display
+#[derive(Debug, Clone)]
+pub struct SpectrumStation {
+    pub frequency_hz: f64,
+    pub signal_strength: f32,
+    pub is_active: bool,
+}

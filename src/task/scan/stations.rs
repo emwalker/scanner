@@ -2,9 +2,10 @@
 
 use super::context::{LoopControl, ScanContext};
 use crate::core::types::{Result, ScannerError, ScanningConfig};
-use crate::ecs::{ScanEntity, ScanType};
+use crate::ecs::{ScanEntity, ScanId, ScanType};
 use crate::hardware::pool::Pool;
 use crate::hardware::types::Backend;
+use crate::main_thread::WorkerHandle;
 use crate::pause_signal::PauseSignal;
 use crate::shutdown::ShutdownCoordinator;
 use crate::signal;
@@ -16,7 +17,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-/// Station scanning task (coordinator - doesn't hold tuners)
+/// Station scanning task (worker - communicates with main thread coordinator)
 #[allow(dead_code)]
 pub struct ScanStationsTask {
     config: ScanningConfig,
@@ -30,6 +31,9 @@ pub struct ScanStationsTask {
     tui_event_sender: Option<Sender<TuiEvent>>,
 
     window_index: usize,
+
+    worker_handle: Option<WorkerHandle>,
+    scan_id: ScanId,
 }
 
 impl ScanStationsTask {
@@ -52,6 +56,8 @@ impl ScanStationsTask {
             command_receiver: None,
             tui_event_sender: None,
             window_index: 0,
+            worker_handle: None,
+            scan_id: ScanId::new(),
         }
     }
 
@@ -76,7 +82,18 @@ impl ScanStationsTask {
             command_receiver,
             tui_event_sender,
             window_index: 0,
+            worker_handle: None,
+            scan_id: ScanId::new(),
         }
+    }
+
+    pub fn with_worker_handle(mut self, worker_handle: WorkerHandle) -> Self {
+        self.worker_handle = Some(worker_handle);
+        self
+    }
+
+    pub fn scan_id(&self) -> ScanId {
+        self.scan_id
     }
 
     /// Access to pause signal (for external control)

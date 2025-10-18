@@ -4,6 +4,7 @@ pub mod audio;
 pub mod device;
 pub mod scan;
 pub mod tuner;
+pub mod ui;
 
 #[cfg(test)]
 mod integration_tests;
@@ -12,3 +13,4 @@ pub use audio::ManagementSystem;
 pub use device::DiscoverySystem;
 pub use scan::CoordinationSystem;
 pub use tuner::{AllocationRequest, AllocationSystem};
+pub use ui::UIUpdateSystem;

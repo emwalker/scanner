@@ -11,6 +11,7 @@ use tracing::debug;
 /// - Phase 1: Constrain by backend, driver, or tuning mode
 /// - Phase 2+: Gradually relax constraints
 /// - Final: allow_all() - full multi-tuner support
+#[derive(Debug)]
 pub struct PoolFilter {
     backend: Option<hardware::types::Backend>,
     driver: Option<String>,
