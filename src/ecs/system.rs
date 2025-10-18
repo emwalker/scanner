@@ -17,9 +17,10 @@ pub trait System: Send {
     fn run(&mut self, context: &mut SystemContext) -> Result<()>;
 }
 
-use crate::ecs::EntityWorld;
-use crate::ecs::{AudioEntity, ScanEntity, StationEntity, TunerEntity};
-use std::sync::{Arc, Mutex, RwLock};
+use crate::ecs::{
+    AudioEntity, CandidateEntity, Entities, EntityWorld, ScanEntity, StationEntity, TunerEntity,
+};
+use std::sync::{Arc, Mutex};
 
 /// Context provided to systems during execution
 ///
@@ -27,9 +28,10 @@ use std::sync::{Arc, Mutex, RwLock};
 /// for system execution.
 pub struct SystemContext {
     pub tuner_entities: Option<Arc<Mutex<EntityWorld<TunerEntity>>>>,
-    pub scan_entities: Option<Arc<RwLock<EntityWorld<ScanEntity>>>>,
-    pub station_entities: Option<Arc<RwLock<EntityWorld<StationEntity>>>>,
-    pub audio_entities: Option<Arc<RwLock<EntityWorld<AudioEntity>>>>,
+    pub scan_entities: Option<Entities<ScanEntity>>,
+    pub station_entities: Option<Entities<StationEntity>>,
+    pub audio_entities: Option<Entities<AudioEntity>>,
+    pub candidate_entities: Option<Entities<CandidateEntity>>,
 }
 
 impl Default for SystemContext {
@@ -45,6 +47,7 @@ impl SystemContext {
             scan_entities: None,
             station_entities: None,
             audio_entities: None,
+            candidate_entities: None,
         }
     }
 
@@ -53,21 +56,23 @@ impl SystemContext {
         self
     }
 
-    pub fn with_scan_entities(mut self, entities: Arc<RwLock<EntityWorld<ScanEntity>>>) -> Self {
+    pub fn with_scan_entities(mut self, entities: Entities<ScanEntity>) -> Self {
         self.scan_entities = Some(entities);
         self
     }
 
-    pub fn with_station_entities(
-        mut self,
-        entities: Arc<RwLock<EntityWorld<StationEntity>>>,
-    ) -> Self {
+    pub fn with_station_entities(mut self, entities: Entities<StationEntity>) -> Self {
         self.station_entities = Some(entities);
         self
     }
 
-    pub fn with_audio_entities(mut self, entities: Arc<RwLock<EntityWorld<AudioEntity>>>) -> Self {
+    pub fn with_audio_entities(mut self, entities: Entities<AudioEntity>) -> Self {
         self.audio_entities = Some(entities);
+        self
+    }
+
+    pub fn with_candidate_entities(mut self, entities: Entities<CandidateEntity>) -> Self {
+        self.candidate_entities = Some(entities);
         self
     }
 }

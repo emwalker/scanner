@@ -171,8 +171,10 @@ impl Model {
 
     /// Get the state of a specific tuner based on pool status
     pub fn tuner_state(&self, tuner_id: &crate::hardware::pool::TunerId) -> TunerState {
+        use tracing::debug;
+
         if let Some(tuner) = self.pool_info.get(tuner_id) {
-            match (&tuner.state, &tuner.activity) {
+            let result = match (&tuner.state, &tuner.activity) {
                 (crate::hardware::pool::TunerState::Available, _) => TunerState::Available,
                 (crate::hardware::pool::TunerState::Allocated, Some(activity)) => match activity {
                     crate::hardware::pool::TunerActivity::Scanning => TunerState::Scanning,
@@ -180,8 +182,23 @@ impl Model {
                     crate::hardware::pool::TunerActivity::Other => TunerState::Available,
                 },
                 (crate::hardware::pool::TunerState::Allocated, None) => TunerState::Available,
-            }
+            };
+
+            debug!(
+                tuner_id = ?tuner_id,
+                pool_state = ?tuner.state,
+                pool_activity = ?tuner.activity,
+                result_state = ?result,
+                "tuner_state: Found in pool_info"
+            );
+
+            result
         } else {
+            debug!(
+                tuner_id = ?tuner_id,
+                pool_info_size = self.pool_info.len(),
+                "tuner_state: NOT found in pool_info, defaulting to Available"
+            );
             TunerState::Available
         }
     }

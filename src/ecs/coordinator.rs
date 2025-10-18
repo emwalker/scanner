@@ -4,9 +4,9 @@ use crate::core::types::Result;
 use crate::ecs::EntityWorld;
 use crate::ecs::Scheduler;
 use crate::ecs::system::SystemContext;
-use crate::ecs::{AudioEntity, ScanEntity, StationEntity, TunerEntity};
+use crate::ecs::{AudioEntity, CandidateEntity, Entities, ScanEntity, StationEntity, TunerEntity};
 use crate::hardware::pool::Pool;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 /// Coordinator manages system execution and provides the update loop
 ///
@@ -17,9 +17,10 @@ use std::sync::{Arc, Mutex, RwLock};
 pub struct Coordinator {
     scheduler: Scheduler,
     tuner_entities: Arc<Mutex<EntityWorld<TunerEntity>>>,
-    scan_entities: Option<Arc<RwLock<EntityWorld<ScanEntity>>>>,
-    station_entities: Option<Arc<RwLock<EntityWorld<StationEntity>>>>,
-    audio_entities: Option<Arc<RwLock<EntityWorld<AudioEntity>>>>,
+    scan_entities: Option<Entities<ScanEntity>>,
+    station_entities: Option<Entities<StationEntity>>,
+    audio_entities: Option<Entities<AudioEntity>>,
+    candidate_entities: Option<Entities<CandidateEntity>>,
 }
 
 impl Coordinator {
@@ -31,27 +32,31 @@ impl Coordinator {
             scan_entities: None,
             station_entities: None,
             audio_entities: None,
+            candidate_entities: None,
         }
     }
 
     /// Add scan entities to the coordinator
-    pub fn with_scan_entities(mut self, entities: Arc<RwLock<EntityWorld<ScanEntity>>>) -> Self {
+    pub fn with_scan_entities(mut self, entities: Entities<ScanEntity>) -> Self {
         self.scan_entities = Some(entities);
         self
     }
 
     /// Add station entities to the coordinator
-    pub fn with_station_entities(
-        mut self,
-        entities: Arc<RwLock<EntityWorld<StationEntity>>>,
-    ) -> Self {
+    pub fn with_station_entities(mut self, entities: Entities<StationEntity>) -> Self {
         self.station_entities = Some(entities);
         self
     }
 
     /// Add audio entities to the coordinator
-    pub fn with_audio_entities(mut self, entities: Arc<RwLock<EntityWorld<AudioEntity>>>) -> Self {
+    pub fn with_audio_entities(mut self, entities: Entities<AudioEntity>) -> Self {
         self.audio_entities = Some(entities);
+        self
+    }
+
+    /// Add candidate entities to the coordinator
+    pub fn with_candidate_entities(mut self, entities: Entities<CandidateEntity>) -> Self {
+        self.candidate_entities = Some(entities);
         self
     }
 
@@ -85,6 +90,10 @@ impl Coordinator {
             context = context.with_audio_entities(Arc::clone(audio_entities));
         }
 
+        if let Some(ref candidate_entities) = self.candidate_entities {
+            context = context.with_candidate_entities(Arc::clone(candidate_entities));
+        }
+
         self.scheduler.run(&mut context)
     }
 
@@ -98,6 +107,7 @@ impl Coordinator {
 mod tests {
     use super::*;
     use crate::hardware::pool::PoolFilter;
+    use std::sync::RwLock;
 
     #[test]
     fn test_coordinator_creation() {

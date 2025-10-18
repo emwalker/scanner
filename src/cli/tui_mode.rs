@@ -4,9 +4,9 @@ use crate::logging::DefaultLogger;
 use crate::main_thread::{DefaultConsoleWriter, MainThread};
 use crate::shutdown::ShutdownCoordinator;
 use crate::task::TaskScheduler;
+use crate::ui::TuiEvent;
 use crate::ui::tui::TuiProgressDisplay;
 use crate::ui::tui::themes::{ThemeName, create_theme};
-use crate::ui::{ChannelProgressReporter, ScannerCommand, TuiEvent};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
@@ -29,44 +29,24 @@ impl Logger for NoOpLogger {
 
 pub struct TuiContext {
     pub tui_event_sender: mpsc::Sender<TuiEvent>,
-    pub command_receiver: mpsc::Receiver<ScannerCommand>,
-    pub progress_reporter: Arc<ChannelProgressReporter>,
 }
 
 pub fn setup_tui_channels() -> (TuiContext, mpsc::Receiver<TuiEvent>) {
     let (tui_event_sender, tui_event_receiver) = mpsc::channel();
-    let (progress_sender, progress_receiver) = mpsc::channel();
-    let progress_reporter = Arc::new(ChannelProgressReporter::new(progress_sender));
 
-    let tui_event_sender_clone = tui_event_sender.clone();
-    thread::spawn(move || {
-        while let Ok(event) = progress_receiver.recv() {
-            if tui_event_sender_clone
-                .send(TuiEvent::Progress(event))
-                .is_err()
-            {
-                break;
-            }
-        }
-    });
-
-    let (_command_sender, command_receiver) = mpsc::channel();
-
-    (
-        TuiContext {
-            tui_event_sender,
-            command_receiver,
-            progress_reporter,
-        },
-        tui_event_receiver,
-    )
+    (TuiContext { tui_event_sender }, tui_event_receiver)
 }
 
 pub fn start_tui(
     tui_event_receiver: mpsc::Receiver<TuiEvent>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
     theme_name: ThemeName,
-    command_sender: mpsc::Sender<ScannerCommand>,
+    scan_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::ScanEntity>>>,
+    station_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::StationEntity>>>,
+    audio_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::AudioEntity>>>,
+    candidate_entities: Arc<
+        std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::CandidateEntity>>,
+    >,
 ) -> thread::JoinHandle<std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>> {
     let theme = create_theme(&theme_name);
 
@@ -77,7 +57,12 @@ pub fn start_tui(
             theme,
             theme_name,
         )
-        .with_command_sender(command_sender);
+        .with_entities(
+            scan_entities,
+            station_entities,
+            audio_entities,
+            candidate_entities,
+        );
         tui_display.run()
     })
 }
@@ -99,6 +84,12 @@ pub struct TuiRunContext {
     pub pool: Arc<Pool>,
     pub scheduler: Arc<TaskScheduler>,
     pub logger: Arc<dyn Logger + Send + Sync>,
+    pub scan_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::ScanEntity>>>,
+    pub station_entities:
+        Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::StationEntity>>>,
+    pub audio_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::AudioEntity>>>,
+    pub candidate_entities:
+        Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::CandidateEntity>>>,
 }
 
 pub fn run_with_tui(
@@ -111,18 +102,20 @@ pub fn run_with_tui(
     let console_writer = Arc::new(DefaultConsoleWriter);
     let backend = Arc::new(crate::hardware::Soapy);
 
-    let main_thread = MainThread::new_with_progress(
+    let main_thread = MainThread::new_with_entities(
         Arc::new(context.config),
         console_writer,
         context.logger,
         backend,
-        tui_context.progress_reporter,
         context.shutdown_coordinator.clone(),
         context.pool.clone(),
         context.scheduler,
         Vec::new(),
+        context.scan_entities,
+        context.station_entities,
+        context.audio_entities,
+        context.candidate_entities,
     )?
-    .with_command_receiver(tui_context.command_receiver)
     .with_tui_event_sender(tui_context.tui_event_sender);
 
     let main_handle = thread::spawn(move || main_thread.run(context.stations));

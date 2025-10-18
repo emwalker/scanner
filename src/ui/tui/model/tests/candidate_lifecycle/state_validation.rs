@@ -1,12 +1,13 @@
-use crate::ui::tui::model::{CandidateStatus, Model};
-use crate::ui::{ProgressEvent, ProgressEventType};
-use std::time::Instant;
-/// Test that candidates progress through all expected states
+use super::super::helpers::ModelTestContext;
+use crate::ecs::CandidateState;
+use crate::ui::tui::model::CandidateStatus;
+
 /// Test that no candidates remain stuck in intermediate states
 #[test]
 fn test_no_stuck_intermediate_states() {
-    let mut model = Model::new();
+    let mut ctx = ModelTestContext::new();
     let window_id = 1;
+
     // Create multiple candidates in different states
     let candidates = vec![
         ("88.1-1", 88_100_000.0),
@@ -15,109 +16,40 @@ fn test_no_stuck_intermediate_states() {
         ("88.7-1", 88_700_000.0),
         ("88.9-1", 88_900_000.0),
     ];
-    // Create all candidates
-    for (id, freq) in &candidates {
-        model.update(ProgressEvent {
-            event_type: ProgressEventType::CandidateCreated,
-            frequency_hz: *freq,
-            metadata: crate::scanning::window::WindowMetadata {
-                center_frequency_hz: *freq,
-                window_id,
-            },
-            candidate_id: Some(id.to_string()),
-            audio_quality: None,
-            signal_strength: None,
-            timestamp: Instant::now(),
-            tuner_id: None,
-        });
+
+    // Create all candidates and start analysis
+    for (_id, freq) in &candidates {
+        ctx.update_candidate(*freq, window_id, CandidateState::Detected, None, None);
+        ctx.update_candidate(*freq, window_id, CandidateState::Analyzing, None, None);
     }
-    // Start analysis for all
-    for (id, freq) in &candidates {
-        model.update(ProgressEvent {
-            event_type: ProgressEventType::AudioAnalysisStarted,
-            frequency_hz: *freq,
-            metadata: crate::scanning::window::WindowMetadata {
-                center_frequency_hz: *freq,
-                window_id,
-            },
-            candidate_id: Some(id.to_string()),
-            audio_quality: None,
-            signal_strength: None,
-            timestamp: Instant::now(),
-            tuner_id: None,
-        });
-    }
-    // Resolve all candidates to terminal states
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::CandidateRejected,
-        frequency_hz: candidates[0].1,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: candidates[0].1,
-            window_id,
-        },
-        candidate_id: Some(candidates[0].0.to_string()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::CandidateRejected,
-        frequency_hz: candidates[1].1,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: candidates[1].1,
-            window_id,
-        },
-        candidate_id: Some(candidates[1].0.to_string()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    ctx.sync();
+
+    // Resolve first two to Rejected
+    ctx.update_candidate(
+        candidates[0].1,
+        window_id,
+        CandidateState::Rejected,
+        None,
+        None,
+    );
+    ctx.update_candidate(
+        candidates[1].1,
+        window_id,
+        CandidateState::Rejected,
+        None,
+        None,
+    );
+
     // Complete signal paths for others
-    for (id, freq) in &candidates[2..] {
-        model.update(ProgressEvent {
-            event_type: ProgressEventType::SignalGenerated,
-            frequency_hz: *freq,
-            metadata: crate::scanning::window::WindowMetadata {
-                center_frequency_hz: *freq,
-                window_id,
-            },
-            candidate_id: Some(id.to_string()),
-            audio_quality: None,
-            signal_strength: None,
-            timestamp: Instant::now(),
-            tuner_id: None,
-        });
-        model.update(ProgressEvent {
-            event_type: ProgressEventType::AudioPlaybackStarted,
-            frequency_hz: *freq,
-            metadata: crate::scanning::window::WindowMetadata {
-                center_frequency_hz: *freq,
-                window_id,
-            },
-            candidate_id: Some(id.to_string()),
-            audio_quality: None,
-            signal_strength: None,
-            timestamp: Instant::now(),
-            tuner_id: None,
-        });
-        model.update(ProgressEvent {
-            event_type: ProgressEventType::AudioPlaybackCompleted,
-            frequency_hz: *freq,
-            metadata: crate::scanning::window::WindowMetadata {
-                center_frequency_hz: *freq,
-                window_id,
-            },
-            candidate_id: Some(id.to_string()),
-            audio_quality: None,
-            signal_strength: None,
-            timestamp: Instant::now(),
-            tuner_id: None,
-        });
+    for (_id, freq) in &candidates[2..] {
+        ctx.update_candidate(*freq, window_id, CandidateState::Signal, None, None);
+        ctx.update_candidate(*freq, window_id, CandidateState::Playing, None, None);
+        ctx.update_candidate(*freq, window_id, CandidateState::Completed, None, None);
     }
+    ctx.sync();
+
     // Verify no candidates are stuck in intermediate states
-    let window = model.windows.get(&window_id).unwrap();
+    let window = ctx.model.windows.get(&window_id).unwrap();
     for candidate in &window.candidates {
         match candidate.status {
             CandidateStatus::Detected | CandidateStatus::Analyzing => {

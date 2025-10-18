@@ -14,10 +14,8 @@ pub(super) fn render_window_detail_row(
     let mut chars = vec![' '; width];
     let mut colors: Vec<Option<ratatui::style::Color>> = vec![None; width];
 
-    if let Some(ws) = window_start
-        && let Some(current_window) = model.windows.get(&model.current_window)
-    {
-        let mut stations: Vec<_> = current_window.candidates.iter().collect();
+    if let Some(ws) = window_start {
+        let mut stations: Vec<_> = model.spectrum_stations.iter().collect();
 
         stations.sort_by(|a, b| {
             a.frequency_hz
@@ -25,16 +23,15 @@ pub(super) fn render_window_detail_row(
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        for candidate in stations {
-            let freq_in_window = candidate.frequency_hz - ws;
+        for station in stations {
+            let freq_in_window = station.frequency_hz - ws;
             if freq_in_window >= 0.0 && freq_in_window <= window_width {
                 let pos = (freq_in_window / window_width * width as f64) as usize;
-                let freq_mhz = candidate.frequency_hz / 1e6;
+                let freq_mhz = station.frequency_hz / 1e6;
                 let label = format!("{:.1}", freq_mhz);
-                let rejected = candidate.status == crate::ui::tui::model::CandidateStatus::Rejected;
 
-                let char = quality_char(&candidate.audio_quality);
-                let color = quality_color(&candidate.audio_quality, rejected, theme);
+                let char = quality_char(&station.audio_quality);
+                let color = quality_color(&station.audio_quality, station.is_active, theme);
 
                 place_station_marker(&mut chars, &mut colors, pos, char, &label, color);
             }
@@ -69,11 +66,11 @@ fn quality_char(quality: &Option<crate::audio::quality::AudioQuality>) -> char {
 
 fn quality_color(
     quality: &Option<crate::audio::quality::AudioQuality>,
-    rejected: bool,
+    is_active: bool,
     theme: &dyn Theme,
 ) -> Color {
-    if rejected {
-        return theme.status_rejected();
+    if is_active {
+        return theme.status_playing();
     }
     match quality {
         Some(crate::audio::quality::AudioQuality::Good) => theme.quality_good(),

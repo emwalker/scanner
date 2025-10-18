@@ -1,92 +1,70 @@
-use crate::ui::tui::model::{CandidateStatus, Model, UiMode};
-use crate::ui::{ProgressEvent, ProgressEventType};
-use std::time::Instant;
+use super::super::helpers::ModelTestContext;
+use crate::audio::quality::AudioQuality;
+use crate::ecs::CandidateState;
+use crate::ui::tui::model::{CandidateStatus, UiMode};
 
 #[test]
 fn test_enter_key_tunes_to_selected_station() {
-    let mut model = Model::new();
+    let mut ctx = ModelTestContext::new();
     let window_id = 0;
-    let candidate_id = "test-candidate".to_string();
+    let candidate_id = format!("{:.1}-{}", 88_900_000.0 / 1e6, window_id);
 
-    // Add a Signal candidate
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::CandidateCreated,
-        frequency_hz: 88_900_000.0,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: 88_900_000.0,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    ctx.update_candidate(
+        88_900_000.0,
+        window_id,
+        CandidateState::Detected,
+        None,
+        None,
+    );
+    ctx.update_candidate(
+        88_900_000.0,
+        window_id,
+        CandidateState::Signal,
+        None,
+        Some(0.8),
+    );
+    ctx.sync();
 
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::SignalGenerated,
-        frequency_hz: 88_900_000.0,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: 88_900_000.0,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: Some(0.8),
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    assert!(ctx.model.is_idle());
 
-    // Start in Idle mode
-    assert!(model.is_idle());
+    ctx.model.enter_selection_mode();
+    assert!(matches!(
+        ctx.model.ui_mode,
+        UiMode::NavigatingScanner { .. }
+    ));
+    assert!(ctx.model.selection_mode());
+    assert!(!ctx.model.browsing_mode());
 
-    // User presses UP arrow to enter selection mode (NavigatingScanner)
-    model.enter_selection_mode();
-    assert!(matches!(model.ui_mode, UiMode::NavigatingScanner { .. }));
-    assert!(model.selection_mode());
-    assert!(!model.browsing_mode()); // Not in browsing mode yet
-
-    // User presses ENTER - should transition to AwaitingTune
-    // This simulates the ENTER key handler logic
-    if let Some(selected_index) = model.selected_candidate_index() {
-        model.ui_mode = UiMode::AwaitingTune {
+    if let Some(selected_index) = ctx.model.selected_candidate_index() {
+        ctx.model.ui_mode = UiMode::AwaitingTune {
             navigation_index: selected_index,
             tuning_index: selected_index,
         };
     }
 
-    // Verify transition to AwaitingTune
-    assert!(matches!(model.ui_mode, UiMode::AwaitingTune { .. }));
-    assert!(model.browsing_mode()); // Now in browsing mode (scan paused)
+    assert!(matches!(ctx.model.ui_mode, UiMode::AwaitingTune { .. }));
+    assert!(ctx.model.browsing_mode());
 
-    // Verify selected_candidate_info works in AwaitingTune mode
-    let info = model.selected_candidate_info();
+    let info = ctx.model.selected_candidate_info();
     assert!(info.is_some());
     let info = info.unwrap();
     assert_eq!(info.candidate_id, candidate_id);
     assert_eq!(info.candidate_frequency, 88_900_000.0);
 
-    // Simulate receiving AudioPlaybackStarted event
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::AudioPlaybackStarted,
-        frequency_hz: 88_900_000.0,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: 88_900_000.0,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: Some(0.8),
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    ctx.update_candidate(
+        88_900_000.0,
+        window_id,
+        CandidateState::Playing,
+        None,
+        Some(0.8),
+    );
+    ctx.sync();
 
-    // Should transition to Listening mode
-    assert!(matches!(model.ui_mode, UiMode::Listening { .. }));
+    assert!(matches!(ctx.model.ui_mode, UiMode::Listening { .. }));
     if let UiMode::Listening {
         playing_candidate_id,
         ..
-    } = &model.ui_mode
+    } = &ctx.model.ui_mode
     {
         assert_eq!(playing_candidate_id, &candidate_id);
     }
@@ -94,120 +72,57 @@ fn test_enter_key_tunes_to_selected_station() {
 
 #[test]
 fn test_stop_listening_transitions_candidate_to_completed() {
-    let mut model = Model::default();
+    let mut ctx = ModelTestContext::new();
     let window_id = 1;
     let frequency = 88_900_000.0;
     let candidate_id = format!("{:.1}-{}", frequency / 1e6, window_id);
 
-    // Step 1: Create candidate in window 1
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::CandidateCreated,
-        frequency_hz: frequency,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: frequency,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    ctx.update_candidate(frequency, window_id, CandidateState::Detected, None, None);
+    ctx.sync();
 
-    // Step 2: Complete audio analysis
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::AudioAnalysisCompleted,
-        frequency_hz: frequency,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: frequency,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    ctx.update_candidate(
+        frequency,
+        window_id,
+        CandidateState::Signal,
+        Some(AudioQuality::Good),
+        Some(50.0),
+    );
+    ctx.sync();
 
-    // Step 3: Generate signal
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::SignalGenerated,
-        frequency_hz: frequency,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: frequency,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: Some(crate::audio::quality::AudioQuality::Good),
-        signal_strength: Some(50.0),
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
-
-    // Step 4: Pause scanning and enter interactive mode
-    model.enter_selection_mode();
-    if let Some(selected_index) = model.selected_candidate_index() {
-        model.ui_mode = UiMode::AwaitingTune {
+    ctx.model.enter_selection_mode();
+    if let Some(selected_index) = ctx.model.selected_candidate_index() {
+        ctx.model.ui_mode = UiMode::AwaitingTune {
             navigation_index: selected_index,
             tuning_index: selected_index,
         };
     }
-    assert!(model.browsing_mode());
+    assert!(ctx.model.browsing_mode());
 
-    // Step 5: Start playing audio from window 1
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::AudioPlaybackStarted,
-        frequency_hz: frequency,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: frequency,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    ctx.update_candidate(frequency, window_id, CandidateState::Playing, None, None);
+    ctx.sync();
 
-    // Verify candidate is in Playing state
-    let window = model.windows.get(&window_id).unwrap();
+    let window = ctx.model.windows.get(&window_id).unwrap();
     let candidate_index = window.candidate_lookup.get(&candidate_id).unwrap();
     let candidate = &window.candidates[*candidate_index];
     assert_eq!(candidate.status, CandidateStatus::Playing);
     assert_eq!(candidate.completion, 0.8);
 
-    // Step 6: Simulate scanning having progressed to window 2 (making window 1 an "old window")
-    // This tests the "old window" filtering bug where AudioPlaybackCompleted was rejected
-    // In a real scenario, this could happen if scanning resumed briefly or if there are
-    // multiple tuners scanning while one is listening
-    model.current_window = 2;
+    ctx.model.current_window = 2;
 
-    // Verify current_window has advanced to 2
-    assert_eq!(model.current_window, 2);
+    assert_eq!(ctx.model.current_window, 2);
 
-    // Verify we're still in interactive mode
-    assert!(model.is_interactive());
+    assert!(ctx.model.is_interactive());
 
-    // Step 7: Stop listening to the station from window 1 (now an "old window")
-    // Regression test for TWO bugs:
-    // 1. AudioPlaybackCompleted was filtered out in interactive mode by should_process_event()
-    // 2. AudioPlaybackCompleted was filtered out for old windows by update_candidate()
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::AudioPlaybackCompleted,
-        frequency_hz: frequency,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: frequency,
-            window_id, // window 1 is now "old" since current_window is 2
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: Some(crate::audio::quality::AudioQuality::Good),
-        signal_strength: Some(50.0),
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    ctx.update_candidate(
+        frequency,
+        window_id,
+        CandidateState::Completed,
+        Some(AudioQuality::Good),
+        Some(50.0),
+    );
+    ctx.sync();
 
-    // Verify candidate transitioned to Completed state despite being in an old window
-    let window = model.windows.get(&window_id).unwrap();
+    let window = ctx.model.windows.get(&window_id).unwrap();
     let candidate_index = window.candidate_lookup.get(&candidate_id).unwrap();
     let candidate = &window.candidates[*candidate_index];
     assert_eq!(

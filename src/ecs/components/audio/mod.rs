@@ -4,10 +4,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod allocation;
 mod playback;
+mod stop_listening_request;
 mod tuning;
 
 pub use allocation::AudioAllocationComponent;
 pub use playback::AudioPlaybackComponent;
+pub use stop_listening_request::StopListeningRequestComponent;
 pub use tuning::AudioTuningComponent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

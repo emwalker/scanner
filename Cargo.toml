@@ -80,6 +80,7 @@ ctrlc = "3.4"
 thread-priority = "1.2"
 libc = "0.2"
 postcard = { version = "1.0", features = ["alloc"] }
+indexmap = "2.12.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 udev = "0.9"

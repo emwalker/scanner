@@ -89,6 +89,13 @@ See `src/pool/mod.rs` for reference implementation of shutdown-safe patterns.
 - `cargo run - scan --stations 88.9e6 --duration 1 --json` - Run tuned to specific frequency (88.9 MHz)
 - When checking `--band fm`, use a timeout command with a suitable timeout
 
+## Debugging and Logs
+- **NEVER pipe `cargo run` output to `grep`, `sed`, `awk`, etc.** - The scanner uses subprocesses that write to separate log files
+- Log files are written to `/tmp/scanner*.log` (e.g., `/tmp/scanner-worker-*.log`)
+- To debug, run the scanner first, then examine the log files in /tmp
+- Use `cat /tmp/scanner*.log | grep pattern` to search logs AFTER the run completes
+- Use `RUST_LOG=debug` or `RUST_LOG=trace` to increase log verbosity
+
 ## Testing and Code Quality
 - **Dead code warnings are NOT acceptable** - remove all unused functions, constants, fields, and imports
   - Use `#[allow(dead_code)]` only if the code will be used soon or is intentionally kept for future use

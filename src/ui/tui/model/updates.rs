@@ -1,19 +1,14 @@
 //! Event processing and state update methods
 
-use crate::ui::{ProgressEvent, ProgressEventType, TuiEvent};
-use std::{collections::HashMap, time::Instant};
+use crate::ui::TuiEvent;
 use tracing::debug;
 
-use super::{
-    state::Model,
-    types::{CandidateProgress, CandidateStatus, UiMode, WindowProgress},
-};
+use super::state::Model;
 
 impl Model {
-    /// Update the model based on a TUI event (progress or discovery)
+    /// Update the model based on a TUI event
     pub fn update_tui_event(&mut self, event: TuiEvent) {
         match event {
-            TuiEvent::Progress(progress_event) => self.update(progress_event),
             TuiEvent::TunerAdded(tuner) => {
                 debug!(device_id = ?tuner.id, "TUI Model received TunerAdded event");
                 self.add_device(tuner);
@@ -26,6 +21,20 @@ impl Model {
                 debug!(tuner_id = ?tuner_id, ui_mode = ?self.ui_mode, "Scanning paused, tuner now available");
             }
             TuiEvent::ActiveTunersUpdated { status } => {
+                debug!(
+                    event_tuner_count = status.tuners.len(),
+                    "TUI Model: ActiveTunersUpdated event RECEIVED"
+                );
+
+                for tuner in &status.tuners {
+                    debug!(
+                        tuner_id = ?tuner.id,
+                        state = ?tuner.state,
+                        activity = ?tuner.activity,
+                        "TUI Model: Event contains tuner"
+                    );
+                }
+
                 let status_changed = if let Some(prev_status) = &self.pool_status {
                     prev_status.tuners.len() != status.tuners.len()
                         || prev_status.tuners.iter().zip(status.tuners.iter()).any(
@@ -38,6 +47,7 @@ impl Model {
                 };
 
                 if !status_changed {
+                    debug!("TUI Model: Status unchanged, skipping pool_info update");
                     return;
                 }
 
@@ -108,210 +118,6 @@ impl Model {
                 self.pool_status = Some(status);
                 self.mark_dirty();
             }
-        }
-    }
-
-    /// Update the model based on a progress event
-    pub fn update(&mut self, event: ProgressEvent) {
-        if !self.should_process_event(&event) {
-            return;
-        }
-
-        self.update_current_window(&event);
-
-        if let Some(candidate_id) = event.candidate_id.clone() {
-            self.update_candidate(event, &candidate_id);
-        }
-
-        self.complete_window_if_done();
-        self.mark_dirty();
-    }
-
-    fn should_process_event(&self, event: &ProgressEvent) -> bool {
-        if self.is_interactive()
-            && event.event_type != ProgressEventType::AudioPlaybackStarted
-            && event.event_type != ProgressEventType::AudioPlaybackCompleted
-        {
-            return false;
-        }
-
-        !matches!(event.event_type, ProgressEventType::PeakDetected)
-    }
-
-    fn update_current_window(&mut self, event: &ProgressEvent) {
-        if event.metadata.window_id > self.current_window {
-            self.current_window = event.metadata.window_id;
-            for (window_id, window) in self.windows.iter_mut() {
-                if *window_id < self.current_window {
-                    window.is_complete = true;
-                }
-            }
-        }
-    }
-
-    fn update_candidate(&mut self, event: ProgressEvent, candidate_id: &str) {
-        debug!(
-            event_type = ?event.event_type,
-            candidate_id = ?candidate_id,
-            window_id = event.metadata.window_id,
-            current_window = self.current_window,
-            ui_mode = ?self.ui_mode,
-            "Processing event with candidate_id"
-        );
-
-        if event.metadata.window_id < self.current_window
-            && !(self.is_interactive()
-                && (event.event_type == ProgressEventType::AudioPlaybackStarted
-                    || event.event_type == ProgressEventType::AudioPlaybackCompleted))
-        {
-            debug!("Ignoring event for old window");
-            return;
-        }
-
-        if event.event_type == ProgressEventType::AudioPlaybackStarted {
-            self.clear_playing_candidates(candidate_id);
-        }
-
-        let window_id = event.metadata.window_id;
-        let window = self.or_create_window(window_id);
-
-        let candidate_index = if let Some(&index) = window.candidate_lookup.get(candidate_id) {
-            debug!(index = index, "Found existing candidate");
-            index
-        } else {
-            debug!("Creating new candidate");
-            let new_candidate = CandidateProgress {
-                candidate_id: candidate_id.to_string(),
-                frequency_hz: event.frequency_hz,
-                metadata: event.metadata,
-                completion: 0.0,
-                status: CandidateStatus::Detected,
-                audio_quality: None,
-                signal_strength: None,
-                last_update: Instant::now(),
-            };
-            let index = window.candidates.len();
-            window.candidates.push(new_candidate);
-            window
-                .candidate_lookup
-                .insert(candidate_id.to_string(), index);
-            index
-        };
-
-        {
-            let candidate = &mut window.candidates[candidate_index];
-
-            match event.event_type {
-                ProgressEventType::CandidateCreated => {
-                    candidate.status = CandidateStatus::Detected;
-                    candidate.completion = 0.3;
-                }
-                ProgressEventType::AudioAnalysisStarted => {
-                    candidate.status = CandidateStatus::Analyzing;
-                    candidate.completion = 0.5;
-                }
-                ProgressEventType::AudioAnalysisCompleted => {
-                    if candidate.status == CandidateStatus::Signal {
-                    } else if candidate.status != CandidateStatus::Rejected {
-                        candidate.status = CandidateStatus::Signal;
-                        candidate.completion = 0.6;
-                    } else {
-                        candidate.completion = 1.0;
-                    }
-                }
-                ProgressEventType::CandidateRejected => {
-                    candidate.status = CandidateStatus::Rejected;
-                    candidate.completion = 1.0;
-                }
-                ProgressEventType::SignalGenerated => {
-                    candidate.status = CandidateStatus::Signal;
-                    candidate.completion = 0.6;
-                    if let Some(quality) = event.audio_quality {
-                        candidate.audio_quality = Some(quality);
-                    }
-                    if let Some(strength) = event.signal_strength {
-                        candidate.signal_strength = Some(strength);
-                    }
-                }
-                ProgressEventType::AudioPlaybackStarted => {
-                    debug!(
-                        frequency_mhz = event.frequency_hz / 1e6,
-                        candidate_id = ?candidate_id,
-                        "Setting candidate to Playing status"
-                    );
-                    candidate.status = CandidateStatus::Playing;
-                    candidate.completion = 0.8;
-                }
-                ProgressEventType::AudioPlaybackCompleted => {
-                    candidate.status = CandidateStatus::Completed;
-                    candidate.completion = 1.0;
-                }
-                ProgressEventType::ThreadCompleted | ProgressEventType::PeakDetected => {}
-            }
-
-            if let Some(quality) = event.audio_quality {
-                candidate.audio_quality = Some(quality);
-            }
-            candidate.last_update = Instant::now();
-        }
-
-        if event.event_type == ProgressEventType::AudioPlaybackStarted {
-            match &self.ui_mode {
-                UiMode::AwaitingTune {
-                    navigation_index,
-                    tuning_index,
-                }
-                | UiMode::Listening {
-                    navigation_index,
-                    playing_index: tuning_index,
-                    ..
-                } => {
-                    self.ui_mode = UiMode::Listening {
-                        navigation_index: *navigation_index,
-                        playing_index: *tuning_index,
-                        playing_candidate_id: candidate_id.to_string(),
-                    };
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn clear_playing_candidates(&mut self, new_playing_id: &str) {
-        debug!(
-            new_playing_candidate = ?new_playing_id,
-            "Clearing all other Playing candidates before setting new one"
-        );
-        for window in self.windows.values_mut() {
-            for candidate in &mut window.candidates {
-                if candidate.status == CandidateStatus::Playing {
-                    debug!(
-                        cleared_candidate = ?candidate.candidate_id,
-                        "Clearing Playing status from candidate"
-                    );
-                    candidate.status = CandidateStatus::Completed;
-                    candidate.completion = 1.0;
-                }
-            }
-        }
-    }
-
-    fn or_create_window(&mut self, window_id: usize) -> &mut WindowProgress {
-        self.windows
-            .entry(window_id)
-            .or_insert_with(|| WindowProgress {
-                window_id,
-                candidates: Vec::new(),
-                is_complete: false,
-                candidate_lookup: HashMap::new(),
-            })
-    }
-
-    fn complete_window_if_done(&mut self) {
-        if self.all_complete()
-            && let Some(window) = self.windows.get_mut(&self.current_window)
-        {
-            window.is_complete = true;
         }
     }
 }

@@ -1,14 +1,13 @@
 pub(crate) mod audio_coordinator;
-mod runner;
 
 use crate::core::types::{ConsoleWriter, Logger, Result, ScanningConfig};
-use crate::ecs::{AudioEntity, EntityWorld, ScanEntity, StationEntity};
+use crate::ecs::{AudioEntity, CandidateEntity, Entities, EntityWorld, ScanEntity, StationEntity};
 use crate::hardware::pool::{Pool, PoolFilter, TuningMode};
 use crate::shutdown::ShutdownCoordinator;
 use crate::task::TaskScheduler;
-use crate::ui::{NoOpProgressReporter, ProgressReporter, ScannerCommand, TuiEvent};
+use crate::ui::TuiEvent;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use tracing::{debug, info};
@@ -18,18 +17,17 @@ pub struct MainThread {
     console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
     _logger: Arc<dyn Logger + Send + Sync>,
     _backend: Arc<dyn crate::hardware::Backend>,
-    progress_reporter: Arc<dyn ProgressReporter>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
-    command_receiver: Option<Receiver<ScannerCommand>>,
     tui_event_sender: Option<Sender<TuiEvent>>,
     pool: Arc<Pool>,
     scheduler: Arc<TaskScheduler>,
     #[allow(dead_code)]
     discovered_devices: Vec<crate::hardware::DeviceInfo>,
 
-    scan_entities: Arc<RwLock<EntityWorld<ScanEntity>>>,
-    station_entities: Arc<RwLock<EntityWorld<StationEntity>>>,
-    audio_entities: Arc<RwLock<EntityWorld<AudioEntity>>>,
+    scan_entities: Entities<ScanEntity>,
+    station_entities: Entities<StationEntity>,
+    audio_entities: Entities<AudioEntity>,
+    candidate_entities: Entities<CandidateEntity>,
 
     coordinator_handle: Option<JoinHandle<()>>,
     coordinator_shutdown: Arc<AtomicBool>,
@@ -55,15 +53,14 @@ impl MainThread {
         let scan_entities = Arc::new(RwLock::new(EntityWorld::new()));
         let station_entities = Arc::new(RwLock::new(EntityWorld::new()));
         let audio_entities = Arc::new(RwLock::new(EntityWorld::new()));
+        let candidate_entities = Arc::new(RwLock::new(EntityWorld::new()));
 
-        let mut main_thread = MainThread {
+        let main_thread = MainThread {
             config,
             console_writer,
             _logger: logger,
             _backend: backend,
-            progress_reporter: Arc::new(NoOpProgressReporter),
             shutdown_coordinator,
-            command_receiver: None,
             tui_event_sender: None,
             pool,
             scheduler,
@@ -71,39 +68,35 @@ impl MainThread {
             scan_entities,
             station_entities,
             audio_entities,
+            candidate_entities,
             coordinator_handle: None,
             coordinator_shutdown: Arc::new(AtomicBool::new(false)),
         };
-
-        main_thread.spawn_coordinator();
 
         Ok(main_thread)
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new_with_progress(
+    pub fn new_with_entities(
         config: Arc<ScanningConfig>,
         console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
         logger: Arc<dyn Logger + Send + Sync>,
         backend: Arc<dyn crate::hardware::Backend>,
-        progress_reporter: Arc<dyn ProgressReporter>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
         pool: Arc<Pool>,
         scheduler: Arc<TaskScheduler>,
         discovered_devices: Vec<crate::hardware::DeviceInfo>,
+        scan_entities: Entities<ScanEntity>,
+        station_entities: Entities<StationEntity>,
+        audio_entities: Entities<AudioEntity>,
+        candidate_entities: Entities<CandidateEntity>,
     ) -> Result<Self> {
-        let scan_entities = Arc::new(RwLock::new(EntityWorld::new()));
-        let station_entities = Arc::new(RwLock::new(EntityWorld::new()));
-        let audio_entities = Arc::new(RwLock::new(EntityWorld::new()));
-
-        let mut main_thread = MainThread {
+        let main_thread = MainThread {
             config,
             console_writer,
             _logger: logger,
             _backend: backend,
-            progress_reporter,
             shutdown_coordinator,
-            command_receiver: None,
             tui_event_sender: None,
             pool,
             scheduler,
@@ -111,28 +104,24 @@ impl MainThread {
             scan_entities,
             station_entities,
             audio_entities,
+            candidate_entities,
             coordinator_handle: None,
             coordinator_shutdown: Arc::new(AtomicBool::new(false)),
         };
 
-        main_thread.spawn_coordinator();
-
         Ok(main_thread)
     }
 
-    pub fn with_command_receiver(mut self, receiver: Receiver<ScannerCommand>) -> Self {
-        self.command_receiver = Some(receiver);
+    pub fn with_tui_event_sender(mut self, sender: Sender<TuiEvent>) -> Self {
+        self.tui_event_sender = Some(sender);
+        self.spawn_coordinator();
         self
     }
 
-    pub fn with_tui_event_sender(mut self, sender: Sender<TuiEvent>) -> Self {
-        self.tui_event_sender = Some(sender.clone());
-
-        self.pool.add_state_change_callback(Box::new(move |status| {
-            let event = TuiEvent::ActiveTunersUpdated { status };
-            let _ = sender.send(event);
-        }));
-
+    pub fn start(mut self) -> Self {
+        if self.coordinator_handle.is_none() {
+            self.spawn_coordinator();
+        }
         self
     }
 
@@ -140,23 +129,47 @@ impl MainThread {
         use crate::ecs::Coordinator;
         use std::sync::atomic::Ordering;
 
+        let config = Arc::clone(&self.config);
         let pool = Arc::clone(&self.pool);
+        let _scheduler = Arc::clone(&self.scheduler);
         let scan_entities = Arc::clone(&self.scan_entities);
         let station_entities = Arc::clone(&self.station_entities);
         let audio_entities = Arc::clone(&self.audio_entities);
+        let candidate_entities = Arc::clone(&self.candidate_entities);
         let shutdown = Arc::clone(&self.coordinator_shutdown);
         let shutdown_coordinator = Arc::clone(&self.shutdown_coordinator);
+        let tui_event_sender = self.tui_event_sender.clone();
 
         let handle = std::thread::spawn(move || {
             let mut coordinator = Coordinator::new(&pool)
                 .with_scan_entities(scan_entities)
                 .with_station_entities(station_entities)
-                .with_audio_entities(audio_entities);
+                .with_audio_entities(audio_entities)
+                .with_candidate_entities(candidate_entities);
 
             coordinator.add_system(Box::new(crate::ecs::systems::DiscoverySystem::new()));
             coordinator.add_system(Box::new(crate::ecs::systems::AllocationSystem::new()));
-            coordinator.add_system(Box::new(crate::ecs::systems::CoordinationSystem::new()));
+
+            let mut window_processing_system = crate::ecs::systems::WindowProcessingSystem::new(
+                config.clone(),
+                pool.clone(),
+                shutdown_coordinator.clone(),
+            );
+            window_processing_system.enable();
+            coordinator.add_system(Box::new(window_processing_system));
+
+            coordinator.add_system(Box::new(crate::ecs::systems::ScanCoordinationSystem::new()));
+            coordinator.add_system(Box::new(
+                crate::ecs::systems::ScanRequestProcessorSystem::new(),
+            ));
+            coordinator.add_system(Box::new(crate::ecs::systems::AudioCoordinationSystem::new()));
             coordinator.add_system(Box::new(crate::ecs::systems::ManagementSystem::new()));
+
+            let mut ui_update_system = crate::ecs::systems::UIUpdateSystem::new();
+            if let Some(sender) = tui_event_sender {
+                ui_update_system = ui_update_system.with_tui_event_sender(sender);
+            }
+            coordinator.add_system(Box::new(ui_update_system));
 
             debug!(
                 system_count = coordinator.system_count(),
@@ -177,11 +190,7 @@ impl MainThread {
         self.coordinator_handle = Some(handle);
     }
 
-    pub fn run(mut self, stations: Option<String>) -> Result<()> {
-        // Logging is now initialized in main() before SDR operations
-        // Pool is already populated with initial device by scanner.rs
-
-        // Verify pool is populated
+    pub fn run(self, _stations: Option<String>) -> Result<()> {
         let pool_status = self.pool.status();
         debug!(
             device_count = pool_status.device_count,
@@ -189,14 +198,16 @@ impl MainThread {
             "Pool status at startup"
         );
 
-        self.spawn_coordinator();
-
         self.console_writer.write_info("Scanning for stations ...");
 
-        if let Some(stations_str) = stations {
-            self.scan_stations(&stations_str)?;
-        } else {
-            self.scan_band()?;
+        while !self.shutdown_coordinator.is_shutdown() {
+            if let Ok(entities) = self.scan_entities.read()
+                && entities.iter().all(|s| s.is_completed())
+                && !entities.is_empty()
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
         self.console_writer.write_info("Scan complete.");

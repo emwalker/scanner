@@ -85,14 +85,15 @@ fn test_main_thread_creation() {
     let backend = create_test_backend();
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
-    let main_thread = MainThread::new(
+    let result = MainThread::new(
         Arc::new(config),
         console_writer,
         logger,
         backend,
         shutdown_coordinator,
     );
-    assert!(main_thread.is_ok());
+    assert!(result.is_ok());
+    let _main_thread = result.unwrap().start();
 }
 
 #[test]
@@ -141,52 +142,6 @@ fn test_console_output() {
 
     let messages = console_clone.messages();
     assert_eq!(messages, vec!["INFO: Test message"]);
-}
-
-#[test]
-fn test_parse_stations() {
-    let config = create_test_config();
-    let console_writer = Arc::new(MockConsoleWriter::new());
-    let logger = Arc::new(MockLogger::new());
-    let _tuner_id = create_test_tuner_id();
-    let backend = create_test_backend();
-    let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
-
-    let main_thread = MainThread::new(
-        Arc::new(config),
-        console_writer,
-        logger,
-        backend,
-        shutdown_coordinator,
-    )
-    .unwrap();
-
-    let stations = main_thread
-        .parse_stations("88.9e6,101.5e6,107.3e6")
-        .unwrap();
-    assert_eq!(stations, vec![88.9e6, 101.5e6, 107.3e6]);
-}
-
-#[test]
-fn test_parse_stations_invalid() {
-    let config = create_test_config();
-    let console_writer = Arc::new(MockConsoleWriter::new());
-    let logger = Arc::new(MockLogger::new());
-    let _tuner_id = create_test_tuner_id();
-    let backend = create_test_backend();
-    let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
-
-    let main_thread = MainThread::new(
-        Arc::new(config),
-        console_writer,
-        logger,
-        backend,
-        shutdown_coordinator,
-    )
-    .unwrap();
-
-    let result = main_thread.parse_stations("88.9e6,invalid,107.3e6");
-    assert!(result.is_err());
 }
 
 #[test]
@@ -333,11 +288,12 @@ fn test_coordinator_thread_lifecycle() {
         backend,
         shutdown_coordinator,
     )
-    .unwrap();
+    .unwrap()
+    .start();
 
     assert!(
         main_thread.coordinator_handle.is_some(),
-        "Coordinator should be spawned automatically in new()"
+        "Coordinator should be spawned after start()"
     );
 
     std::thread::sleep(std::time::Duration::from_millis(250));
@@ -360,7 +316,7 @@ fn test_coordinator_shutdown_on_drop() {
     let backend = create_test_backend();
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
-    let mut main_thread = MainThread::new(
+    let main_thread = MainThread::new(
         Arc::new(config),
         console_writer,
         logger,
@@ -371,7 +327,6 @@ fn test_coordinator_shutdown_on_drop() {
 
     let shutdown_flag = Arc::clone(&main_thread.coordinator_shutdown);
 
-    main_thread.spawn_coordinator();
     std::thread::sleep(std::time::Duration::from_millis(50));
 
     assert!(
@@ -384,5 +339,76 @@ fn test_coordinator_shutdown_on_drop() {
     assert!(
         shutdown_flag.load(Ordering::SeqCst),
         "Coordinator should be shut down after drop"
+    );
+}
+
+#[test]
+fn test_tui_event_sender_wired_to_ui_update_system() {
+    use crate::ecs::Coordinator;
+    use crate::hardware::types::{Backend, Capabilities};
+
+    let (tui_sender, tui_receiver) = std::sync::mpsc::channel();
+
+    let pool = Arc::new(crate::hardware::pool::Pool::new(
+        crate::hardware::pool::PoolFilter::new().with_driver("sdrplay"),
+        None,
+    ));
+
+    let scan_entities = Arc::new(RwLock::new(crate::ecs::EntityWorld::new()));
+    let station_entities = Arc::new(RwLock::new(crate::ecs::EntityWorld::new()));
+    let audio_entities = Arc::new(RwLock::new(crate::ecs::EntityWorld::new()));
+    let candidate_entities = Arc::new(RwLock::new(crate::ecs::EntityWorld::new()));
+
+    let device_id = DeviceId::from_driver(Backend::Soapy, "sdrplay", "test123");
+    let tuner_id = crate::hardware::pool::TunerId {
+        device_id: device_id.clone(),
+        channel_index: 0,
+    };
+
+    {
+        let mut entities = pool.tuner_entities.lock().unwrap();
+        entities.insert(crate::ecs::TunerEntity::new(
+            device_id,
+            0,
+            Capabilities::for_mock("sdrplay", "test123"),
+            Backend::Soapy,
+        ));
+    }
+
+    let mut coordinator = Coordinator::new(&pool)
+        .with_scan_entities(scan_entities)
+        .with_station_entities(station_entities)
+        .with_audio_entities(audio_entities)
+        .with_candidate_entities(candidate_entities);
+
+    let mut ui_update_system = crate::ecs::systems::UIUpdateSystem::new();
+    ui_update_system = ui_update_system.with_tui_event_sender(tui_sender);
+    coordinator.add_system(Box::new(ui_update_system));
+
+    {
+        let mut entities = pool.tuner_entities.lock().unwrap();
+        let entity_id = tuner_id.clone();
+        let tuner = entities.get_mut(&entity_id).unwrap();
+        tuner.allocation.allocate("test_requester".to_string());
+        tuner.status.activity = crate::ecs::components::TunerActivity::Scanning;
+    }
+
+    coordinator.tick().unwrap();
+
+    let mut received_scanning_event = false;
+    while let Ok(event) = tui_receiver.try_recv() {
+        if let crate::ui::TuiEvent::ActiveTunersUpdated { status } = event {
+            for tuner in &status.tuners {
+                if tuner.id == tuner_id && tuner.activity == Some(TunerActivity::Scanning) {
+                    received_scanning_event = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    assert!(
+        received_scanning_event,
+        "UIUpdateSystem should send ActiveTunersUpdated events with Scanning activity when TUI event sender is configured"
     );
 }

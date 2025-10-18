@@ -4,42 +4,34 @@ pub(crate) struct SquelchMonitoringParams {
     pub squelch_learning_duration: f32,
     pub refined_frequency: f64,
     pub original_frequency_hz: f64,
+    #[allow(dead_code)]
     pub candidate_id: String,
+    #[allow(dead_code)]
     pub metadata: crate::scanning::window::WindowMetadata,
+    #[allow(dead_code)]
     pub tuner_id: Option<crate::hardware::DeviceId>,
 }
 
-fn create_progress_event(
-    event_type: crate::ui::ProgressEventType,
-    params: &SquelchMonitoringParams,
-) -> crate::ui::ProgressEvent {
-    crate::ui::ProgressEvent {
-        event_type,
-        frequency_hz: params.original_frequency_hz,
-        metadata: params.metadata,
-        candidate_id: Some(params.candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: std::time::Instant::now(),
-        tuner_id: params.tuner_id.clone(),
-    }
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum AnalysisResult {
+    Noise,
+    AudioDetected,
+    Timeout,
 }
 
 fn handle_noise_decision(
-    params: &SquelchMonitoringParams,
-    rejection_sender: &std::sync::mpsc::Sender<crate::ui::ProgressEvent>,
+    _params: &SquelchMonitoringParams,
+    result_sender: &std::sync::mpsc::Sender<AnalysisResult>,
     detection_cancel_token: &rustradio::graph::CancellationToken,
 ) {
     tracing::debug!("Squelch detected noise, exiting early");
-
-    let event = create_progress_event(crate::ui::ProgressEventType::CandidateRejected, params);
-    let _ = rejection_sender.send(event);
+    let _ = result_sender.send(AnalysisResult::Noise);
     detection_cancel_token.cancel();
 }
 
 fn handle_audio_decision(
     params: &SquelchMonitoringParams,
-    rejection_sender: &std::sync::mpsc::Sender<crate::ui::ProgressEvent>,
+    result_sender: &std::sync::mpsc::Sender<AnalysisResult>,
     detection_cancel_token: &rustradio::graph::CancellationToken,
 ) {
     tracing::debug!(
@@ -49,16 +41,15 @@ fn handle_audio_decision(
     let frequency_khz = (params.refined_frequency / 1000.0) as u64;
     mark_frequency_as_processed(frequency_khz);
 
-    let event = create_progress_event(crate::ui::ProgressEventType::AudioAnalysisCompleted, params);
-    let _ = rejection_sender.send(event);
+    let _ = result_sender.send(AnalysisResult::AudioDetected);
 
     tracing::debug!("Audio detected, terminating detection graph");
     detection_cancel_token.cancel();
 }
 
 fn handle_timeout(
-    params: &SquelchMonitoringParams,
-    rejection_sender: &std::sync::mpsc::Sender<crate::ui::ProgressEvent>,
+    _params: &SquelchMonitoringParams,
+    result_sender: &std::sync::mpsc::Sender<AnalysisResult>,
     detection_cancel_token: &rustradio::graph::CancellationToken,
     max_wait_time: f64,
 ) {
@@ -67,8 +58,7 @@ fn handle_timeout(
         max_wait_time
     );
 
-    let event = create_progress_event(crate::ui::ProgressEventType::AudioAnalysisCompleted, params);
-    let _ = rejection_sender.send(event);
+    let _ = result_sender.send(AnalysisResult::Timeout);
     detection_cancel_token.cancel();
 }
 
@@ -76,7 +66,7 @@ pub(crate) fn spawn_squelch_monitoring_thread(
     params: SquelchMonitoringParams,
     decision_state: std::sync::Arc<std::sync::atomic::AtomicU8>,
     detection_cancel_token: rustradio::graph::CancellationToken,
-    rejection_sender: std::sync::mpsc::Sender<crate::ui::ProgressEvent>,
+    result_sender: std::sync::mpsc::Sender<AnalysisResult>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let check_interval = std::time::Duration::from_millis(100);
@@ -92,11 +82,11 @@ pub(crate) fn spawn_squelch_monitoring_thread(
 
             match current_decision {
                 crate::signal::squelch::Decision::Noise => {
-                    handle_noise_decision(&params, &rejection_sender, &detection_cancel_token);
+                    handle_noise_decision(&params, &result_sender, &detection_cancel_token);
                     return;
                 }
                 crate::signal::squelch::Decision::Audio => {
-                    handle_audio_decision(&params, &rejection_sender, &detection_cancel_token);
+                    handle_audio_decision(&params, &result_sender, &detection_cancel_token);
                     return;
                 }
                 crate::signal::squelch::Decision::Learning => {
@@ -107,7 +97,7 @@ pub(crate) fn spawn_squelch_monitoring_thread(
 
         handle_timeout(
             &params,
-            &rejection_sender,
+            &result_sender,
             &detection_cancel_token,
             max_wait_time as f64,
         );

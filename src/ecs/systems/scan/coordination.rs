@@ -134,10 +134,11 @@ mod tests {
         let mut world = EntityWorld::new();
         let mut scan1 = create_test_scan(88.0e6, 108.0e6);
         let mut scan2 = create_test_scan(144.0e6, 148.0e6);
-        let scan3 = create_test_scan(420.0e6, 450.0e6);
+        let mut scan3 = create_test_scan(420.0e6, 450.0e6);
 
         scan1.progress.pause(5);
         scan2.progress.mark_complete();
+        scan3.progress.start_window(0);
 
         world.insert(scan1);
         world.insert(scan2);

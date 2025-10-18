@@ -28,6 +28,9 @@ pub struct ScanConfigComponent {
 
     /// Number of scanning windows (parallel processing)
     pub scanning_windows: usize,
+
+    /// Specific stations to scan (for ScanType::Stations)
+    pub stations: Vec<f64>,
 }
 
 impl ScanConfigComponent {
@@ -52,7 +55,13 @@ impl ScanConfigComponent {
             gain_db,
             duration_per_window,
             scanning_windows,
+            stations: Vec::new(),
         }
+    }
+
+    pub fn with_stations(mut self, stations: Vec<f64>) -> Self {
+        self.stations = stations;
+        self
     }
 
     /// Calculate total bandwidth being scanned
@@ -62,6 +71,9 @@ impl ScanConfigComponent {
 
     /// Calculate total number of windows
     pub fn total_windows(&self) -> usize {
-        ((self.freq_max - self.freq_min) / self.window_size).ceil() as usize
+        match self.scan_type {
+            ScanType::Stations => self.stations.len().max(1),
+            ScanType::Band => ((self.freq_max - self.freq_min) / self.window_size).ceil() as usize,
+        }
     }
 }

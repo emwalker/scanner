@@ -1,13 +1,14 @@
-use crate::{core::types::Result, ui::ProgressReporter};
+use super::squelch_monitoring::AnalysisResult;
+use crate::core::types::Result;
+use crate::ecs::{CandidateEntity, CandidateId, Entities};
 
 pub(crate) fn wait_for_threads_completion(
     detection_handle: std::thread::JoinHandle<()>,
     timer_handle: std::thread::JoinHandle<()>,
     frequency_hz: f64,
-    progress_reporter: &dyn ProgressReporter,
-    rejection_rx: std::sync::mpsc::Receiver<crate::ui::ProgressEvent>,
-    candidate_id: &str,
-    tuner_id: Option<crate::hardware::DeviceId>,
+    result_rx: std::sync::mpsc::Receiver<AnalysisResult>,
+    candidate_entities: &Option<Entities<CandidateEntity>>,
+    window_id: usize,
 ) -> Result<()> {
     tracing::debug!(
         "Waiting for detection graph and timer threads to complete for {:.1} MHz",
@@ -30,11 +31,19 @@ pub(crate) fn wait_for_threads_completion(
         );
     }
 
-    let mut received_metadata = None;
     for _ in 0..10 {
-        if let Ok(rejection_event) = rejection_rx.try_recv() {
-            received_metadata = Some(rejection_event.metadata);
-            progress_reporter.report(rejection_event);
+        if let Ok(analysis_result) = result_rx.try_recv() {
+            // Update candidate entity if this was a rejection
+            if matches!(analysis_result, AnalysisResult::Noise)
+                && let Some(entities_arc) = candidate_entities
+            {
+                let id = CandidateId::new(frequency_hz, window_id);
+                if let Ok(mut entities) = entities_arc.write()
+                    && let Some(entity) = entities.get_mut(&id)
+                {
+                    entity.reject();
+                }
+            }
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -44,19 +53,6 @@ pub(crate) fn wait_for_threads_completion(
         "All detection threads completed for {:.1} MHz",
         frequency_hz / 1e6
     );
-
-    if let Some(metadata) = received_metadata {
-        progress_reporter.report(crate::ui::ProgressEvent {
-            event_type: crate::ui::ProgressEventType::AudioAnalysisCompleted,
-            frequency_hz,
-            metadata,
-            candidate_id: Some(candidate_id.to_string()),
-            audio_quality: None,
-            signal_strength: None,
-            timestamp: std::time::Instant::now(),
-            tuner_id,
-        });
-    }
 
     Ok(())
 }

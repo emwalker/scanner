@@ -4,11 +4,13 @@
 //! in the system (tuners, scans, stations, audio sessions, etc.)
 
 mod audio;
+mod candidate;
 mod scan;
 mod station;
 mod tuner;
 
 pub use audio::AudioEntity;
+pub use candidate::CandidateEntity;
 pub use scan::ScanEntity;
 pub use station::StationEntity;
 pub use tuner::TunerEntity;

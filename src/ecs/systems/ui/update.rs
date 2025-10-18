@@ -1,20 +1,43 @@
 //! UI update system - syncs entity state to TUI Model
 
+use crate::audio::quality::AudioQuality;
 use crate::core::types::Result;
 use crate::ecs::system::{System, SystemContext};
+use crate::ecs::{CandidateState, Entity};
+use crate::hardware::pool::PoolStatus;
+use crate::ui::TuiEvent;
 use crate::ui::tui::model::types::SpectrumStation;
+use indexmap::IndexMap;
+use std::sync::mpsc::Sender;
 use tracing::debug;
+
+/// Candidate data for TUI display
+#[derive(Debug, Clone)]
+pub struct CandidateData {
+    pub candidate_id: String,
+    pub frequency_hz: f64,
+    pub state: CandidateState,
+    pub completion: f64,
+    pub audio_quality: Option<AudioQuality>,
+    pub signal_strength: Option<f64>,
+}
 
 /// System that updates TUI model with entity state
 ///
 /// This system:
 /// - Queries StationEntity for discovered stations
 /// - Queries AudioEntity for active playback
-/// - Populates Model spectrum fields
+/// - Queries CandidateEntity for scanning progress
+/// - Queries TunerEntity for pool status
+/// - Sends ActiveTunersUpdated events when pool status changes
+/// - Populates Model spectrum fields and candidate lists
 /// - Maintains TEA pattern (Model is single source of UI truth)
 pub struct UIUpdateSystem {
     stations: Vec<SpectrumStation>,
     active_frequency: Option<f64>,
+    candidates_by_window: IndexMap<usize, Vec<CandidateData>>,
+    tui_event_sender: Option<Sender<TuiEvent>>,
+    last_pool_status: Option<PoolStatus>,
 }
 
 impl Default for UIUpdateSystem {
@@ -28,7 +51,15 @@ impl UIUpdateSystem {
         Self {
             stations: Vec::new(),
             active_frequency: None,
+            candidates_by_window: IndexMap::new(),
+            tui_event_sender: None,
+            last_pool_status: None,
         }
+    }
+
+    pub fn with_tui_event_sender(mut self, sender: Sender<TuiEvent>) -> Self {
+        self.tui_event_sender = Some(sender);
+        self
     }
 
     /// Get discovered stations for spectrum display
@@ -40,6 +71,43 @@ impl UIUpdateSystem {
     pub fn active_frequency(&self) -> Option<f64> {
         self.active_frequency
     }
+
+    /// Get candidates grouped by window ID (preserves insertion order)
+    pub fn candidates_by_window(&self) -> &IndexMap<usize, Vec<CandidateData>> {
+        &self.candidates_by_window
+    }
+
+    fn send_pool_status_update(&mut self, status: PoolStatus) {
+        debug!(
+            total_tuners = status.tuners.len(),
+            available_count = status.available_tuner_count,
+            allocated_count = status.allocated_tuner_count,
+            has_sender = self.tui_event_sender.is_some(),
+            "UIUpdateSystem: Pool status changed, attempting to send event"
+        );
+
+        for tuner in &status.tuners {
+            debug!(
+                tuner_id = ?tuner.id,
+                state = ?tuner.state,
+                activity = ?tuner.activity,
+                "UIUpdateSystem: Tuner in status being sent"
+            );
+        }
+
+        if let Some(ref sender) = self.tui_event_sender {
+            match sender.send(TuiEvent::ActiveTunersUpdated {
+                status: status.clone(),
+            }) {
+                Ok(_) => debug!("UIUpdateSystem: Event sent successfully"),
+                Err(e) => debug!(error = ?e, "UIUpdateSystem: Failed to send event"),
+            }
+        } else {
+            debug!("UIUpdateSystem: No TUI event sender configured");
+        }
+
+        self.last_pool_status = Some(status);
+    }
 }
 
 impl System for UIUpdateSystem {
@@ -50,6 +118,31 @@ impl System for UIUpdateSystem {
     fn run(&mut self, context: &mut SystemContext) -> Result<()> {
         self.stations.clear();
         self.active_frequency = None;
+        self.candidates_by_window.clear();
+
+        if let Some(ref tuner_entities) = context.tuner_entities
+            && let Ok(entities) = tuner_entities.try_lock()
+        {
+            let status = crate::hardware::pool::Pool::build_status_from_entities(&entities, 0);
+
+            let status_changed = match &self.last_pool_status {
+                None => true,
+                Some(last) => {
+                    last.available_tuner_count != status.available_tuner_count
+                        || last.allocated_tuner_count != status.allocated_tuner_count
+                        || last.tuners.len() != status.tuners.len()
+                        || last
+                            .tuners
+                            .iter()
+                            .zip(&status.tuners)
+                            .any(|(a, b)| a.state != b.state || a.activity != b.activity)
+                }
+            };
+
+            if status_changed {
+                self.send_pool_status_update(status);
+            }
+        }
 
         if let Some(ref station_entities) = context.station_entities {
             let entities = station_entities.read().unwrap();
@@ -58,30 +151,83 @@ impl System for UIUpdateSystem {
                 self.stations.push(SpectrumStation {
                     frequency_hz: entity.frequency(),
                     signal_strength: entity.info.signal_strength,
+                    audio_quality: entity.info.audio_quality,
                     is_active: false,
                 });
             }
 
             debug!(
                 station_count = self.stations.len(),
+                frequencies_mhz = ?self.stations.iter().map(|s| s.frequency_hz / 1e6).collect::<Vec<_>>(),
                 "UIUpdateSystem collected stations"
+            );
+        }
+
+        if let Some(ref candidate_entities) = context.candidate_entities {
+            let entities = candidate_entities.read().unwrap();
+
+            for entity in entities.iter() {
+                let window_id = entity.progress.metadata.window_id;
+                let candidate_data = CandidateData {
+                    candidate_id: entity.id().as_str().to_string(),
+                    frequency_hz: entity.info.frequency_hz,
+                    state: entity.lifecycle.state(),
+                    completion: entity.completion(),
+                    audio_quality: entity.info.audio_quality,
+                    signal_strength: entity.info.signal_strength,
+                };
+
+                self.candidates_by_window
+                    .entry(window_id)
+                    .or_default()
+                    .push(candidate_data);
+            }
+
+            debug!(
+                candidate_count = entities.iter().count(),
+                window_count = self.candidates_by_window.len(),
+                "UIUpdateSystem collected candidates"
             );
         }
 
         if let Some(ref audio_entities) = context.audio_entities {
             let entities = audio_entities.read().unwrap();
+            let audio_count = entities.iter().count();
+            let playing_count = entities.iter().filter(|e| e.is_playing()).count();
+
+            debug!(
+                audio_count = audio_count,
+                playing_count = playing_count,
+                "UIUpdateSystem checking audio entities"
+            );
 
             if let Some(audio_entity) = entities.iter().find(|e| e.is_playing()) {
                 let freq = audio_entity.frequency();
                 self.active_frequency = Some(freq);
 
+                let mut marked_count = 0;
                 for station in &mut self.stations {
                     if (station.frequency_hz - freq).abs() < 1000.0 {
                         station.is_active = true;
+                        marked_count += 1;
                     }
                 }
 
-                debug!(frequency_hz = freq, "UIUpdateSystem found active audio");
+                for candidates in self.candidates_by_window.values_mut() {
+                    for candidate in candidates {
+                        if (candidate.frequency_hz - freq).abs() < 1000.0 {
+                            candidate.state = CandidateState::Playing;
+                        }
+                    }
+                }
+
+                debug!(
+                    frequency_mhz = freq / 1e6,
+                    marked_count = marked_count,
+                    "UIUpdateSystem found active audio and marked stations"
+                );
+            } else {
+                debug!("UIUpdateSystem found no playing audio");
             }
         }
 

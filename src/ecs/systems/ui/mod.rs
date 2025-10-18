@@ -2,4 +2,4 @@
 
 mod update;
 
-pub use update::UIUpdateSystem;
+pub use update::{CandidateData, UIUpdateSystem};

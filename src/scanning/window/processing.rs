@@ -1,8 +1,8 @@
 use crate::core::types::{Result, ScanningConfig};
+use crate::ecs::{CandidateEntity, Entities, ScanId, StationEntity};
 use crate::hardware::pool::SegmentTrait;
 use crate::pause_signal::PauseSignal;
 use crate::scanning::window::config::WindowMetadata;
-use crate::ui::{ProgressEvent, ProgressEventType, ProgressReporter};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -13,8 +13,11 @@ pub(super) struct CandidateProcessingContext<'a> {
     pub center_freq: f64,
     pub config: &'a ScanningConfig,
     pub metadata: WindowMetadata,
-    pub progress_reporter: &'a Arc<dyn ProgressReporter>,
     pub pause_signal: &'a Option<PauseSignal>,
+    pub station_entities: &'a Option<Entities<StationEntity>>,
+    #[allow(dead_code)]
+    pub candidate_entities: &'a Option<Entities<CandidateEntity>>,
+    pub scan_id: ScanId,
 }
 
 pub(super) fn peaks(
@@ -162,25 +165,24 @@ pub(super) fn process_candidates(
         let freq = match &candidate {
             crate::core::types::Candidate::Fm(fm_candidate) => fm_candidate.frequency_hz,
         };
-        let candidate_id = format!("{:.1}-{}", freq / 1e6, ctx.window_num);
-        ctx.progress_reporter.report(ProgressEvent {
-            event_type: ProgressEventType::AudioAnalysisStarted,
-            frequency_hz: freq,
-            metadata: ctx.metadata,
-            candidate_id: Some(candidate_id),
-            audio_quality: None,
-            signal_strength: None,
-            timestamp: std::time::Instant::now(),
-            tuner_id: None,
-        });
+
+        if let Some(candidate_entities) = ctx.candidate_entities {
+            use crate::ecs::CandidateId;
+            let id = CandidateId::new(freq, ctx.window_num);
+            if let Ok(mut entities) = candidate_entities.write()
+                && let Some(entity) = entities.get_mut(&id)
+            {
+                entity.start_analysis();
+            }
+        }
 
         let sdr_rx = segment.audio_subscriber();
         let signal_tx_clone = signal_tx.clone();
         let config_clone = ctx.config.clone();
         let center_freq = ctx.center_freq;
-        let progress_reporter_clone = ctx.progress_reporter.clone();
         let pause_signal_clone = ctx.pause_signal.clone();
         let metadata = ctx.metadata;
+        let candidate_entities_clone = ctx.candidate_entities.as_ref().map(Arc::clone);
 
         let handle = thread::spawn(move || -> Result<()> {
             if let Some(ref signal) = pause_signal_clone
@@ -193,8 +195,8 @@ pub(super) fn process_candidates(
             let context = crate::pipeline::AnalysisContext {
                 config: &config_clone,
                 center_freq,
-                progress_reporter: progress_reporter_clone,
                 metadata,
+                candidate_entities: &candidate_entities_clone,
             };
             candidate.analyze(sdr_rx, signal_tx_clone, &context)
         });
@@ -216,6 +218,29 @@ pub(super) fn process_candidates(
 
     let mut signals = Vec::new();
     while let Ok(signal) = signal_rx.try_recv() {
+        // Create StationEntity for discovered signal (pure ECS approach)
+        if let Some(station_entities) = ctx.station_entities {
+            let station = StationEntity::from_signal(&signal, ctx.scan_id, ctx.metadata);
+            if let Ok(mut entities) = station_entities.write() {
+                entities.insert(station);
+                debug!(
+                    frequency_mhz = signal.frequency_hz / 1e6,
+                    "Created StationEntity for discovered signal"
+                );
+            }
+        }
+
+        // Update CandidateEntity to Signal state
+        if let Some(candidate_entities) = ctx.candidate_entities {
+            use crate::ecs::CandidateId;
+            let id = CandidateId::new(signal.frequency_hz, ctx.window_num);
+            if let Ok(mut entities) = candidate_entities.write()
+                && let Some(entity) = entities.get_mut(&id)
+            {
+                entity.mark_as_signal(signal.audio_quality, Some(signal.signal_strength as f64));
+            }
+        }
+
         signals.push(signal);
     }
 

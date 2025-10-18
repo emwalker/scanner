@@ -37,13 +37,21 @@ pub enum ScanType {
 
 mod config;
 mod lifecycle;
+mod pause_request;
 mod progress;
 mod results;
+mod resume_request;
+mod window_allocation;
+mod window_task;
 
 pub use config::ScanConfigComponent;
 pub use lifecycle::ScanLifecycleComponent;
+pub use pause_request::PauseRequestComponent;
 pub use progress::{ScanPauseState, ScanProgressComponent};
 pub use results::ScanResultsComponent;
+pub use resume_request::ResumeRequestComponent;
+pub use window_allocation::WindowAllocationRequest;
+pub use window_task::{CandidateData, WindowTaskComponent, WindowTaskResult};
 
 #[cfg(test)]
 mod tests {
@@ -84,7 +92,8 @@ mod tests {
         assert_eq!(progress.total_windows, 10);
         assert_eq!(progress.current_window, 0);
         assert_eq!(progress.windows_completed, 0);
-        assert!(progress.is_scanning());
+        assert!(progress.is_pending());
+        assert!(!progress.is_scanning());
         assert!(!progress.is_paused());
         assert!(!progress.is_completed());
     }

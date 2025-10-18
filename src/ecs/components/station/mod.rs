@@ -3,10 +3,12 @@
 mod discovery;
 mod history;
 mod info;
+mod tune_request;
 
 pub use discovery::StationDiscoveryComponent;
 pub use history::StationHistoryComponent;
 pub use info::StationInfoComponent;
+pub use tune_request::TuneRequestComponent;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

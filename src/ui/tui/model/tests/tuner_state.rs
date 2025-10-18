@@ -222,7 +222,7 @@ fn test_tuner_stays_scanning_during_automatic_audio_playback() {
 
     // During scanning, audio playback starts automatically for quality analysis
     // Even though audio is playing, MainThread keeps the tuner in scanning list
-    // because user has not pressed Enter (no TuneToCandidate command sent)
+    // because user has not pressed Enter (no tune_request set on StationEntity)
 
     // MainThread continues to report tuner as scanning during automatic playback
     model.update_tui_event(crate::ui::TuiEvent::ActiveTunersUpdated {
@@ -234,7 +234,7 @@ fn test_tuner_stays_scanning_during_automatic_audio_playback() {
     });
 
     // The tuner should remain in Scanning state during automatic audio playback
-    // Only when user presses Enter (sends TuneToCandidate) should it go to Listening
+    // Only when user presses Enter (sets tune_request on StationEntity) should it go to Listening
     assert_eq!(
         model.tuner_state(&sdrplay_tuner_id),
         TunerState::Scanning,

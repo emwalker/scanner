@@ -1,7 +1,7 @@
 use super::MockTheme;
 use crate::audio::quality::AudioQuality;
 use crate::ui::tui::{
-    model::{CandidateProgress, CandidateStatus, Model, WindowProgress},
+    model::{Model, types::SpectrumStation},
     renderers::spectrum_caladan::window_detail::render_window_detail_row,
 };
 
@@ -30,41 +30,21 @@ fn test_window_detail_row_with_stations() {
     let window_width = 2.4e6;
 
     let mut model = Model::new();
-    let window = WindowProgress {
-        window_id: 1,
-        candidates: vec![
-            CandidateProgress {
-                candidate_id: "89.9-1".to_string(),
-                frequency_hz: 89.9e6,
-                metadata: crate::scanning::window::WindowMetadata {
-                    center_frequency_hz: 89.9e6,
-                    window_id: 1,
-                },
-                status: CandidateStatus::Signal,
-                completion: 0.8,
-                audio_quality: Some(AudioQuality::Good),
-                signal_strength: Some(0.5),
-                last_update: std::time::Instant::now(),
-            },
-            CandidateProgress {
-                candidate_id: "90.5-1".to_string(),
-                frequency_hz: 90.5e6,
-                metadata: crate::scanning::window::WindowMetadata {
-                    center_frequency_hz: 90.5e6,
-                    window_id: 1,
-                },
-                status: CandidateStatus::Signal,
-                completion: 0.6,
-                audio_quality: Some(AudioQuality::Moderate),
-                signal_strength: Some(0.4),
-                last_update: std::time::Instant::now(),
-            },
-        ],
-        is_complete: false,
-        candidate_lookup: Default::default(),
-    };
-    model.windows.insert(1, window);
-    model.current_window = 1;
+
+    model.spectrum_stations = vec![
+        SpectrumStation {
+            frequency_hz: 89.9e6,
+            signal_strength: 0.5,
+            audio_quality: Some(AudioQuality::Good),
+            is_active: false,
+        },
+        SpectrumStation {
+            frequency_hz: 90.5e6,
+            signal_strength: 0.4,
+            audio_quality: Some(AudioQuality::Moderate),
+            is_active: false,
+        },
+    ];
 
     let line = render_window_detail_row(width, window_start, window_width, &model, &theme);
 
@@ -89,26 +69,13 @@ fn test_window_detail_row_no_overflow() {
     let window_width = 2.4e6;
 
     let mut model = Model::new();
-    let window = WindowProgress {
-        window_id: 1,
-        candidates: vec![CandidateProgress {
-            candidate_id: "91.8-1".to_string(),
-            frequency_hz: 91.8e6,
-            metadata: crate::scanning::window::WindowMetadata {
-                center_frequency_hz: 91.8e6,
-                window_id: 1,
-            },
-            status: CandidateStatus::Signal,
-            completion: 1.0,
-            audio_quality: Some(AudioQuality::Good),
-            signal_strength: Some(0.5),
-            last_update: std::time::Instant::now(),
-        }],
-        is_complete: false,
-        candidate_lookup: Default::default(),
-    };
-    model.windows.insert(1, window);
-    model.current_window = 1;
+
+    model.spectrum_stations = vec![SpectrumStation {
+        frequency_hz: 91.8e6,
+        signal_strength: 0.5,
+        audio_quality: Some(AudioQuality::Good),
+        is_active: false,
+    }];
 
     let line = render_window_detail_row(width, window_start, window_width, &model, &theme);
 
@@ -127,41 +94,21 @@ fn test_rejected_stations_shown() {
     let window_width = 2.4e6;
 
     let mut model = Model::new();
-    let window = WindowProgress {
-        window_id: 1,
-        candidates: vec![
-            CandidateProgress {
-                candidate_id: "89.9-1".to_string(),
-                frequency_hz: 89.9e6,
-                metadata: crate::scanning::window::WindowMetadata {
-                    center_frequency_hz: 89.9e6,
-                    window_id: 1,
-                },
-                status: CandidateStatus::Signal,
-                completion: 0.8,
-                audio_quality: Some(AudioQuality::Good),
-                signal_strength: Some(0.5),
-                last_update: std::time::Instant::now(),
-            },
-            CandidateProgress {
-                candidate_id: "90.5-1".to_string(),
-                frequency_hz: 90.5e6,
-                metadata: crate::scanning::window::WindowMetadata {
-                    center_frequency_hz: 90.5e6,
-                    window_id: 1,
-                },
-                status: CandidateStatus::Rejected,
-                completion: 1.0,
-                audio_quality: Some(AudioQuality::NoAudio),
-                signal_strength: Some(0.1),
-                last_update: std::time::Instant::now(),
-            },
-        ],
-        is_complete: false,
-        candidate_lookup: Default::default(),
-    };
-    model.windows.insert(1, window);
-    model.current_window = 1;
+
+    model.spectrum_stations = vec![
+        SpectrumStation {
+            frequency_hz: 89.9e6,
+            signal_strength: 0.5,
+            audio_quality: Some(AudioQuality::Good),
+            is_active: false,
+        },
+        SpectrumStation {
+            frequency_hz: 90.5e6,
+            signal_strength: 0.1,
+            audio_quality: Some(AudioQuality::NoAudio),
+            is_active: false,
+        },
+    ];
 
     let line = render_window_detail_row(width, window_start, window_width, &model, &theme);
     let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();

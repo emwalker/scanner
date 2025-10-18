@@ -2,8 +2,9 @@
 
 use crate::ecs::Entity;
 use crate::ecs::components::scan::{
-    ScanConfigComponent, ScanId, ScanLifecycleComponent, ScanProgressComponent,
-    ScanResultsComponent, ScanType,
+    PauseRequestComponent, ResumeRequestComponent, ScanConfigComponent, ScanId,
+    ScanLifecycleComponent, ScanProgressComponent, ScanResultsComponent, ScanType,
+    WindowAllocationRequest, WindowTaskComponent,
 };
 
 /// Entity representing an active scan operation
@@ -11,7 +12,7 @@ use crate::ecs::components::scan::{
 /// A scan entity combines configuration, progress tracking, results, and
 /// lifecycle information into a single cohesive unit that can be managed
 /// by ECS systems.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ScanEntity {
     /// Unique identifier for this scan
     id: ScanId,
@@ -33,6 +34,18 @@ pub struct ScanEntity {
 
     /// Coordinator guidance: worker should complete (advisory)
     pub should_complete: bool,
+
+    /// Request to pause scanning (ECS Phase 1)
+    pub pause_request: Option<PauseRequestComponent>,
+
+    /// Request to resume scanning (ECS Phase 1)
+    pub resume_request: Option<ResumeRequestComponent>,
+
+    /// Window allocation request state
+    pub window_allocation: Option<WindowAllocationRequest>,
+
+    /// Active window processing task
+    pub window_task: Option<WindowTaskComponent>,
 }
 
 impl ScanEntity {
@@ -48,7 +61,16 @@ impl ScanEntity {
             lifecycle: ScanLifecycleComponent::new(),
             should_pause: false,
             should_complete: false,
+            pause_request: None,
+            resume_request: None,
+            window_allocation: None,
+            window_task: None,
         }
+    }
+
+    /// Check if scan is pending
+    pub fn is_pending(&self) -> bool {
+        self.progress.is_pending()
     }
 
     /// Check if scan is paused
@@ -84,6 +106,58 @@ impl ScanEntity {
     /// Get scan type
     pub fn scan_type(&self) -> ScanType {
         self.config.scan_type
+    }
+
+    /// Request pause at current window
+    pub fn request_pause(&mut self, window_num: usize) {
+        self.pause_request = Some(PauseRequestComponent::new(window_num));
+    }
+
+    /// Request pause and tune to a specific station
+    pub fn request_pause_with_station(
+        &mut self,
+        window_num: usize,
+        station_frequency_hz: f64,
+        window_center_frequency_hz: f64,
+    ) {
+        self.pause_request = Some(PauseRequestComponent::with_station(
+            window_num,
+            station_frequency_hz,
+            window_center_frequency_hz,
+        ));
+    }
+
+    /// Clear pause request
+    pub fn clear_pause_request(&mut self) {
+        self.pause_request = None;
+    }
+
+    /// Request resume from paused state
+    pub fn request_resume(&mut self, window_num: usize) {
+        self.resume_request = Some(ResumeRequestComponent::new(window_num));
+    }
+
+    /// Clear resume request
+    pub fn clear_resume_request(&mut self) {
+        self.resume_request = None;
+    }
+}
+
+impl Clone for ScanEntity {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            config: self.config.clone(),
+            progress: self.progress.clone(),
+            results: self.results.clone(),
+            lifecycle: self.lifecycle.clone(),
+            should_pause: self.should_pause,
+            should_complete: self.should_complete,
+            pause_request: self.pause_request.clone(),
+            resume_request: self.resume_request.clone(),
+            window_allocation: self.window_allocation.clone(),
+            window_task: None,
+        }
     }
 }
 
@@ -188,7 +262,8 @@ mod tests {
         assert_eq!(scan.config.freq_max, 98.0e6);
         assert_eq!(scan.config.scan_type, ScanType::Band);
         assert_eq!(scan.progress.total_windows, 10);
-        assert!(scan.is_scanning());
+        assert!(scan.is_pending());
+        assert!(!scan.is_scanning());
         assert!(!scan.is_paused());
         assert!(!scan.is_completed());
     }
@@ -204,6 +279,8 @@ mod tests {
     fn test_scan_convenience_methods() {
         let mut scan = create_test_scan(88.0e6, 98.0e6);
 
+        assert!(scan.is_pending());
+        scan.progress.start_window(0);
         assert!(scan.is_scanning());
         assert_eq!(scan.current_window(), 0);
         assert_eq!(scan.progress_percentage(), 0.0);
@@ -294,10 +371,11 @@ mod tests {
         let mut world = EntityWorld::new();
 
         let mut scan1 = create_test_scan(88.0e6, 98.0e6);
-        let scan2 = create_test_scan(98.0e6, 108.0e6);
+        let mut scan2 = create_test_scan(98.0e6, 108.0e6);
         let mut scan3 = create_test_scan(108.0e6, 118.0e6);
 
         scan1.progress.mark_complete();
+        scan2.progress.start_window(0);
         scan3.progress.pause(5);
 
         world.insert(scan1);
@@ -377,7 +455,8 @@ mod tests {
 
         #[test]
         fn prop_state_exclusivity(scan in arb_scan_entity()) {
-            let states = [scan.is_scanning(),
+            let states = [scan.is_pending(),
+                scan.is_scanning(),
                 scan.is_paused(),
                 scan.is_completed(),
                 scan.is_listening()];

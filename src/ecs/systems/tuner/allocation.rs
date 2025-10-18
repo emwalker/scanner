@@ -59,7 +59,48 @@ impl System for AllocationSystem {
         "TunerAllocation"
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn run(&mut self, context: &mut SystemContext) -> Result<()> {
+        // First, collect allocation requests from ScanEntity window_allocation components
+        if let Some(ref scan_entities) = context.scan_entities
+            && let Ok(scans) = scan_entities.read()
+        {
+            for scan in scans.iter() {
+                if let Some(crate::ecs::WindowAllocationRequest::Requested {
+                    requirements,
+                    activity,
+                    requester_id,
+                    ..
+                }) = &scan.window_allocation
+                {
+                    // Check if we already have this request
+                    if !self
+                        .pending_requests
+                        .iter()
+                        .any(|r| r.requester_id == *requester_id)
+                    {
+                        debug!(
+                            requester_id = %requester_id,
+                            frequency_hz = requirements.frequency_hz,
+                            "AllocationSystem: Adding window allocation request from ScanEntity"
+                        );
+                        self.pending_requests.push(AllocationRequest {
+                            requester_id: requester_id.clone(),
+                            frequency_hz: requirements.frequency_hz,
+                            sample_rate_hz: requirements.required_sample_rate,
+                            priority: crate::ecs::Priority::Medium,
+                            for_audio: matches!(
+                                activity,
+                                crate::hardware::pool::TunerActivity::Listening
+                            ),
+                            filter: None,
+                            allocated_count: 0,
+                        });
+                    }
+                }
+            }
+        }
+
         if self.pending_requests.is_empty() {
             return Ok(());
         }
@@ -162,6 +203,42 @@ impl System for AllocationSystem {
 
         self.pending_requests
             .retain(|req| !successfully_allocated.contains(&req.requester_id));
+
+        // Update ScanEntity window_allocation from Requested to Allocated
+        if let Some(ref scan_entities) = context.scan_entities
+            && let Ok(mut scans) = scan_entities.write()
+        {
+            for scan in scans.iter_mut() {
+                if let Some(crate::ecs::WindowAllocationRequest::Requested {
+                    window_index,
+                    requester_id,
+                    ..
+                }) = &scan.window_allocation
+                {
+                    // Check if this request was successfully allocated
+                    if successfully_allocated.contains(requester_id) {
+                        // Find the allocated tuner_id
+                        if let Ok(tuners) = context.tuner_entities.as_ref().unwrap().lock()
+                            && let Some(tuner_entity) = tuners
+                                .iter()
+                                .find(|e| e.allocation.allocated_to.as_ref() == Some(requester_id))
+                        {
+                            debug!(
+                                requester_id = %requester_id,
+                                tuner_id = ?tuner_entity.id(),
+                                "AllocationSystem: Updating ScanEntity window_allocation to Allocated"
+                            );
+                            scan.window_allocation =
+                                Some(crate::ecs::WindowAllocationRequest::Allocated {
+                                    window_index: *window_index,
+                                    tuner_id: tuner_entity.id().clone(),
+                                    requester_id: requester_id.clone(),
+                                });
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(())
     }

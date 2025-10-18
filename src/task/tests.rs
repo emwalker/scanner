@@ -1,11 +1,10 @@
 //! Tests for task module
 
-use crate::core::types::{Band, ScanningConfig};
+use crate::core::types::ScanningConfig;
 use crate::hardware::pool::{Pool, PoolFilter};
 use crate::hardware::types::Backend;
 use crate::shutdown::ShutdownCoordinator;
-use crate::task::{AudioTask, DeviceEnumerationTask, ScanBandTask, Task, TaskScheduler};
-use crate::ui::NoOpProgressReporter;
+use crate::task::{AudioTask, DeviceEnumerationTask, Task, TaskScheduler};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -193,31 +192,6 @@ fn test_scheduler_shutdown() {
 }
 
 #[test]
-fn test_scan_band_task_basic() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
-    let shutdown = Arc::new(ShutdownCoordinator::new());
-    let progress = Arc::new(NoOpProgressReporter);
-    let config = ScanningConfig::default();
-
-    let mut task = ScanBandTask::new(
-        config,
-        Band::Weather,
-        progress,
-        pool.clone(),
-        shutdown.clone(),
-    );
-
-    let cancel = CancellationToken::new();
-    cancel.cancel();
-
-    let result = task.run(cancel);
-    assert!(
-        result.is_ok(),
-        "ScanBandTask should handle immediate cancellation gracefully"
-    );
-}
-
-#[test]
 fn test_audio_task_basic() {
     let pool = Arc::new(Pool::new(PoolFilter::new(), None));
     let shutdown = Arc::new(ShutdownCoordinator::new());
@@ -232,97 +206,6 @@ fn test_audio_task_basic() {
     assert!(
         result.is_ok(),
         "AudioTask should handle immediate cancellation gracefully"
-    );
-}
-
-#[test]
-fn test_parallel_tasks() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
-    let shutdown = Arc::new(ShutdownCoordinator::new());
-    let scheduler = TaskScheduler::new(pool.clone(), shutdown.clone());
-    let progress = Arc::new(NoOpProgressReporter);
-    let config = ScanningConfig::default();
-
-    let scan_task = ScanBandTask::new(
-        config.clone(),
-        Band::Weather,
-        progress.clone(),
-        pool.clone(),
-        shutdown.clone(),
-    );
-    let scan_handle = scheduler
-        .submit(Task::ScanBand(Box::new(scan_task)))
-        .unwrap();
-
-    let audio_task = AudioTask::new(88_900_000.0, config, pool, shutdown);
-    let audio_handle = scheduler.submit(Task::Audio(audio_task)).unwrap();
-
-    std::thread::sleep(Duration::from_millis(100));
-
-    let status = scheduler.status();
-
-    if status.len() == 2 {
-        let scan_status = status.iter().find(|s| s.task_id == scan_handle.task_id);
-        let audio_status = status.iter().find(|s| s.task_id == audio_handle.task_id);
-
-        assert!(scan_status.is_some(), "Scan task should be in status");
-        assert!(audio_status.is_some(), "Audio task should be in status");
-
-        if let (Some(scan), Some(audio)) = (scan_status, audio_status)
-            && let (Some(scan_tuner), Some(audio_tuner)) = (&scan.tuner_id, &audio.tuner_id)
-        {
-            assert_ne!(scan_tuner, audio_tuner, "Tasks should use different tuners");
-        }
-    }
-
-    scheduler.shutdown();
-    std::thread::sleep(Duration::from_millis(500));
-
-    assert_eq!(
-        scheduler.status().len(),
-        0,
-        "All tasks should complete after shutdown"
-    );
-}
-
-#[test]
-fn test_backend_serialization() {
-    let mut filter = PoolFilter::new();
-    filter = filter.with_driver("mock");
-    let pool = Arc::new(Pool::new(filter, None));
-    let shutdown = Arc::new(ShutdownCoordinator::new());
-    let scheduler = TaskScheduler::new(pool.clone(), shutdown.clone());
-    let progress = Arc::new(NoOpProgressReporter);
-    let config = ScanningConfig::default();
-
-    let task1 = ScanBandTask::new(
-        config.clone(),
-        Band::Weather,
-        progress.clone(),
-        pool.clone(),
-        shutdown.clone(),
-    );
-    let handle1 = scheduler.submit(Task::ScanBand(Box::new(task1))).unwrap();
-
-    std::thread::sleep(Duration::from_millis(50));
-
-    let task2 = ScanBandTask::new(config, Band::Weather, progress, pool, shutdown);
-    let handle2 = scheduler.submit(Task::ScanBand(Box::new(task2))).unwrap();
-
-    std::thread::sleep(Duration::from_millis(100));
-
-    let status = scheduler.status();
-    assert!(
-        status.len() <= 2,
-        "Should have at most 2 tasks (backend serialization limits concurrency)"
-    );
-
-    scheduler.shutdown();
-    std::thread::sleep(Duration::from_millis(1000));
-
-    assert!(
-        !handle1.is_cancelled() || !handle2.is_cancelled(),
-        "At least one task should complete normally"
     );
 }
 
@@ -370,41 +253,6 @@ fn test_error_reporting() {
         handle.is_cancelled() || !handle.is_cancelled(),
         "Task handle should exist regardless of completion status"
     );
-}
-
-#[test]
-fn test_device_enumeration_serialized_with_scan() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
-    let shutdown = Arc::new(ShutdownCoordinator::new());
-    let scheduler = TaskScheduler::new(pool.clone(), shutdown.clone());
-    let progress = Arc::new(NoOpProgressReporter);
-    let config = ScanningConfig::default();
-
-    let scan_task = ScanBandTask::new(config, Band::Weather, progress, pool.clone(), shutdown);
-    let _scan_handle = scheduler
-        .submit(Task::ScanBand(Box::new(scan_task)))
-        .unwrap();
-
-    std::thread::sleep(Duration::from_millis(50));
-
-    let (tx, rx) = mpsc::channel();
-    let enum_task = DeviceEnumerationTask::new(Backend::Mock, pool, tx);
-    let _enum_handle = scheduler
-        .submit(Task::DeviceEnumeration(enum_task))
-        .unwrap();
-
-    std::thread::sleep(Duration::from_millis(500));
-
-    let events: Vec<_> = rx.try_iter().collect();
-    assert!(
-        events.len() >= 2,
-        "Device enumeration should complete and discover devices"
-    );
-
-    scheduler.shutdown();
-    std::thread::sleep(Duration::from_millis(200));
-
-    assert_eq!(scheduler.status().len(), 0, "All tasks should complete");
 }
 
 #[test]
@@ -497,63 +345,5 @@ fn test_integration_pool_scheduler_discovery() {
         scheduler.status().len(),
         0,
         "DeviceEnumerationTask should have completed"
-    );
-}
-
-#[test]
-fn test_scan_band_cooperative_yielding() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
-    let shutdown = Arc::new(ShutdownCoordinator::new());
-    let scheduler = TaskScheduler::new(pool.clone(), shutdown.clone());
-    let progress = Arc::new(NoOpProgressReporter);
-    let config = ScanningConfig::default();
-
-    let (discovery_tx, discovery_rx) = mpsc::channel();
-    let enum_task = DeviceEnumerationTask::new(Backend::Mock, pool.clone(), discovery_tx);
-    let _enum_handle = scheduler
-        .submit(Task::DeviceEnumeration(enum_task))
-        .unwrap();
-
-    std::thread::sleep(Duration::from_millis(500));
-
-    let events: Vec<_> = discovery_rx.try_iter().collect();
-    assert!(
-        events.len() >= 2,
-        "Should have discovered mock devices before starting scan"
-    );
-
-    let scan_task = ScanBandTask::new(
-        config,
-        Band::Weather,
-        progress,
-        pool.clone(),
-        shutdown.clone(),
-    );
-    let scan_handle = scheduler
-        .submit(Task::ScanBand(Box::new(scan_task)))
-        .unwrap();
-
-    std::thread::sleep(Duration::from_millis(100));
-
-    let (enum_tx2, enum_rx2) = mpsc::channel();
-    let enum_task2 = DeviceEnumerationTask::new(Backend::Mock, pool.clone(), enum_tx2);
-    let enum_handle2 = scheduler
-        .submit(Task::DeviceEnumeration(enum_task2))
-        .unwrap();
-
-    std::thread::sleep(Duration::from_millis(1000));
-
-    let enum2_events: Vec<_> = enum_rx2.try_iter().collect();
-    assert!(
-        enum2_events.len() >= 2,
-        "DeviceEnumerationTask should complete even while scan is running (proves interleaving)"
-    );
-
-    scheduler.shutdown();
-    std::thread::sleep(Duration::from_millis(500));
-
-    assert!(
-        !scan_handle.is_cancelled() || !enum_handle2.is_cancelled(),
-        "At least one task should complete normally"
     );
 }

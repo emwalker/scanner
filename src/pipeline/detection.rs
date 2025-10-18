@@ -23,7 +23,6 @@ fn build_detection_graph_config<'a>(
         tune_freq: refined_frequency,
         signal_tx: Some(signal_tx),
         audio_analyzer,
-        progress_reporter: Some(context.progress_reporter.clone()),
         window_id: context.metadata.window_id,
     }
 }
@@ -49,7 +48,7 @@ pub(crate) fn run_detection_analysis(
 
     let detection_handle = spawn_detection_graph_thread(detection_graph, original_frequency_hz);
 
-    let (rejection_tx, rejection_rx) = std::sync::mpsc::channel();
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
 
     let timer_handle = spawn_squelch_monitoring_thread(
         SquelchMonitoringParams {
@@ -62,17 +61,16 @@ pub(crate) fn run_detection_analysis(
         },
         decision_state,
         detection_cancel_token,
-        rejection_tx,
+        result_tx,
     );
 
     wait_for_threads_completion(
         detection_handle,
         timer_handle,
         original_frequency_hz,
-        &*context.progress_reporter,
-        rejection_rx,
-        candidate_id,
-        None,
+        result_rx,
+        context.candidate_entities,
+        context.metadata.window_id,
     )
 }
 

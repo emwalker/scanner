@@ -1,15 +1,16 @@
 //! Entity storage for ECS architecture
 
 use super::entity::Entity;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 /// Storage for entities of a specific type
 ///
-/// EntityWorld provides a simple HashMap-based storage for entities.
+/// EntityWorld uses IndexMap to preserve insertion order, which is important
+/// for UI display (showing entities in temporal order) and debugging.
 /// Unlike full ECS implementations (like Bevy), we don't optimize for
 /// cache-friendly memory layout since we have dozens of entities, not thousands.
 pub struct EntityWorld<E: Entity> {
-    entities: HashMap<E::Id, E>,
+    entities: IndexMap<E::Id, E>,
     generation: u64,
 }
 
@@ -17,7 +18,7 @@ impl<E: Entity> EntityWorld<E> {
     /// Create a new empty entity world
     pub fn new() -> Self {
         Self {
-            entities: HashMap::new(),
+            entities: IndexMap::new(),
             generation: 0,
         }
     }
@@ -57,7 +58,7 @@ impl<E: Entity> EntityWorld<E> {
     /// Returns the removed entity if it existed.
     pub fn remove(&mut self, id: &E::Id) -> Option<E> {
         self.mark_changed();
-        self.entities.remove(id)
+        self.entities.shift_remove(id)
     }
 
     /// Iterate over all entities

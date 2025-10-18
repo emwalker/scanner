@@ -24,9 +24,7 @@ pub enum TaskContinuation {
 /// Task wrapper using enum dispatch (faster than dyn trait)
 #[allow(dead_code)]
 pub enum Task {
-    ScanBand(Box<super::ScanBandTask>),
-    ScanStations(super::ScanStationsTask),
-    Audio(super::AudioTask),
+    Audio(Box<super::AudioTask>),
     DeviceEnumeration(super::DeviceEnumerationTask),
     #[cfg(test)]
     Mock(Box<dyn MockTaskTrait>),
@@ -50,8 +48,6 @@ impl Task {
     #[allow(dead_code)]
     pub fn run(&mut self, shutdown: CancellationToken) -> Result<TaskContinuation> {
         match self {
-            Task::ScanBand(t) => t.run(shutdown),
-            Task::ScanStations(t) => t.run(shutdown),
             Task::Audio(t) => t.run(shutdown),
             Task::DeviceEnumeration(t) => t.run(shutdown),
             #[cfg(test)]
@@ -63,8 +59,6 @@ impl Task {
     #[allow(dead_code)]
     pub fn backend(&self) -> Backend {
         match self {
-            Task::ScanBand(t) => t.backend(),
-            Task::ScanStations(t) => t.backend(),
             Task::Audio(t) => t.backend(),
             Task::DeviceEnumeration(t) => t.backend().clone(),
             #[cfg(test)]
@@ -76,8 +70,6 @@ impl Task {
     #[allow(dead_code)]
     pub fn task_type(&self) -> TaskType {
         match self {
-            Task::ScanBand(_) => TaskType::ScanningBand,
-            Task::ScanStations(_) => TaskType::ScanningStations,
             Task::Audio(_) => TaskType::Audio,
             Task::DeviceEnumeration(_) => TaskType::DeviceEnumeration,
             #[cfg(test)]
@@ -89,8 +81,6 @@ impl Task {
     #[allow(dead_code)]
     pub fn description(&self) -> String {
         match self {
-            Task::ScanBand(t) => t.description(),
-            Task::ScanStations(t) => t.description(),
             Task::Audio(t) => t.description(),
             Task::DeviceEnumeration(t) => t.description(),
             #[cfg(test)]
@@ -102,8 +92,6 @@ impl Task {
     #[allow(dead_code)]
     pub fn on_start(&mut self) {
         match self {
-            Task::ScanBand(t) => t.on_start(),
-            Task::ScanStations(t) => t.on_start(),
             Task::Audio(t) => t.on_start(),
             Task::DeviceEnumeration(t) => t.on_start(),
             #[cfg(test)]
@@ -115,8 +103,6 @@ impl Task {
     #[allow(dead_code)]
     pub fn on_complete(&mut self) {
         match self {
-            Task::ScanBand(t) => t.on_complete(),
-            Task::ScanStations(t) => t.on_complete(),
             Task::Audio(t) => t.on_complete(),
             Task::DeviceEnumeration(t) => t.on_complete(),
             #[cfg(test)]
@@ -128,8 +114,6 @@ impl Task {
     #[allow(dead_code)]
     pub fn on_error(&mut self, error: &ScannerError) {
         match self {
-            Task::ScanBand(t) => t.on_error(error),
-            Task::ScanStations(t) => t.on_error(error),
             Task::Audio(t) => t.on_error(error),
             Task::DeviceEnumeration(t) => t.on_error(error),
             #[cfg(test)]
@@ -142,8 +126,6 @@ impl Task {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum TaskType {
-    ScanningBand,
-    ScanningStations,
     Audio,
     DeviceEnumeration,
     #[cfg(test)]

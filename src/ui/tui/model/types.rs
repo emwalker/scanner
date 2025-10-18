@@ -189,5 +189,6 @@ pub struct TunerDisplayInfo {
 pub struct SpectrumStation {
     pub frequency_hz: f64,
     pub signal_strength: f32,
+    pub audio_quality: Option<crate::audio::quality::AudioQuality>,
     pub is_active: bool,
 }

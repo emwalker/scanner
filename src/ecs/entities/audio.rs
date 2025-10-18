@@ -4,6 +4,7 @@ use crate::core::types::Signal;
 use crate::ecs::Entity;
 use crate::ecs::components::audio::{
     AudioAllocationComponent, AudioId, AudioPlaybackComponent, AudioTuningComponent,
+    StopListeningRequestComponent,
 };
 use crate::hardware::DeviceId;
 use std::time::{Duration, Instant};
@@ -15,6 +16,9 @@ pub struct AudioEntity {
     pub tuning: AudioTuningComponent,
     pub playback: AudioPlaybackComponent,
     pub allocation: AudioAllocationComponent,
+
+    /// Request to stop listening (ECS Phase 1)
+    pub stop_listening_request: Option<StopListeningRequestComponent>,
 }
 
 impl AudioEntity {
@@ -24,6 +28,7 @@ impl AudioEntity {
             tuning: AudioTuningComponent::new(signal, center_frequency_hz),
             playback: AudioPlaybackComponent::new(),
             allocation: AudioAllocationComponent::new(tuner_id),
+            stop_listening_request: None,
         }
     }
 
@@ -54,6 +59,16 @@ impl AudioEntity {
     pub fn stop(&mut self) {
         self.playback.stop();
         self.allocation.cancel_graph();
+    }
+
+    /// Request to stop listening
+    pub fn request_stop_listening(&mut self) {
+        self.stop_listening_request = Some(StopListeningRequestComponent::new());
+    }
+
+    /// Clear stop listening request
+    pub fn clear_stop_listening_request(&mut self) {
+        self.stop_listening_request = None;
     }
 }
 

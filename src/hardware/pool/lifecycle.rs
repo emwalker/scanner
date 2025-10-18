@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
-use tracing::{debug, error};
+use tracing::debug;
 
 impl Pool {
     fn create_and_insert_device_entry(
@@ -311,6 +311,59 @@ impl Pool {
             .ok_or_else(|| ScannerError::NoAvailableTuner(requirements.clone()))
     }
 
+    /// Create a Tuner handle from a pre-allocated tuner_id
+    ///
+    /// This method is used when allocation has already been performed by AllocationSystem.
+    /// It verifies the tuner is allocated and creates a Tuner handle for it.
+    ///
+    /// Returns None if:
+    /// - The tuner_id doesn't exist
+    /// - The tuner is not currently allocated
+    /// - Pool is shutting down
+    pub fn create_tuner_from_allocated(&self, tuner_id: TunerId) -> Option<Tuner> {
+        if self.shutdown_mode.load(Ordering::SeqCst) {
+            debug!("create_tuner_from_allocated rejected - pool in shutdown mode");
+            return None;
+        }
+
+        let inner = self.pool_ref.try_lock().ok()?;
+        let entities = self.tuner_entities.try_lock().ok()?;
+
+        let entity = entities.get(&tuner_id)?;
+        if !entity.allocation.is_allocated() {
+            debug!(
+                tuner_id = ?tuner_id,
+                "create_tuner_from_allocated rejected - tuner not allocated"
+            );
+            return None;
+        }
+
+        drop(entities);
+        drop(inner);
+
+        let subprocess_handle = self.get_or_spawn_subprocess(&tuner_id.device_id).ok()?;
+
+        debug!(tuner_id = ?tuner_id, "Created tuner from pre-allocated tuner_id");
+
+        Some(Tuner {
+            tuner_id,
+            backend: crate::hardware::pool::tuner::TunerBackend::Subprocess {
+                subprocess: subprocess_handle,
+            },
+            tuner_entities: Arc::clone(&self.tuner_entities),
+            on_return: Box::new({
+                let on_state_change = Arc::clone(&self.on_state_change);
+                move || {
+                    if let Ok(_callbacks) = on_state_change.lock() {
+                        // State changed, but we can't easily compute status here
+                        // The Tuner Drop will handle deallocating the tuner entity
+                    }
+                }
+            }),
+            shutdown_mode: Arc::clone(&self.shutdown_mode),
+        })
+    }
+
     /// Check if pool is in valid state for acquisition
     ///
     /// Returns None if pool state is not Active, shutdown mode is enabled,
@@ -346,29 +399,43 @@ impl Pool {
     /// Updates entity state to mark tuner as allocated.
     fn allocate_matching_tuner(
         &self,
-        inner: &PoolInner,
+        _inner: &PoolInner,
         requirements: &TaskRequirements,
         activity: TunerActivity,
     ) -> Option<TunerAllocation> {
-        use crate::ecs::components::Priority;
-        use crate::ecs::systems::AllocationRequest;
-        use crate::ecs::{System, SystemContext};
-
-        let entities = self.tuner_entities.try_lock().ok()?;
-        let allocated_count = entities
-            .iter()
-            .filter(|e| e.allocation.is_allocated())
-            .count();
+        let mut entities = self.tuner_entities.try_lock().ok()?;
         let available_count = entities.iter().filter(|e| e.is_available()).count();
 
         debug!(
             available_tuners = available_count,
-            allocated_count = allocated_count,
             requirements = ?requirements,
             "Pool acquire: checking available tuners"
         );
-        drop(entities);
 
+        use crate::ecs::Entity;
+
+        let tuner_id = entities
+            .iter()
+            .find(|e| {
+                e.is_available()
+                    && (*self.filter).is_allowed(
+                        e.id(),
+                        &e.device.backend,
+                        entities
+                            .iter()
+                            .filter(|t| t.allocation.is_allocated())
+                            .count(),
+                    )
+                    && e.device
+                        .capabilities
+                        .supports_frequency(requirements.frequency_hz)
+                    && e.device
+                        .capabilities
+                        .supports_sample_rate(requirements.required_sample_rate)
+            })
+            .map(|e| e.id().clone())?;
+
+        let entity = entities.get_mut(&tuner_id)?;
         let requester_id = format!(
             "pool_task_{}",
             std::time::SystemTime::now()
@@ -377,60 +444,23 @@ impl Pool {
                 .as_nanos()
         );
 
-        {
-            let mut system = self.allocation_system.lock().unwrap();
-            system.request_allocation(AllocationRequest {
-                requester_id: requester_id.clone(),
-                frequency_hz: requirements.frequency_hz,
-                sample_rate_hz: requirements.required_sample_rate,
-                priority: Priority::Medium,
-                for_audio: activity == TunerActivity::Listening,
-                filter: Some(Arc::clone(&self.filter)),
-                allocated_count,
-            });
-
-            let mut context =
-                SystemContext::new().with_tuner_entities(Arc::clone(&self.tuner_entities));
-
-            if let Err(e) = System::run(&mut *system, &mut context) {
-                debug!(error = ?e, "AllocationSystem failed");
-                return None;
-            }
-        }
-
-        let entities = self.tuner_entities.try_lock().ok()?;
-        let tuner_id = entities
-            .iter()
-            .find(|e| {
-                e.allocation.is_allocated()
-                    && e.allocation.allocated_to.as_ref() == Some(&requester_id)
-            })?
-            .id()
-            .clone();
-
-        let device_entry = match inner.devices.get(&tuner_id.device_id) {
-            Some(d) => d,
-            None => {
-                error!(
-                    device_id = ?tuner_id.device_id,
-                    tuner_id = ?tuner_id,
-                    "Device not found for tuner during acquisition"
-                );
-                return None;
-            }
+        entity.allocation.allocate(requester_id);
+        entity.status.activity = match activity {
+            TunerActivity::Scanning => crate::ecs::components::TunerActivity::Scanning,
+            TunerActivity::Listening => crate::ecs::components::TunerActivity::Listening,
+            TunerActivity::Other => crate::ecs::components::TunerActivity::Other,
         };
 
-        let backend = device_entry.backend.clone();
-        let model = device_entry.capabilities.device_id.to_string();
-        let capabilities = device_entry.capabilities.clone();
-
-        debug!(tuner_id = ?tuner_id, "Tuner acquired via AllocationSystem");
+        let model = format!(
+            "{} channel {}",
+            entity.device.device_id, entity.device.channel_index
+        );
 
         Some(TunerAllocation {
             tuner_id,
-            backend,
+            backend: entity.device.backend.clone(),
             model,
-            capabilities,
+            capabilities: entity.device.capabilities.clone(),
             activity,
         })
     }

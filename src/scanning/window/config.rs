@@ -1,8 +1,8 @@
 use crate::core::types::ScanningConfig;
+use crate::ecs::{CandidateEntity, Entities, ScanId, StationEntity};
 use crate::hardware::pool::TunerProvider;
 use crate::pause_signal::PauseSignal;
 use crate::shutdown::ShutdownCoordinator;
-use crate::ui::ProgressReporter;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy)]
@@ -17,7 +17,9 @@ pub struct WindowConfig {
     pub total_windows: usize,
     pub tuner_provider: Arc<dyn TunerProvider>,
     pub config: Arc<ScanningConfig>,
-    pub progress_reporter: Arc<dyn ProgressReporter>,
     pub shutdown_coordinator: Arc<ShutdownCoordinator>,
     pub pause_signal: Option<PauseSignal>,
+    pub station_entities: Option<Entities<StationEntity>>,
+    pub candidate_entities: Option<Entities<CandidateEntity>>,
+    pub scan_id: ScanId,
 }

@@ -9,8 +9,11 @@ pub mod ui;
 #[cfg(test)]
 mod integration_tests;
 
-pub use audio::ManagementSystem;
+pub use audio::{CoordinationSystem as AudioCoordinationSystem, ManagementSystem};
 pub use device::DiscoverySystem;
-pub use scan::CoordinationSystem;
+pub use scan::{
+    CoordinationSystem as ScanCoordinationSystem,
+    RequestProcessorSystem as ScanRequestProcessorSystem, WindowProcessingSystem,
+};
 pub use tuner::{AllocationRequest, AllocationSystem};
 pub use ui::UIUpdateSystem;

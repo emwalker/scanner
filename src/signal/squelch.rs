@@ -65,9 +65,9 @@ pub struct SquelchBlock {
     // Audio file coordination
     audio_capturer: Option<crate::file::AudioCaptureSinkState>,
 
-    // Progress reporting
-    progress_reporter: Option<std::sync::Arc<dyn crate::ui::ProgressReporter + Send + Sync>>,
+    #[allow(dead_code)]
     metadata: crate::scanning::window::WindowMetadata,
+    #[allow(dead_code)]
     tuner_id: Option<crate::hardware::DeviceId>,
 }
 
@@ -83,8 +83,8 @@ pub struct SquelchConfig {
     pub fft_size: usize,
     pub audio_analyzer: AudioAnalyzer,
     pub audio_capturer: Option<crate::file::AudioCaptureSink<crate::file::Buffering>>,
-    pub progress_reporter: Option<std::sync::Arc<dyn crate::ui::ProgressReporter + Send + Sync>>,
     pub window_id: usize,
+    #[allow(dead_code)]
     pub tuner_id: Option<crate::hardware::DeviceId>,
 }
 
@@ -118,7 +118,6 @@ impl SquelchBlock {
             audio_capturer: config
                 .audio_capturer
                 .map(crate::file::AudioCaptureSinkState::Buffering),
-            progress_reporter: config.progress_reporter,
             metadata: crate::scanning::window::WindowMetadata {
                 center_frequency_hz: config.center_freq,
                 window_id: config.window_id,
@@ -256,21 +255,6 @@ impl SquelchBlock {
                 self.detection_center_freq,
                 audio_quality,
             );
-
-            if let Some(ref progress_reporter) = self.progress_reporter {
-                let candidate_id =
-                    format!("{:.1}-{}", self.frequency_hz / 1e6, self.metadata.window_id);
-                progress_reporter.report(crate::ui::ProgressEvent {
-                    event_type: crate::ui::ProgressEventType::SignalGenerated,
-                    frequency_hz: self.frequency_hz,
-                    metadata: self.metadata,
-                    candidate_id: Some(candidate_id),
-                    audio_quality: Some(audio_quality),
-                    signal_strength: Some(signal_strength as f64),
-                    timestamp: std::time::Instant::now(),
-                    tuner_id: self.tuner_id.clone(),
-                });
-            }
 
             match tx.try_send(signal) {
                 Ok(()) => debug!(
@@ -445,7 +429,6 @@ mod tests {
             fft_size: 1024,          // default FFT size for tests
             audio_analyzer: AudioAnalyzer::mock(), // use mock analyzer for tests
             audio_capturer: None,    // no audio capture for tests
-            progress_reporter: None, // no progress reporting for tests
             window_id: 0,            // default window for tests
             tuner_id: None,
         };
@@ -568,8 +551,7 @@ mod tests {
             fft_size: 1024,
             audio_analyzer: AudioAnalyzer::mock(),
             audio_capturer: Some(capturer),
-            progress_reporter: None, // no progress reporting for tests
-            window_id: 0,            // default window for tests
+            window_id: 0, // default window for tests
             tuner_id: None,
         };
         let (mut squelch, _decision_state) = SquelchBlock::new(input_read_stream, squelch_config);
@@ -626,8 +608,7 @@ mod tests {
             fft_size: 1024,
             audio_analyzer: AudioAnalyzer::mock(),
             audio_capturer: Some(capturer),
-            progress_reporter: None, // no progress reporting for tests
-            window_id: 0,            // default window for tests
+            window_id: 0, // default window for tests
             tuner_id: None,
         };
         let (mut squelch, _decision_state) = SquelchBlock::new(input_read_stream, squelch_config);

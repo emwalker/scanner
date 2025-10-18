@@ -1,89 +1,33 @@
-use crate::ui::tui::model::{CandidateStatus, Model};
-use crate::ui::{ProgressEvent, ProgressEventType};
-use std::time::Instant;
+use super::super::helpers::ModelTestContext;
+use crate::ecs::CandidateState;
+use crate::ui::tui::model::CandidateStatus;
 
-/// Test AudioAnalysisCompleted event handling preserves Signal status
 #[test]
 fn test_audio_analysis_completed_preserves_signal() {
-    let mut model = Model::new();
-    let candidate_id = "88.9-1".to_string();
+    let mut ctx = ModelTestContext::new();
     let frequency = 88_900_000.0;
     let window_id = 1;
 
-    // Create candidate and start analysis
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::CandidateCreated,
-        frequency_hz: frequency,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: frequency,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    ctx.update_candidate(frequency, window_id, CandidateState::Detected, None, None);
+    ctx.update_candidate(frequency, window_id, CandidateState::Analyzing, None, None);
+    ctx.update_candidate(frequency, window_id, CandidateState::Signal, None, None);
+    ctx.sync();
 
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::AudioAnalysisStarted,
-        frequency_hz: frequency,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: frequency,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
-
-    // Generate signal first
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::SignalGenerated,
-        frequency_hz: frequency,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: frequency,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
-
-    let window = model.windows.get(&window_id).unwrap();
+    let window = ctx.model.windows.get(&window_id).unwrap();
     let candidate = &window.candidates[0];
     assert_eq!(candidate.status, CandidateStatus::Signal);
     assert_eq!(candidate.completion, 0.6);
 
-    // AudioAnalysisCompleted should not override Signal status
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::AudioAnalysisCompleted,
-        frequency_hz: frequency,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: frequency,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    ctx.sync();
 
-    let window = model.windows.get(&window_id).unwrap();
+    let window = ctx.model.windows.get(&window_id).unwrap();
     let candidate = &window.candidates[0];
     assert_eq!(candidate.status, CandidateStatus::Signal);
-    assert_eq!(candidate.completion, 0.6); // Should remain unchanged
+    assert_eq!(candidate.completion, 0.6);
 }
 
-/// Test that status text mapping remains exactly the same
 #[test]
 fn test_status_text_mapping_unchanged() {
-    // These exact strings must be preserved across refactoring
     assert_eq!(CandidateStatus::Detected.to_string(), "DETECTED");
     assert_eq!(CandidateStatus::Analyzing.to_string(), "ANALYZING");
     assert_eq!(CandidateStatus::Rejected.to_string(), "NOISE");
@@ -92,136 +36,65 @@ fn test_status_text_mapping_unchanged() {
     assert_eq!(CandidateStatus::Completed.to_string(), "DONE");
 }
 
-/// Test that progress percentage calculations remain exact
 #[test]
 fn test_progress_percentages_unchanged() {
-    let mut model = Model::new();
-    let candidate_id = "88.9-1".to_string();
+    let mut ctx = ModelTestContext::new();
     let frequency = 88_900_000.0;
     let window_id = 1;
 
-    // Test each state's exact completion percentage
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::CandidateCreated,
-        frequency_hz: frequency,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: frequency,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    ctx.update_candidate(frequency, window_id, CandidateState::Detected, None, None);
+    ctx.sync();
 
-    let window = model.windows.get(&window_id).unwrap();
+    let window = ctx.model.windows.get(&window_id).unwrap();
     let candidate = &window.candidates[0];
-    assert_eq!(candidate.completion, 0.3); // DETECTED = 30%
+    assert_eq!(candidate.completion, 0.3);
 
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::AudioAnalysisStarted,
-        frequency_hz: frequency,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: frequency,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    ctx.update_candidate(frequency, window_id, CandidateState::Analyzing, None, None);
+    ctx.sync();
 
-    let window = model.windows.get(&window_id).unwrap();
+    let window = ctx.model.windows.get(&window_id).unwrap();
     let candidate = &window.candidates[0];
-    assert_eq!(candidate.completion, 0.5); // ANALYZING = 50%
+    assert_eq!(candidate.completion, 0.5);
 
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::SignalGenerated,
-        frequency_hz: frequency,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: frequency,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    ctx.update_candidate(frequency, window_id, CandidateState::Signal, None, None);
+    ctx.sync();
 
-    let window = model.windows.get(&window_id).unwrap();
+    let window = ctx.model.windows.get(&window_id).unwrap();
     let candidate = &window.candidates[0];
-    assert_eq!(candidate.completion, 0.6); // SIGNAL = 60%
+    assert_eq!(candidate.completion, 0.6);
 
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::AudioPlaybackStarted,
-        frequency_hz: frequency,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: frequency,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    ctx.update_candidate(frequency, window_id, CandidateState::Playing, None, None);
+    ctx.sync();
 
-    let window = model.windows.get(&window_id).unwrap();
+    let window = ctx.model.windows.get(&window_id).unwrap();
     let candidate = &window.candidates[0];
-    assert_eq!(candidate.completion, 0.8); // PLAYING = 80%
+    assert_eq!(candidate.completion, 0.8);
 
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::AudioPlaybackCompleted,
-        frequency_hz: frequency,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: frequency,
-            window_id,
-        },
-        candidate_id: Some(candidate_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    ctx.update_candidate(frequency, window_id, CandidateState::Completed, None, None);
+    ctx.sync();
 
-    let window = model.windows.get(&window_id).unwrap();
+    let window = ctx.model.windows.get(&window_id).unwrap();
     let candidate = &window.candidates[0];
-    assert_eq!(candidate.completion, 1.0); // DONE = 100%
+    assert_eq!(candidate.completion, 1.0);
 
-    // Test rejected path
-    let rejected_id = "89.1-1".to_string();
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::CandidateCreated,
-        frequency_hz: 89_100_000.0,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: 89_100_000.0,
-            window_id,
-        },
-        candidate_id: Some(rejected_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
+    let rejected_freq = 89_100_000.0;
+    ctx.update_candidate(
+        rejected_freq,
+        window_id,
+        CandidateState::Detected,
+        None,
+        None,
+    );
+    ctx.update_candidate(
+        rejected_freq,
+        window_id,
+        CandidateState::Rejected,
+        None,
+        None,
+    );
+    ctx.sync();
 
-    model.update(ProgressEvent {
-        event_type: ProgressEventType::CandidateRejected,
-        frequency_hz: 89_100_000.0,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: 89_100_000.0,
-            window_id,
-        },
-        candidate_id: Some(rejected_id.clone()),
-        audio_quality: None,
-        signal_strength: None,
-        timestamp: Instant::now(),
-        tuner_id: None,
-    });
-
-    let window = model.windows.get(&window_id).unwrap();
+    let window = ctx.model.windows.get(&window_id).unwrap();
     let rejected_candidate = &window.candidates[1];
-    assert_eq!(rejected_candidate.completion, 1.0); // NOISE = 100%
+    assert_eq!(rejected_candidate.completion, 1.0);
 }

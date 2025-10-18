@@ -10,10 +10,10 @@ pub use audio::{
 };
 
 use crate::core::types::{Result, ScanningConfig};
+use crate::ecs::{CandidateEntity, Entities, ScanId, StationEntity};
 use crate::hardware::pool::{SegmentTrait, TunerProvider};
 use crate::pause_signal::PauseSignal;
 use crate::shutdown::ShutdownCoordinator;
-use crate::ui::{ProgressEvent, ProgressEventType, ProgressReporter};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -27,10 +27,12 @@ pub struct Window {
     station_mode: bool,
     tuner_provider: Arc<dyn TunerProvider>,
     config: Arc<ScanningConfig>,
-    progress_reporter: Arc<dyn ProgressReporter>,
     shutdown_token: CancellationToken,
     metadata: WindowMetadata,
     pause_signal: Option<PauseSignal>,
+    station_entities: Option<Entities<StationEntity>>,
+    candidate_entities: Option<Entities<CandidateEntity>>,
+    scan_id: ScanId,
 }
 
 impl Window {
@@ -42,13 +44,15 @@ impl Window {
             station_mode: false,
             tuner_provider: window_config.tuner_provider,
             config: window_config.config,
-            progress_reporter: window_config.progress_reporter,
             shutdown_token: window_config.shutdown_coordinator.token(),
             metadata: WindowMetadata {
                 center_frequency_hz: window_config.center_freq,
                 window_id: window_config.window_num,
             },
             pause_signal: window_config.pause_signal,
+            station_entities: window_config.station_entities,
+            candidate_entities: window_config.candidate_entities,
+            scan_id: window_config.scan_id,
         }
     }
 
@@ -58,7 +62,6 @@ impl Window {
         total_windows: usize,
         tuner_provider: Arc<dyn TunerProvider>,
         config: Arc<ScanningConfig>,
-        progress_reporter: Arc<dyn ProgressReporter>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
     ) -> Self {
         Self {
@@ -68,13 +71,15 @@ impl Window {
             station_mode: true,
             tuner_provider,
             config,
-            progress_reporter,
             shutdown_token: shutdown_coordinator.token(),
             metadata: WindowMetadata {
                 center_frequency_hz: center_freq,
                 window_id: window_num,
             },
             pause_signal: None,
+            station_entities: None,
+            candidate_entities: None,
+            scan_id: ScanId::new(),
         }
     }
 
@@ -131,20 +136,6 @@ impl Window {
 
         let peaks = processing::peaks(self.station_mode, self.center_freq, &self.config, segment)?;
 
-        for peak in peaks.iter() {
-            let candidate_id = format!("{:.1}-{}", peak.frequency_hz / 1e6, self.window_num);
-            self.progress_reporter.report(ProgressEvent {
-                event_type: ProgressEventType::PeakDetected,
-                frequency_hz: peak.frequency_hz,
-                metadata: self.metadata,
-                candidate_id: Some(candidate_id),
-                audio_quality: None,
-                signal_strength: None,
-                timestamp: std::time::Instant::now(),
-                tuner_id: None,
-            });
-        }
-
         if !peaks.is_empty() {
             debug!("Found {} peaks in this window", peaks.len());
             processing::debug_peaks(self.window_num, self.center_freq, &self.config, &peaks);
@@ -161,17 +152,14 @@ impl Window {
                 let freq = match candidate {
                     crate::core::types::Candidate::Fm(fm_candidate) => fm_candidate.frequency_hz,
                 };
-                let candidate_id = format!("{:.1}-{}", freq / 1e6, self.window_num);
-                self.progress_reporter.report(ProgressEvent {
-                    event_type: ProgressEventType::CandidateCreated,
-                    frequency_hz: freq,
-                    metadata: self.metadata,
-                    candidate_id: Some(candidate_id),
-                    audio_quality: None,
-                    signal_strength: None,
-                    timestamp: std::time::Instant::now(),
-                    tuner_id: None,
-                });
+
+                if let Some(candidate_entities) = &self.candidate_entities {
+                    use crate::ecs::CandidateEntity;
+                    let entity = CandidateEntity::new(freq, self.metadata);
+                    if let Ok(mut entities) = candidate_entities.write() {
+                        entities.insert(entity);
+                    }
+                }
             }
 
             let ctx = processing::CandidateProcessingContext {
@@ -179,8 +167,10 @@ impl Window {
                 center_freq: self.center_freq,
                 config: &self.config,
                 metadata: self.metadata,
-                progress_reporter: &self.progress_reporter,
                 pause_signal: &self.pause_signal,
+                station_entities: &self.station_entities,
+                candidate_entities: &self.candidate_entities,
+                scan_id: self.scan_id,
             };
 
             let signals =
@@ -196,11 +186,11 @@ impl Window {
             audio::play_signals(
                 self.window_num,
                 &self.config,
-                &self.progress_reporter,
                 &self.shutdown_token,
                 &self.pause_signal,
                 signals,
                 segment,
+                &self.candidate_entities,
             )
         } else {
             debug!("No peaks detected in this window");

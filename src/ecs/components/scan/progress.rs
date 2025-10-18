@@ -1,8 +1,12 @@
 //! Scan progress component
 
+use std::collections::HashSet;
+
 /// Pause state for a scan
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanPauseState {
+    /// Scan has been requested but not yet started
+    Pending,
     /// Scan is actively running
     Scanning,
     /// Scan is paused at a specific window
@@ -27,16 +31,20 @@ pub struct ScanProgressComponent {
 
     /// Number of windows completed
     pub windows_completed: usize,
+
+    /// Set of completed window indices (for non-sequential processing)
+    pub completed_windows: HashSet<usize>,
 }
 
 impl ScanProgressComponent {
-    /// Create a new progress component
+    /// Create a new progress component in Pending state
     pub fn new(total_windows: usize) -> Self {
         Self {
-            state: ScanPauseState::Scanning,
+            state: ScanPauseState::Pending,
             current_window: 0,
             total_windows,
             windows_completed: 0,
+            completed_windows: HashSet::new(),
         }
     }
 
@@ -49,6 +57,18 @@ impl ScanProgressComponent {
     /// Complete a window
     pub fn complete_window(&mut self) {
         self.windows_completed += 1;
+    }
+
+    /// Mark a specific window as completed
+    pub fn complete_window_at(&mut self, window_index: usize) {
+        if self.completed_windows.insert(window_index) {
+            self.windows_completed += 1;
+        }
+    }
+
+    /// Check if a window has been completed
+    pub fn is_window_completed(&self, window_index: usize) -> bool {
+        self.completed_windows.contains(&window_index)
     }
 
     /// Pause at a specific window
@@ -76,6 +96,11 @@ impl ScanProgressComponent {
         self.state = ScanPauseState::PausedAtWindow {
             window_index: paused_at_window,
         };
+    }
+
+    /// Check if scan is pending
+    pub fn is_pending(&self) -> bool {
+        matches!(self.state, ScanPauseState::Pending)
     }
 
     /// Check if scan is paused

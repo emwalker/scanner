@@ -37,10 +37,7 @@ Simply pass `--log-file` to the scanner:
 
 ```bash
 # TUI mode with worker logging
-scanner scan --band fm --log-file /tmp/scanner.log
-
-# Headless mode with worker logging
-scanner scan --stations 88.9e6 --duration 3 --headless --log-file /tmp/scanner.log
+scanner scan --band fm --verbose --log-file /tmp/scanner.log
 ```
 
 ## Manual Testing

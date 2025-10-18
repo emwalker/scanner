@@ -1,12 +1,9 @@
 use crate::core::types::{Result, ScannerError, ScanningConfig};
 use crate::hardware::pool::SegmentTrait;
 use crate::pause_signal::PauseSignal;
-use crate::scanning::window::config::WindowMetadata;
-use crate::ui::{ProgressEvent, ProgressEventType, ProgressReporter};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, StreamConfig};
 use rustradio::graph::{Graph, GraphRunner};
-use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
@@ -359,11 +356,11 @@ pub fn create_audio_fm_graph(
 pub(super) fn play_signals(
     window_num: usize,
     config: &ScanningConfig,
-    progress_reporter: &Arc<dyn ProgressReporter>,
     shutdown_token: &CancellationToken,
     pause_signal: &Option<PauseSignal>,
     signals: Vec<crate::core::types::Signal>,
     segment: &dyn SegmentTrait,
+    candidate_entities: &Option<crate::ecs::Entities<crate::ecs::CandidateEntity>>,
 ) -> Result<()> {
     if signals.is_empty() {
         return Ok(());
@@ -405,21 +402,16 @@ pub(super) fn play_signals(
     debug!("Audio system ready for window {}", window_num);
 
     for signal in sorted_signals.iter() {
-        let candidate_id = format!("{:.1}-{}", signal.frequency_hz / 1e6, window_num);
-        let signal_metadata = WindowMetadata {
-            center_frequency_hz: signal.detection_center_freq,
-            window_id: window_num,
-        };
-        progress_reporter.report(ProgressEvent {
-            event_type: ProgressEventType::AudioPlaybackStarted,
-            frequency_hz: signal.frequency_hz,
-            metadata: signal_metadata,
-            candidate_id: Some(candidate_id),
-            audio_quality: None,
-            signal_strength: None,
-            timestamp: std::time::Instant::now(),
-            tuner_id: None,
-        });
+        // Update entity to Playing state
+        if let Some(entities_arc) = candidate_entities {
+            use crate::ecs::CandidateId;
+            let id = CandidateId::new(signal.frequency_hz, window_num);
+            if let Ok(mut entities) = entities_arc.write()
+                && let Some(entity) = entities.get_mut(&id)
+            {
+                entity.start_playback();
+            }
+        }
 
         tracing::info!(
             "playing {:.1} MHz [{}]",
@@ -440,17 +432,16 @@ pub(super) fn play_signals(
             debug!("Error processing signal for audio: {}", e);
         }
 
-        let candidate_id = format!("{:.1}-{}", signal.frequency_hz / 1e6, window_num);
-        progress_reporter.report(ProgressEvent {
-            event_type: ProgressEventType::AudioPlaybackCompleted,
-            frequency_hz: signal.frequency_hz,
-            metadata: signal_metadata,
-            candidate_id: Some(candidate_id),
-            audio_quality: None,
-            signal_strength: None,
-            timestamp: std::time::Instant::now(),
-            tuner_id: None,
-        });
+        // Update entity to Completed state
+        if let Some(entities_arc) = candidate_entities {
+            use crate::ecs::CandidateId;
+            let id = CandidateId::new(signal.frequency_hz, window_num);
+            if let Ok(mut entities) = entities_arc.write()
+                && let Some(entity) = entities.get_mut(&id)
+            {
+                entity.complete_playback();
+            }
+        }
     }
 
     Ok(())

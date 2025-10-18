@@ -5,6 +5,7 @@ use crate::ecs::Entity;
 use crate::ecs::components::scan::ScanId;
 use crate::ecs::components::station::{
     StationDiscoveryComponent, StationHistoryComponent, StationId, StationInfoComponent,
+    TuneRequestComponent,
 };
 use crate::scanning::window::WindowMetadata;
 use std::time::{Duration, Instant};
@@ -12,10 +13,11 @@ use std::time::{Duration, Instant};
 /// Entity representing a discovered or known station
 #[derive(Debug, Clone)]
 pub struct StationEntity {
-    pub id: StationId,
+    id: StationId,
     pub info: StationInfoComponent,
     pub discovery: StationDiscoveryComponent,
     pub history: StationHistoryComponent,
+    pub tune_request: Option<TuneRequestComponent>,
 }
 
 impl StationEntity {
@@ -34,7 +36,23 @@ impl StationEntity {
                 window_metadata,
             ),
             history: StationHistoryComponent::new(),
+            tune_request: None,
         }
+    }
+
+    /// Request tuning to this station
+    pub fn request_tune(&mut self, window_id: usize, center_frequency: f64) {
+        self.tune_request = Some(TuneRequestComponent::new(window_id, center_frequency));
+    }
+
+    /// Clear tune request
+    pub fn clear_tune_request(&mut self) {
+        self.tune_request = None;
+    }
+
+    /// Check if station has pending tune request
+    pub fn has_tune_request(&self) -> bool {
+        self.tune_request.is_some()
     }
 
     /// Get the station frequency
@@ -181,10 +199,14 @@ mod tests {
         let scan_id = ScanId::new();
         let metadata = create_test_metadata();
 
-        let station = StationEntity::from_signal(&signal, scan_id, metadata);
-        let id = station.id();
+        let station1 = StationEntity::from_signal(&signal, scan_id, metadata);
+        let station2 = StationEntity::from_signal(&signal, scan_id, metadata);
 
-        assert_eq!(id, &station.id);
+        assert_ne!(
+            station1.id(),
+            station2.id(),
+            "Each entity should have unique ID"
+        );
     }
 
     #[test]

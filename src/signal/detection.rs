@@ -24,7 +24,6 @@ pub struct DetectionGraphConfig<'a> {
     pub tune_freq: f64,
     pub signal_tx: Option<SyncSender<crate::core::types::Signal>>,
     pub audio_analyzer: crate::audio::quality::AudioAnalyzer,
-    pub progress_reporter: Option<Arc<dyn crate::ui::ProgressReporter + Send + Sync>>,
     pub window_id: usize,
 }
 
@@ -39,7 +38,6 @@ pub fn create_detection_graph(
         tune_freq,
         signal_tx,
         audio_analyzer,
-        progress_reporter,
         window_id,
     } = graph_config;
     let mut graph = Graph::new();
@@ -111,7 +109,6 @@ pub fn create_detection_graph(
         fft_size: config.peak_detection.fft_size,
         audio_analyzer,
         audio_capturer,
-        progress_reporter,
         window_id,
         tuner_id: None,
     };
