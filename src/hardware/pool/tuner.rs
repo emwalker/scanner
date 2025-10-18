@@ -2,7 +2,6 @@
 
 use crate::core::types::{Result, ScannerError};
 use crate::hardware::pool::SubprocessHandle;
-use crate::hardware::pool::state::PoolInner;
 use crate::hardware::pool::types::TunerId;
 use rustradio::Complex;
 use rustradio::graph::GraphRunner;
@@ -35,8 +34,8 @@ pub enum TunerBackend {
 /// 1. Device lock (`self.device`)
 /// 2. Pool lock (`self.pool`)
 ///
-/// All methods follow this ordering. The Drop implementation only locks the pool,
-/// ensuring safe cleanup even if device lock is held elsewhere.
+/// All methods follow this ordering. The Drop implementation only locks entities,
+/// ensuring safe cleanup even if other locks are held elsewhere.
 pub struct Tuner {
     /// Tuner identifier
     pub tuner_id: TunerId,
@@ -44,14 +43,14 @@ pub struct Tuner {
     /// Backend for device operations
     pub backend: TunerBackend,
 
-    /// Pool inner reference for auto-return
-    pub(crate) pool_inner: Arc<Mutex<PoolInner>>,
-
     /// Notification closure (captures status computation and callbacks)
     pub(crate) on_return: Box<dyn Fn() + Send + Sync>,
 
     /// Shutdown mode flag (shared with Pool)
     pub shutdown_mode: Arc<AtomicBool>,
+
+    /// ECS tuner entities (for deallocation on drop)
+    pub(crate) tuner_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>>,
 }
 
 impl Tuner {
@@ -122,11 +121,8 @@ impl Tuner {
 impl Drop for Tuner {
     /// Return tuner to pool automatically when dropped
     ///
-    /// # Lock ordering
-    /// Acquires pool lock only (safe - device lock already released by caller)
-    ///
     /// # Shutdown safety
-    /// Uses try_lock() to avoid blocking during shutdown. If the pool is locked
+    /// Uses try_lock() to avoid blocking during shutdown. If entities are locked
     /// (e.g., another thread is querying status), we skip returning the tuner
     /// since the pool is likely being destroyed anyway.
     ///
@@ -136,16 +132,27 @@ impl Drop for Tuner {
     fn drop(&mut self) {
         let shutdown_mode = self.shutdown_mode.load(Ordering::SeqCst);
 
-        let returned = match self.pool_inner.try_lock() {
-            Ok(mut pool_inner) => {
-                let returned = pool_inner.return_tuner(self.tuner_id.clone(), shutdown_mode);
-                tracing::debug!(tuner_id = ?self.tuner_id, "Tuner returned to pool");
-                returned
+        if shutdown_mode {
+            tracing::debug!(tuner_id = ?self.tuner_id, "Tuner drop ignored (shutdown mode)");
+            return;
+        }
+
+        let returned = match self.tuner_entities.try_lock() {
+            Ok(mut entities) => {
+                if let Some(entity) = entities.get_mut(&self.tuner_id) {
+                    entity.allocation.deallocate();
+                    entity.status.idle();
+                    tracing::debug!(tuner_id = ?self.tuner_id, "Tuner returned to pool");
+                    true
+                } else {
+                    tracing::warn!(tuner_id = ?self.tuner_id, "TunerEntity not found on drop");
+                    false
+                }
             }
             Err(_) => {
                 tracing::warn!(
                     tuner_id = ?self.tuner_id,
-                    "Could not return tuner to pool (locked) - likely shutting down"
+                    "Could not return tuner to pool (entities locked) - likely shutting down"
                 );
                 false
             }

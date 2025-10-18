@@ -1,0 +1,70 @@
+//! Audio allocation component
+
+use crate::hardware::DeviceId;
+
+/// Component tracking resource allocation for audio playback
+pub struct AudioAllocationComponent {
+    /// ID of the tuner being used (if known)
+    pub tuner_id: Option<DeviceId>,
+
+    /// Audio graph cancellation token
+    pub graph_cancel: Option<rustradio::graph::CancellationToken>,
+
+    /// Audio graph thread handle
+    pub graph_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl AudioAllocationComponent {
+    pub fn new(tuner_id: Option<DeviceId>) -> Self {
+        Self {
+            tuner_id,
+            graph_cancel: None,
+            graph_thread: None,
+        }
+    }
+
+    pub fn set_graph(
+        &mut self,
+        cancel: rustradio::graph::CancellationToken,
+        thread: std::thread::JoinHandle<()>,
+    ) {
+        self.graph_cancel = Some(cancel);
+        self.graph_thread = Some(thread);
+    }
+
+    pub fn cancel_graph(&mut self) {
+        if let Some(cancel) = self.graph_cancel.take() {
+            cancel.cancel();
+        }
+    }
+
+    pub fn take_thread(&mut self) -> Option<std::thread::JoinHandle<()>> {
+        self.graph_thread.take()
+    }
+
+    pub fn has_active_graph(&self) -> bool {
+        self.graph_cancel.is_some() || self.graph_thread.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_allocation() {
+        let device_id = DeviceId::from_serial("test", "device");
+        let allocation = AudioAllocationComponent::new(Some(device_id.clone()));
+
+        assert_eq!(allocation.tuner_id, Some(device_id));
+        assert!(!allocation.has_active_graph());
+    }
+
+    #[test]
+    fn test_create_allocation_no_tuner() {
+        let allocation = AudioAllocationComponent::new(None);
+
+        assert_eq!(allocation.tuner_id, None);
+        assert!(!allocation.has_active_graph());
+    }
+}

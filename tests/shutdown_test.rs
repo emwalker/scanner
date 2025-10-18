@@ -270,7 +270,7 @@ fn simulate_cleanup_sequence(
 
 #[test]
 fn test_pause_signal_shutdown_interaction() {
-    use scanner::scanner_state::PauseSignal;
+    use scanner::pause_signal::PauseSignal;
 
     let pause_signal = PauseSignal::new();
     let coordinator = Arc::new(ShutdownCoordinator::new());
@@ -332,18 +332,21 @@ fn test_concurrent_shutdown_checks() {
 }
 
 #[test]
-fn test_shutdown_with_state_machine() {
-    use scanner::scanner_state::ScannerState;
+fn test_shutdown_with_entity_state() {
+    use scanner::ecs::{ScanConfigComponent, ScanEntity, ScanType};
 
-    let mut state = ScannerState::new();
+    let config =
+        ScanConfigComponent::new(ScanType::Band, 88.0e6, 108.0e6, 1.0e6, 2.4e6, 40.0, 1.0, 10);
+    let mut entity = ScanEntity::new(config);
     let coordinator = Arc::new(ShutdownCoordinator::new());
     let token = coordinator.token();
 
-    state.start_window(5);
-    assert!(state.is_scanning());
+    entity.lifecycle.start();
+    entity.progress.start_window(5);
+    assert!(entity.is_scanning());
 
-    state.handle_pause(5);
-    assert!(state.is_paused());
+    entity.progress.pause(5);
+    assert!(entity.is_paused());
 
     if token.is_cancelled() {
         panic!("Should not be triggered yet");
@@ -352,7 +355,7 @@ fn test_shutdown_with_state_machine() {
     coordinator.shutdown();
 
     assert!(token.is_cancelled(), "Shutdown should be triggered");
-    assert!(state.is_paused(), "State should still be paused");
+    assert!(entity.is_paused(), "State should still be paused");
 }
 
 mod property_tests {
@@ -404,22 +407,32 @@ mod property_tests {
             pause_at_window in 1usize..20,
             shutdown_delay_ms in 0u64..100,
         ) {
-            use scanner::scanner_state::ScannerState;
+            use scanner::ecs::{ScanConfigComponent, ScanEntity, ScanType};
 
-            let mut state = ScannerState::new();
+            let config = ScanConfigComponent::new(
+                ScanType::Band,
+                88.0e6,
+                108.0e6,
+                1.0e6,
+                2.4e6,
+                40.0,
+                1.0,
+                pause_at_window.max(1),
+            );
+            let mut entity = ScanEntity::new(config);
             let coordinator = Arc::new(ShutdownCoordinator::new());
             let token = coordinator.token();
 
-            state.start_window(pause_at_window);
+            entity.progress.start_window(pause_at_window);
 
             std::thread::sleep(Duration::from_millis(shutdown_delay_ms));
 
-            state.handle_pause(pause_at_window);
+            entity.progress.pause(pause_at_window);
 
             coordinator.shutdown();
 
             prop_assert!(token.is_cancelled(), "Shutdown should be triggered");
-            prop_assert!(state.is_paused(), "State should be paused");
+            prop_assert!(entity.is_paused(), "State should be paused");
         }
 
         #[test]
@@ -428,7 +441,7 @@ mod property_tests {
             shutdown_delay_ms in 0u64..100,
             resume_delay_ms in 0u64..100,
         ) {
-            use scanner::scanner_state::PauseSignal;
+            use scanner::pause_signal::PauseSignal;
 
             let pause_signal = PauseSignal::new();
             let coordinator = Arc::new(ShutdownCoordinator::new());

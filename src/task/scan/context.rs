@@ -2,10 +2,11 @@
 
 use crate::audio::session::AudioSession;
 use crate::core::types::{Result, ScanningConfig};
+use crate::ecs::{AudioEntity, Entity, ScanEntity, StationEntity};
 use crate::hardware::DeviceId;
 use crate::hardware::pool::{Pool, TunerId};
 use crate::main_thread::audio_coordinator::{AudioCoordinator, TuneParams};
-use crate::scanner_state::{PauseSignal, ScannerState};
+use crate::pause_signal::PauseSignal;
 use crate::scanning::window::{Window, WindowConfig};
 use crate::shutdown::ShutdownCoordinator;
 use crate::ui::{ProgressReporter, ScannerCommand, TuiEvent};
@@ -30,9 +31,13 @@ pub struct ScanContext<'a> {
     pub command_receiver: &'a mut Option<Receiver<ScannerCommand>>,
     pub tui_event_sender: &'a Option<Sender<TuiEvent>>,
 
-    pub scanner_state: ScannerState,
-    pub current_playing: Option<TuneParams>,
+    pub scan_entity: ScanEntity,
     pub audio_session: Option<AudioSession>,
+
+    // ECS Phase 4: Station and Audio entities
+    pub current_station: Option<StationEntity>,
+    pub current_audio: Option<AudioEntity>,
+
     pub window_centers: Vec<f64>,
     pub windows_to_process: usize,
     pub window_index: usize,
@@ -78,8 +83,8 @@ impl<'a> ScanContext<'a> {
     pub fn handle_scanning_mode(&mut self) -> Result<LoopControl> {
         if self.window_index >= self.windows_to_process {
             debug!("Scan complete - all windows processed");
-            self.scanner_state
-                .mark_scan_complete(self.windows_to_process);
+            self.scan_entity.progress.mark_complete();
+            self.scan_entity.lifecycle.complete();
             return Ok(LoopControl::Continue);
         }
 
@@ -97,6 +102,10 @@ impl<'a> ScanContext<'a> {
         }
 
         let center_freq = self.window_centers[self.window_index];
+
+        // Synchronize: Start window in scan entity
+        self.scan_entity.progress.start_window(self.window_index);
+
         match self.process_window(
             self.window_index + 1,
             center_freq,
@@ -104,6 +113,9 @@ impl<'a> ScanContext<'a> {
         ) {
             Ok(()) => {
                 self.process_commands(self.window_index + 1, self.window_centers.len())?;
+
+                // Synchronize: Complete window in scan entity
+                self.scan_entity.progress.complete_window();
 
                 debug!(
                     completed_window = self.window_index + 1,
@@ -185,12 +197,12 @@ impl<'a> ScanContext<'a> {
     ) -> Result<bool> {
         self.process_commands(window_num, total_windows)?;
 
-        if self.scanner_state.is_paused() {
+        if self.scan_entity.is_paused() {
             return Ok(true);
         }
 
         self.check_and_handle_command(window_num)?;
-        Ok(self.scanner_state.is_paused())
+        Ok(self.scan_entity.is_paused())
     }
 
     fn handle_command(&mut self, command: ScannerCommand, window_num: usize) -> Result<()> {
@@ -226,9 +238,23 @@ impl<'a> ScanContext<'a> {
                     self.shutdown_coordinator,
                     self.progress_reporter,
                 );
-                let playing_params = self.current_playing.take();
-                coordinator.stop_listening(&mut self.audio_session, playing_params);
-                self.scanner_state.handle_stop_listening();
+                coordinator.stop_listening(
+                    &mut self.audio_session,
+                    self.current_station.as_ref(),
+                    self.current_audio.as_ref(),
+                );
+
+                if let Some(mut audio) = self.current_audio.take() {
+                    audio.stop();
+                }
+                self.current_station = None;
+
+                if let crate::ecs::components::scan::ScanPauseState::Listening {
+                    paused_at_window,
+                } = self.scan_entity.progress.state
+                {
+                    self.scan_entity.progress.stop_listening(paused_at_window);
+                }
             }
         }
         Ok(())
@@ -237,7 +263,8 @@ impl<'a> ScanContext<'a> {
     fn handle_pause(&mut self, window_num: usize) -> Result<()> {
         debug!(window = window_num, "Scanner paused, creating AudioSession");
         self.pause_signal.pause();
-        self.scanner_state.handle_pause(window_num);
+        self.scan_entity.progress.pause(window_num);
+        self.scan_entity.lifecycle.pause();
 
         self.audio_session = Some(AudioSession::new(
             self.config,
@@ -267,7 +294,7 @@ impl<'a> ScanContext<'a> {
             "Scanner resuming - exiting selection mode and continuing scan"
         );
         self.pause_signal.unpause();
-        let _next_window = self.scanner_state.handle_resume();
+        self.scan_entity.progress.resume();
 
         self.audio_session = None;
         debug!("AudioSession dropped, returning to scan mode");
@@ -280,7 +307,7 @@ impl<'a> ScanContext<'a> {
             candidate_frequency_mhz = params.candidate_frequency / 1e6,
             "ScanContext: Received TuneToCandidate command"
         );
-        self.scanner_state.handle_tune(window_num);
+        self.scan_entity.progress.start_listening(window_num);
 
         if let Some(session) = &mut self.audio_session {
             let coordinator = AudioCoordinator::new(
@@ -290,7 +317,44 @@ impl<'a> ScanContext<'a> {
                 self.progress_reporter,
             );
             coordinator.tune_to_station(session, params.clone())?;
-            self.current_playing = Some(params);
+
+            // Dual-write: Create entities from TuneParams
+            let signal = crate::core::types::Signal {
+                frequency_hz: params.candidate_frequency,
+                signal_strength: params.signal_strength.unwrap_or(0.1) as f32,
+                bandwidth_hz: 200_000.0,
+                modulation: crate::core::types::ModulationType::WFM,
+                audio_sample_rate: self.config.audio.sample_rate,
+                detected_at: std::time::SystemTime::now(),
+                analysis_duration_ms: 0,
+                detection_center_freq: params.center_frequency,
+                audio_quality: params
+                    .audio_quality
+                    .unwrap_or(crate::audio::quality::AudioQuality::Unknown),
+            };
+
+            let window_metadata = crate::scanning::window::WindowMetadata {
+                center_frequency_hz: params.center_frequency,
+                window_id: params.window_id,
+            };
+
+            // Get tuner ID from pool status
+            let status = self.pool.status();
+            let tuner_id = status
+                .tuners
+                .iter()
+                .find(|t| {
+                    t.state == crate::hardware::pool::TunerState::Allocated
+                        && t.activity == Some(crate::hardware::pool::TunerActivity::Listening)
+                })
+                .map(|t| t.id.device_id.clone());
+
+            self.current_station = Some(StationEntity::from_signal(
+                &signal,
+                *self.scan_entity.id(),
+                window_metadata,
+            ));
+            self.current_audio = Some(AudioEntity::new(signal, params.center_frequency, tuner_id));
         } else {
             debug!("TuneToCandidate received but no AudioSession exists");
         }

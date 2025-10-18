@@ -932,3 +932,355 @@ fn test_tuner_status_contains_id_and_state() {
     assert_eq!(allocated_tuner.state, TunerState::Allocated);
     assert_eq!(allocated_tuner.activity, Some(TunerActivity::Listening));
 }
+
+#[cfg(test)]
+mod ecs_sync_tests {
+    use super::*;
+
+    #[test]
+    fn test_device_addition_creates_tuner_entity() {
+        let pool = Pool::new_unfiltered();
+
+        let device_id = hardware::DeviceId::from_serial("mock", "test030");
+        let device = create_mock_device(&device_id);
+        pool.add_device(device, hardware::types::Backend::Mock)
+            .unwrap();
+
+        let entities = pool.tuner_entities.lock().unwrap();
+        assert_eq!(entities.len(), 1, "Should have one TunerEntity");
+
+        let tuner_id = TunerId::new(device_id, 0);
+        let entity = entities.get(&tuner_id).expect("TunerEntity should exist");
+
+        assert!(entity.is_available(), "Entity should be available");
+        assert!(entity.is_connected(), "Entity should be connected");
+        assert!(
+            entity.allocation.is_available(),
+            "Allocation should be available"
+        );
+    }
+
+    #[test]
+    fn test_device_removal_deletes_tuner_entity() {
+        let pool = Pool::new_unfiltered();
+
+        let device_id = hardware::DeviceId::from_serial("mock", "test031");
+        let device = create_mock_device(&device_id);
+        pool.add_device(device, hardware::types::Backend::Mock)
+            .unwrap();
+
+        {
+            let entities = pool.tuner_entities.lock().unwrap();
+            assert_eq!(entities.len(), 1, "Should have one entity after add");
+        }
+
+        pool.remove_device(&device_id).unwrap();
+
+        {
+            let entities = pool.tuner_entities.lock().unwrap();
+            assert_eq!(entities.len(), 0, "Should have zero entities after remove");
+        }
+    }
+
+    #[test]
+    fn test_allocation_updates_entity_state() {
+        let pool = Pool::new_unfiltered();
+
+        let device_id = hardware::DeviceId::from_serial("mock", "test032");
+        let device = create_mock_device(&device_id);
+        pool.add_device(device, hardware::types::Backend::Mock)
+            .unwrap();
+
+        let tuner_id = TunerId::new(device_id, 0);
+
+        {
+            let entities = pool.tuner_entities.lock().unwrap();
+            let entity = entities.get(&tuner_id).unwrap();
+            assert!(
+                entity.allocation.is_available(),
+                "Should be available before allocation"
+            );
+        }
+
+        let requirements = TaskRequirements {
+            frequency_hz: 88.9e6,
+            bandwidth_hz: 200e3,
+            required_sample_rate: 2.4e6,
+            priority: TaskPriority::Normal,
+        };
+
+        let _tuner = pool
+            .try_acquire(&requirements, TunerActivity::Scanning)
+            .unwrap();
+
+        {
+            let entities = pool.tuner_entities.lock().unwrap();
+            let entity = entities.get(&tuner_id).unwrap();
+            assert!(
+                entity.allocation.is_allocated(),
+                "Should be allocated after acquire"
+            );
+        }
+    }
+
+    #[test]
+    fn test_deallocation_updates_entity_state() {
+        let pool = Pool::new_unfiltered();
+
+        let device_id = hardware::DeviceId::from_serial("mock", "test033");
+        let device = create_mock_device(&device_id);
+        pool.add_device(device, hardware::types::Backend::Mock)
+            .unwrap();
+
+        let tuner_id = TunerId::new(device_id, 0);
+
+        let requirements = TaskRequirements {
+            frequency_hz: 88.9e6,
+            bandwidth_hz: 200e3,
+            required_sample_rate: 2.4e6,
+            priority: TaskPriority::Normal,
+        };
+
+        {
+            let tuner = pool
+                .try_acquire(&requirements, TunerActivity::Listening)
+                .unwrap();
+
+            {
+                let entities = pool.tuner_entities.lock().unwrap();
+                let entity = entities.get(&tuner_id).unwrap();
+                assert!(
+                    entity.allocation.is_allocated(),
+                    "Should be allocated while tuner is held"
+                );
+            }
+
+            drop(tuner);
+        }
+
+        {
+            let entities = pool.tuner_entities.lock().unwrap();
+            let entity = entities.get(&tuner_id).unwrap();
+            assert!(
+                entity.allocation.is_available(),
+                "Should be available after tuner is dropped"
+            );
+        }
+    }
+
+    #[test]
+    fn test_multiple_devices_entity_sync() {
+        let pool = Pool::new_unfiltered();
+
+        let device1_id = hardware::DeviceId::from_serial("mock", "test034");
+        let device1 = create_mock_device(&device1_id);
+        pool.add_device(device1, hardware::types::Backend::Mock)
+            .unwrap();
+
+        let device2_id = hardware::DeviceId::from_serial("mock", "test035");
+        let device2 = create_mock_device(&device2_id);
+        pool.add_device(device2, hardware::types::Backend::Mock)
+            .unwrap();
+
+        {
+            let entities = pool.tuner_entities.lock().unwrap();
+            assert_eq!(entities.len(), 2, "Should have two entities");
+        }
+
+        pool.remove_device(&device1_id).unwrap();
+
+        {
+            let entities = pool.tuner_entities.lock().unwrap();
+            assert_eq!(
+                entities.len(),
+                1,
+                "Should have one entity after removing one device"
+            );
+        }
+    }
+
+    #[test]
+    fn test_allocation_deallocation_cycle_maintains_sync() {
+        let pool = Pool::new_unfiltered();
+
+        let device_id = hardware::DeviceId::from_serial("mock", "test036");
+        let device = create_mock_device(&device_id);
+        pool.add_device(device, hardware::types::Backend::Mock)
+            .unwrap();
+
+        let requirements = TaskRequirements {
+            frequency_hz: 88.9e6,
+            bandwidth_hz: 200e3,
+            required_sample_rate: 2.4e6,
+            priority: TaskPriority::Normal,
+        };
+
+        for _i in 0..5 {
+            let tuner = pool
+                .try_acquire(&requirements, TunerActivity::Scanning)
+                .unwrap();
+
+            drop(tuner);
+        }
+    }
+
+    #[test]
+    fn test_shutdown_does_not_break_entity_sync() {
+        let pool = Pool::new_unfiltered();
+
+        let device_id = hardware::DeviceId::from_serial("mock", "test037");
+        let device = create_mock_device(&device_id);
+        pool.add_device(device, hardware::types::Backend::Mock)
+            .unwrap();
+
+        pool.shutdown();
+
+        let status = pool.status();
+        assert_eq!(status.device_count, 0, "Devices cleared during shutdown");
+
+        let entities = pool.tuner_entities.lock().unwrap();
+        assert_eq!(
+            entities.len(),
+            1,
+            "Entities remain during shutdown (not cleared)"
+        );
+    }
+
+    #[test]
+    fn test_concurrent_allocation_maintains_entity_sync() {
+        let pool = Arc::new(Pool::new_unfiltered());
+
+        let device1_id = hardware::DeviceId::from_serial("mock", "test038");
+        let device1 = create_mock_device(&device1_id);
+        pool.add_device(device1, hardware::types::Backend::Mock)
+            .unwrap();
+
+        let device2_id = hardware::DeviceId::from_serial("mock", "test039");
+        let device2 = create_mock_device(&device2_id);
+        pool.add_device(device2, hardware::types::Backend::Mock)
+            .unwrap();
+
+        let pool_clone1 = Arc::clone(&pool);
+        let pool_clone2 = Arc::clone(&pool);
+
+        let requirements1 = TaskRequirements {
+            frequency_hz: 88.9e6,
+            bandwidth_hz: 200e3,
+            required_sample_rate: 2.4e6,
+            priority: TaskPriority::Normal,
+        };
+
+        let requirements2 = TaskRequirements {
+            frequency_hz: 88.9e6,
+            bandwidth_hz: 200e3,
+            required_sample_rate: 2.4e6,
+            priority: TaskPriority::Normal,
+        };
+
+        let handle1 =
+            thread::spawn(move || pool_clone1.try_acquire(&requirements1, TunerActivity::Scanning));
+
+        let handle2 = thread::spawn(move || {
+            pool_clone2.try_acquire(&requirements2, TunerActivity::Listening)
+        });
+
+        let tuner1 = handle1.join().unwrap();
+        let tuner2 = handle2.join().unwrap();
+
+        let acquired_count = [tuner1.is_some(), tuner2.is_some()]
+            .iter()
+            .filter(|&&x| x)
+            .count();
+
+        assert!(
+            acquired_count >= 1,
+            "At least one thread should acquire a tuner"
+        );
+        assert!(
+            acquired_count <= 2,
+            "At most two threads can acquire tuners (2 devices)"
+        );
+    }
+
+    #[test]
+    fn test_entity_query_drives_allocation() {
+        let pool = Pool::new_unfiltered();
+
+        let device1_id = hardware::DeviceId::from_serial("mock", "test040");
+        let device1 = create_mock_device(&device1_id);
+        pool.add_device(device1, hardware::types::Backend::Mock)
+            .unwrap();
+
+        let device2_id = hardware::DeviceId::from_serial("mock", "test041");
+        let device2 = create_mock_device(&device2_id);
+        pool.add_device(device2, hardware::types::Backend::Mock)
+            .unwrap();
+
+        let requirements = TaskRequirements {
+            frequency_hz: 88.9e6,
+            bandwidth_hz: 200e3,
+            required_sample_rate: 2.4e6,
+            priority: TaskPriority::Normal,
+        };
+
+        let tuner1 = pool
+            .try_acquire(&requirements, TunerActivity::Scanning)
+            .expect("Should acquire first tuner via entity query");
+
+        {
+            let entities = pool.tuner_entities.lock().unwrap();
+            let allocated_entities = entities
+                .iter()
+                .filter(|e| e.allocation.is_allocated())
+                .count();
+            assert_eq!(
+                allocated_entities, 1,
+                "Exactly one entity should be allocated after first acquire"
+            );
+        }
+
+        let tuner2 = pool
+            .try_acquire(&requirements, TunerActivity::Listening)
+            .expect("Should acquire second tuner via entity query");
+
+        {
+            let entities = pool.tuner_entities.lock().unwrap();
+            let allocated_entities = entities
+                .iter()
+                .filter(|e| e.allocation.is_allocated())
+                .count();
+            assert_eq!(
+                allocated_entities, 2,
+                "Both entities should be allocated after second acquire"
+            );
+        }
+
+        drop(tuner1);
+
+        {
+            let entities = pool.tuner_entities.lock().unwrap();
+            let allocated_entities = entities
+                .iter()
+                .filter(|e| e.allocation.is_allocated())
+                .count();
+            assert_eq!(
+                allocated_entities, 1,
+                "One entity should remain allocated after first tuner dropped"
+            );
+        }
+
+        drop(tuner2);
+
+        {
+            let entities = pool.tuner_entities.lock().unwrap();
+            let available_entities = entities
+                .iter()
+                .filter(|e| e.allocation.is_available())
+                .count();
+            assert_eq!(
+                available_entities, 2,
+                "Both entities should be available after all tuners dropped"
+            );
+        }
+    }
+}

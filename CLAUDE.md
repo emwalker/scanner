@@ -43,6 +43,7 @@ This ensures we avoid any licensing concerns while still learning from the broad
   - ❌ **In runtime/production code**: Don't use `unwrap()` or `expect()` - use proper error handling with `Result`/`Option` and the `?` operator
 - Prefer module-private over `pub(crate)` and `pub(super)`, and prefer `pub(crate)` and `pub(super)` over `pub`. But use `pub` when it makes sense.
 - Use the typestate pattern if it would work well in a specific situation (see docs/patterns/typestate.md).
+- Don't use sleeps in tests to prevent races; use a deterministic approach instead.
 
 ## Shutdown Safety
 

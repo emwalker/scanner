@@ -1,6 +1,6 @@
 use crate::core::types::ScanningConfig;
 use crate::hardware::pool::TunerProvider;
-use crate::scanner_state::PauseSignal;
+use crate::pause_signal::PauseSignal;
 use crate::shutdown::ShutdownCoordinator;
 use crate::ui::ProgressReporter;
 use std::sync::Arc;

@@ -122,7 +122,8 @@ impl<'a> AudioCoordinator<'a> {
     pub fn stop_listening(
         &self,
         audio_session: &mut Option<AudioSession>,
-        playing_params: Option<TuneParams>,
+        station: Option<&crate::ecs::StationEntity>,
+        audio: Option<&crate::ecs::AudioEntity>,
     ) {
         debug!("Stopped listening, returning to browsing mode");
 
@@ -131,28 +132,19 @@ impl<'a> AudioCoordinator<'a> {
         }
 
         // Send AudioPlaybackCompleted event if we were playing something
-        if let Some(params) = playing_params {
-            let status = self.pool.status();
-            let tuner_id = status
-                .tuners
-                .iter()
-                .find(|t| {
-                    t.state == TunerState::Allocated && t.activity == Some(TunerActivity::Listening)
-                })
-                .map(|t| t.id.device_id.clone());
-
+        if let (Some(station_entity), Some(audio_entity)) = (station, audio) {
             self.progress_reporter.report(ProgressEvent {
                 event_type: ProgressEventType::AudioPlaybackCompleted,
-                frequency_hz: params.candidate_frequency,
+                frequency_hz: station_entity.frequency(),
                 metadata: crate::scanning::window::WindowMetadata {
-                    center_frequency_hz: params.center_frequency,
-                    window_id: params.window_id,
+                    center_frequency_hz: audio_entity.tuning.center_frequency_hz,
+                    window_id: station_entity.discovery.window_id,
                 },
-                candidate_id: Some(params.candidate_id),
-                audio_quality: params.audio_quality,
-                signal_strength: params.signal_strength,
+                candidate_id: None,
+                audio_quality: station_entity.info.audio_quality,
+                signal_strength: Some(station_entity.signal_strength() as f64),
                 timestamp: std::time::Instant::now(),
-                tuner_id,
+                tuner_id: audio_entity.tuner_id().cloned(),
             });
         }
     }

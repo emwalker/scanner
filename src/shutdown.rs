@@ -56,8 +56,11 @@ pub enum CoordinatorState {
 ///
 /// # Example
 ///
-/// ```ignore
-/// let mut coordinator = ShutdownCoordinator::new();
+/// ```
+/// use scanner::shutdown::ShutdownCoordinator;
+///
+/// # fn main() -> scanner::core::types::Result<()> {
+/// let coordinator = ShutdownCoordinator::new();
 ///
 /// // Spawn tracked threads
 /// coordinator.spawn_sdr_thread(|cancel_token| {
@@ -69,6 +72,8 @@ pub enum CoordinatorState {
 /// // Later: shutdown everything
 /// coordinator.shutdown();
 /// coordinator.wait()?; // All threads guaranteed to be joined
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug)]
 pub struct ShutdownCoordinator {
@@ -111,13 +116,18 @@ impl ShutdownCoordinator {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```
+    /// use scanner::shutdown::ShutdownCoordinator;
+    ///
+    /// # fn main() -> scanner::core::types::Result<()> {
+    /// # let coordinator = ShutdownCoordinator::new();
     /// coordinator.spawn_sdr_thread(|cancel_token| {
     ///     while !cancel_token.is_cancelled() {
     ///         // Process SDR samples
     ///     }
-    ///     debug!("SDR thread shutting down");
     /// })?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn spawn_sdr_thread<F>(&self, f: F) -> Result<()>
     where

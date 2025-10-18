@@ -2,9 +2,10 @@
 
 use super::context::{LoopControl, ScanContext};
 use crate::core::types::{Result, ScannerError, ScanningConfig};
+use crate::ecs::{ScanEntity, ScanType};
 use crate::hardware::pool::Pool;
 use crate::hardware::types::Backend;
-use crate::scanner_state::{PauseSignal, ScanMode, ScannerState};
+use crate::pause_signal::PauseSignal;
 use crate::shutdown::ShutdownCoordinator;
 use crate::signal;
 use crate::task::TaskContinuation;
@@ -112,6 +113,26 @@ impl ScanStationsTask {
         let window_centers = self.stations.clone();
         let windows_to_process = window_centers.len();
 
+        let freq_min = self.stations.iter().copied().fold(f64::INFINITY, f64::min);
+        let freq_max = self
+            .stations
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        let config = crate::ecs::ScanConfigComponent::new(
+            ScanType::Stations,
+            freq_min,
+            freq_max,
+            self.config.samp_rate,
+            self.config.samp_rate,
+            self.config.sdr_gain,
+            self.config.duration as f64,
+            self.config.scanning_windows.unwrap_or(1),
+        );
+        let mut scan_entity = ScanEntity::new(config);
+        scan_entity.lifecycle.start();
+
         let mut context = ScanContext {
             config: &self.config,
             pool: &self.pool,
@@ -120,26 +141,31 @@ impl ScanStationsTask {
             pause_signal: &self.pause_signal,
             command_receiver: &mut self.command_receiver,
             tui_event_sender: &self.tui_event_sender,
-            scanner_state: ScannerState::new(),
-            current_playing: None,
+            scan_entity,
             audio_session: None,
+            current_station: None,
+            current_audio: None,
             window_centers,
             windows_to_process,
             window_index: self.window_index,
         };
 
         loop {
-            if shutdown.is_cancelled() || self.shutdown_coordinator.is_shutdown() {
-                context.scanner_state.shutdown();
-            }
+            let is_shutting_down =
+                shutdown.is_cancelled() || self.shutdown_coordinator.is_shutdown();
 
-            let control = match &context.scanner_state.mode {
-                ScanMode::ShuttingDown(_) => context.handle_shutting_down_mode(),
-                ScanMode::ScanComplete(_) => context.handle_scan_complete_mode(),
-                ScanMode::ScanCompletePaused(_) => context.handle_scan_complete_paused_mode(),
-                ScanMode::Paused(_) => context.handle_paused_mode(),
-                ScanMode::Listening(_) => context.handle_listening_mode(),
-                ScanMode::Scanning(_) => context.handle_scanning_mode(),
+            let control = if is_shutting_down {
+                context.handle_shutting_down_mode()
+            } else if context.scan_entity.is_completed() && context.scan_entity.is_paused() {
+                context.handle_scan_complete_paused_mode()
+            } else if context.scan_entity.is_completed() {
+                context.handle_scan_complete_mode()
+            } else if context.scan_entity.is_listening() {
+                context.handle_listening_mode()
+            } else if context.scan_entity.is_paused() {
+                context.handle_paused_mode()
+            } else {
+                context.handle_scanning_mode()
             }?;
 
             match control {

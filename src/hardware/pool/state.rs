@@ -3,7 +3,7 @@
 use crate::hardware;
 use crate::hardware::pool::SubprocessHandle;
 use crate::hardware::pool::filter::PoolFilter;
-use crate::hardware::pool::types::{AllocationInfo, DeviceEntry, PoolStatus, TunerEntry, TunerId};
+use crate::hardware::pool::types::{DeviceEntry, PoolStatus};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -37,39 +37,6 @@ pub enum PoolState {
 pub struct PoolInner {
     /// Devices (physical hardware)
     pub devices: HashMap<hardware::DeviceId, DeviceEntry>,
-
-    /// Available tuners (ready for allocation)
-    pub available_tuners: HashMap<TunerId, TunerEntry>,
-
-    /// Allocated tuners (in use by tasks)
-    pub allocated_tuners: HashMap<TunerId, AllocationInfo>,
-}
-
-impl PoolInner {
-    /// Internal: return tuner to pool (called by Tuner::drop)
-    pub fn return_tuner(&mut self, tuner_id: TunerId, shutdown_mode: bool) -> bool {
-        if shutdown_mode {
-            debug!(tuner_id = ?tuner_id, "Tuner return ignored (shutdown mode)");
-            return false;
-        }
-
-        debug!(tuner_id = ?tuner_id, "Tuner returned to pool");
-
-        self.allocated_tuners.remove(&tuner_id);
-
-        if let Some(device_entry) = self.devices.get(&tuner_id.device_id) {
-            let tuner_entry = TunerEntry {
-                device_id: tuner_id.device_id.clone(),
-                channel_index: tuner_id.channel_index,
-                capabilities: device_entry.capabilities.clone(),
-            };
-
-            self.available_tuners.insert(tuner_id, tuner_entry);
-            true
-        } else {
-            false
-        }
-    }
 }
 
 /// Dynamic inventory of available tuners
@@ -94,6 +61,9 @@ pub struct Pool {
 
     /// Parent process log file path (used to derive worker log paths)
     pub(crate) parent_log_file: Option<String>,
+
+    /// ECS tuner entities (authoritative source of tuner state)
+    pub(crate) tuner_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>>,
 }
 
 impl Pool {
@@ -101,8 +71,6 @@ impl Pool {
     pub fn new(filter: PoolFilter, parent_log_file: Option<String>) -> Self {
         let inner = PoolInner {
             devices: HashMap::new(),
-            available_tuners: HashMap::new(),
-            allocated_tuners: HashMap::new(),
         };
 
         Self {
@@ -113,6 +81,7 @@ impl Pool {
             on_state_change: Arc::new(Mutex::new(Vec::new())),
             subprocesses: Mutex::new(HashMap::new()),
             parent_log_file,
+            tuner_entities: Arc::new(Mutex::new(crate::ecs::EntityWorld::new())),
         }
     }
 

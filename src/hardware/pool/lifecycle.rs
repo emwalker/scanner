@@ -1,12 +1,13 @@
 //! Tuner lifecycle operations (add/remove/acquire/release)
 
 use crate::core::types::{Result, ScannerError};
+use crate::ecs::Entity;
 use crate::hardware;
 use crate::hardware::pool::state::{Pool, PoolInner};
 use crate::hardware::pool::tuner::Tuner;
 use crate::hardware::pool::types::{
-    AddDeviceResult, AllocationInfo, DeviceEntry, PoolStatus, TaskRequirements, TunerActivity,
-    TunerAllocation, TunerEntry, TunerId, TunerState, TunerStatus,
+    AddDeviceResult, DeviceEntry, PoolStatus, TaskRequirements, TunerActivity, TunerAllocation,
+    TunerId, TunerState, TunerStatus,
 };
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -59,16 +60,20 @@ impl Pool {
         capabilities: &hardware::Capabilities,
         backend: &hardware::types::Backend,
     ) -> usize {
-        let mut inner = match self.pool_ref.try_lock() {
-            Ok(guard) => guard,
+        let mut exposed_count = 0;
+
+        let mut entities = match self.tuner_entities.try_lock() {
+            Ok(entities) => entities,
             Err(_) => {
-                debug!(device_id = ?device_id, "Failed to expose tuners - pool is locked");
+                debug!(device_id = ?device_id, "Failed to expose tuners - entities locked");
                 return 0;
             }
         };
 
-        let allocated_count = inner.allocated_tuners.len();
-        let mut exposed_count = 0;
+        let allocated_count = entities
+            .iter()
+            .filter(|e| e.allocation.is_allocated())
+            .count();
 
         for channel_index in 0..num_tuners {
             let tuner_id = TunerId::new(device_id.clone(), channel_index);
@@ -87,14 +92,15 @@ impl Pool {
                 "Exposing tuner {}/{}", channel_index + 1, num_tuners
             );
 
-            let tuner_entry = TunerEntry {
-                device_id: device_id.clone(),
+            let entity = crate::ecs::TunerEntity::new(
+                device_id.clone(),
                 channel_index,
-                capabilities: capabilities.clone(),
-            };
-
-            inner.available_tuners.insert(tuner_id, tuner_entry);
+                capabilities.clone(),
+                backend.clone(),
+            );
+            entities.insert(entity);
             exposed_count += 1;
+            debug!(tuner_id = ?tuner_id, "Created TunerEntity");
         }
 
         exposed_count
@@ -253,10 +259,17 @@ impl Pool {
             }
         };
 
-        let has_allocated_tuners = inner
-            .allocated_tuners
-            .keys()
-            .any(|tuner_id| &tuner_id.device_id == device_id);
+        let mut entities = match self.tuner_entities.try_lock() {
+            Ok(entities) => entities,
+            Err(_) => {
+                debug!(device_id = ?device_id, "Failed to remove device - entities locked");
+                return Err(ScannerError::Custom("Entities locked".to_string()));
+            }
+        };
+
+        let has_allocated_tuners = entities
+            .iter()
+            .any(|e| &e.id().device_id == device_id && e.allocation.is_allocated());
 
         if has_allocated_tuners {
             debug!(device_id = ?device_id, "Cannot remove device - tuners in use");
@@ -272,7 +285,8 @@ impl Pool {
 
         for channel_index in 0..num_tuners {
             let tuner_id = TunerId::new(device_id.clone(), channel_index);
-            inner.available_tuners.remove(&tuner_id);
+            entities.remove(&tuner_id);
+            debug!(tuner_id = ?tuner_id, "Removed TunerEntity");
         }
 
         inner.devices.remove(device_id);
@@ -297,57 +311,48 @@ impl Pool {
             .ok_or_else(|| ScannerError::NoAvailableTuner(requirements.clone()))
     }
 
-    fn find_best_matching_tuner<'a>(
+    fn find_best_matching_entity(
         &self,
-        inner: &'a PoolInner,
+        entities: &crate::ecs::EntityWorld<crate::ecs::TunerEntity>,
         requirements: &TaskRequirements,
         allocated_count: usize,
-    ) -> Option<(&'a TunerId, &'a TunerEntry)> {
-        inner
-            .available_tuners
+    ) -> Option<TunerId> {
+        entities
             .iter()
-            .filter_map(|(tuner_id, entry)| {
-                let device_entry = match inner.devices.get(&entry.device_id) {
-                    Some(entry) => entry,
-                    None => {
-                        error!(
-                            device_id = ?entry.device_id,
-                            tuner_id = ?tuner_id,
-                            "Device not found for tuner - skipping"
-                        );
-                        return None;
-                    }
-                };
-
+            .filter(|entity| entity.is_available())
+            .filter_map(|entity| {
+                let tuner_id = entity.id();
                 let filter_allowed =
                     self.filter
-                        .is_allowed(tuner_id, &device_entry.backend, allocated_count);
-                let can_handle = entry.capabilities.can_handle_task(requirements);
+                        .is_allowed(tuner_id, &entity.device.backend, allocated_count);
+                let can_handle = entity.device.capabilities.can_handle_task(requirements);
 
                 debug!(
                     tuner_id = ?tuner_id,
-                    backend = ?device_entry.backend,
+                    backend = ?entity.device.backend,
                     filter_allowed = filter_allowed,
                     can_handle = can_handle,
-                    "Pool acquire: evaluated tuner"
+                    "Pool acquire: evaluated tuner entity"
                 );
 
                 if filter_allowed && can_handle {
-                    Some((tuner_id, entry))
+                    Some((tuner_id.clone(), entity))
                 } else {
                     None
                 }
             })
-            .min_by_key(|(_, entry)| {
-                let range_size = entry
+            .min_by_key(|(_, entity)| {
+                let range_size = entity
+                    .device
                     .capabilities
                     .rx_frequency_ranges
                     .iter()
                     .map(|(min, max)| (max - min) as u64)
                     .sum::<u64>();
 
-                (range_size, entry.channel_index)
+                (range_size, entity.device.channel_index)
             })
+            .map(|(tuner_id, _)| tuner_id)
     }
 
     /// Check if pool is in valid state for acquisition
@@ -382,29 +387,36 @@ impl Pool {
     /// Select best matching tuner and mark it as allocated
     ///
     /// Returns allocation data or None if no suitable tuner found.
-    /// Updates pool state to mark tuner as allocated and remove from available.
+    /// Updates entity state to mark tuner as allocated.
     fn allocate_matching_tuner(
         &self,
-        inner: &mut PoolInner,
+        inner: &PoolInner,
         requirements: &TaskRequirements,
         activity: TunerActivity,
     ) -> Option<TunerAllocation> {
-        let allocated_count = inner.allocated_tuners.len();
+        let mut entities = self.tuner_entities.try_lock().ok()?;
+
+        let allocated_count = entities
+            .iter()
+            .filter(|e| e.allocation.is_allocated())
+            .count();
+        let available_count = entities.iter().filter(|e| e.is_available()).count();
 
         debug!(
-            available_tuners = inner.available_tuners.len(),
+            available_tuners = available_count,
             allocated_count = allocated_count,
             requirements = ?requirements,
             "Pool acquire: checking available tuners"
         );
 
-        let tuner_id = match self.find_best_matching_tuner(inner, requirements, allocated_count) {
-            Some((tuner_id, _)) => tuner_id.clone(),
-            None => {
-                debug!(requirements = ?requirements, "No tuner available");
-                return None;
-            }
-        };
+        let tuner_id =
+            match self.find_best_matching_entity(&entities, requirements, allocated_count) {
+                Some(tuner_id) => tuner_id,
+                None => {
+                    debug!(requirements = ?requirements, "No tuner available");
+                    return None;
+                }
+            };
 
         let device_entry = match inner.devices.get(&tuner_id.device_id) {
             Some(d) => d,
@@ -422,20 +434,20 @@ impl Pool {
         let model = device_entry.capabilities.device_id.to_string();
         let capabilities = device_entry.capabilities.clone();
 
-        inner.allocated_tuners.insert(
-            tuner_id.clone(),
-            AllocationInfo {
-                allocated_at: Instant::now(),
-                task_id: None,
-                backend: backend.clone(),
-                model: model.clone(),
-                activity: activity.clone(),
-            },
-        );
-
-        inner.available_tuners.remove(&tuner_id);
-
-        debug!(tuner_id = ?tuner_id, "Tuner acquired from pool");
+        if let Some(entity) = entities.get_mut(&tuner_id) {
+            entity
+                .allocation
+                .allocate(format!("task_{}", tuner_id.channel_index));
+            match activity {
+                TunerActivity::Scanning => entity.status.start_scanning(),
+                TunerActivity::Listening => entity.status.start_listening(),
+                TunerActivity::Other => {}
+            }
+            debug!(tuner_id = ?tuner_id, "Tuner acquired from pool");
+        } else {
+            error!(tuner_id = ?tuner_id, "TunerEntity not found for allocation");
+            return None;
+        }
 
         Some(TunerAllocation {
             tuner_id,
@@ -459,22 +471,18 @@ impl Pool {
                 Some(crate::hardware::pool::tuner::TunerBackend::Subprocess { subprocess })
             }
             Err(e) => {
-                error!(
+                debug!(
                     tuner_id = ?allocation.tuner_id,
                     error = ?e,
                     "Failed to spawn subprocess for tuner - rolling back allocation"
                 );
 
-                if let Ok(mut inner) = self.pool_ref.try_lock() {
-                    inner.allocated_tuners.remove(&allocation.tuner_id);
-                    let tuner_entry = TunerEntry {
-                        device_id: allocation.tuner_id.device_id.clone(),
-                        channel_index: allocation.tuner_id.channel_index,
-                        capabilities: allocation.capabilities.clone(),
-                    };
-                    inner
-                        .available_tuners
-                        .insert(allocation.tuner_id.clone(), tuner_entry);
+                if let Ok(mut entities) = self.tuner_entities.try_lock()
+                    && let Some(entity) = entities.get_mut(&allocation.tuner_id)
+                {
+                    entity.allocation.deallocate();
+                    entity.status.idle();
+                    debug!(tuner_id = ?allocation.tuner_id, "Rolled back allocation");
                 }
 
                 None
@@ -490,6 +498,7 @@ impl Pool {
     ) -> crate::hardware::pool::tuner::Tuner {
         let on_state_change = Arc::clone(&self.on_state_change);
         let pool_ref = Arc::clone(&self.pool_ref);
+        let tuner_entities = Arc::clone(&self.tuner_entities);
         let shutdown_mode_clone = Arc::clone(&self.shutdown_mode);
 
         self.notify_state_change();
@@ -497,16 +506,26 @@ impl Pool {
         crate::hardware::pool::tuner::Tuner {
             tuner_id: allocation.tuner_id.clone(),
             backend,
-            pool_inner: Arc::clone(&self.pool_ref),
+            tuner_entities: Arc::clone(&self.tuner_entities),
             on_return: Box::new(move || {
                 if shutdown_mode_clone.load(Ordering::SeqCst) {
                     return;
                 }
 
-                let status = match pool_ref.try_lock() {
-                    Ok(inner) => crate::hardware::pool::Pool::build_status_from_inner(&inner),
+                let entities = match tuner_entities.try_lock() {
+                    Ok(entities) => entities,
                     Err(_) => return,
                 };
+
+                let device_count = match pool_ref.try_lock() {
+                    Ok(inner) => inner.devices.len(),
+                    Err(_) => entities.len(),
+                };
+
+                let status = crate::hardware::pool::Pool::build_status_from_entities(
+                    &entities,
+                    device_count,
+                );
 
                 if let Ok(callbacks) = on_state_change.lock() {
                     for callback in callbacks.iter() {
@@ -530,8 +549,8 @@ impl Pool {
     ) -> Option<Tuner> {
         self.check_acquisition_preconditions()?;
 
-        let mut inner = self.pool_ref.try_lock().ok()?;
-        let allocation = self.allocate_matching_tuner(&mut inner, requirements, activity)?;
+        let inner = self.pool_ref.try_lock().ok()?;
+        let allocation = self.allocate_matching_tuner(&inner, requirements, activity)?;
         drop(inner);
 
         let backend = self.spawn_subprocess_with_rollback(&allocation)?;
@@ -597,30 +616,51 @@ impl Pool {
         }
     }
 
-    fn collect_tuner_statuses(inner: &PoolInner) -> Vec<TunerStatus> {
-        inner
-            .available_tuners
-            .keys()
-            .map(|id| TunerStatus {
-                id: id.clone(),
-                state: TunerState::Available,
-                activity: None,
+    fn collect_tuner_statuses_from_entities(
+        entities: &crate::ecs::EntityWorld<crate::ecs::TunerEntity>,
+    ) -> Vec<TunerStatus> {
+        entities
+            .iter()
+            .map(|entity| {
+                let (state, activity) = if entity.allocation.is_allocated() {
+                    let activity = match entity.status.activity {
+                        crate::ecs::components::TunerActivity::Idle => TunerActivity::Other,
+                        crate::ecs::components::TunerActivity::Scanning => TunerActivity::Scanning,
+                        crate::ecs::components::TunerActivity::Listening => {
+                            TunerActivity::Listening
+                        }
+                        crate::ecs::components::TunerActivity::Other => TunerActivity::Other,
+                    };
+                    (TunerState::Allocated, Some(activity))
+                } else {
+                    (TunerState::Available, None)
+                };
+
+                TunerStatus {
+                    id: entity.id().clone(),
+                    state,
+                    activity,
+                }
             })
-            .chain(inner.allocated_tuners.iter().map(|(id, info)| TunerStatus {
-                id: id.clone(),
-                state: TunerState::Allocated,
-                activity: Some(info.activity.clone()),
-            }))
             .collect()
     }
 
-    /// Build PoolStatus from PoolInner (helper for status computation)
-    pub(crate) fn build_status_from_inner(inner: &PoolInner) -> PoolStatus {
+    /// Build PoolStatus from EntityWorld (helper for status computation)
+    pub(crate) fn build_status_from_entities(
+        entities: &crate::ecs::EntityWorld<crate::ecs::TunerEntity>,
+        device_count: usize,
+    ) -> PoolStatus {
+        let available_count = entities.iter().filter(|e| e.is_available()).count();
+        let allocated_count = entities
+            .iter()
+            .filter(|e| e.allocation.is_allocated())
+            .count();
+
         PoolStatus {
-            available_tuner_count: inner.available_tuners.len(),
-            allocated_tuner_count: inner.allocated_tuners.len(),
-            device_count: inner.devices.len(),
-            tuners: Self::collect_tuner_statuses(inner),
+            available_tuner_count: available_count,
+            allocated_tuner_count: allocated_count,
+            device_count,
+            tuners: Self::collect_tuner_statuses_from_entities(entities),
         }
     }
 
@@ -634,12 +674,22 @@ impl Pool {
             return Self::create_empty_pool_status();
         }
 
-        match self.pool_ref.try_lock() {
-            Ok(inner) => Self::build_status_from_inner(&inner),
+        let entities = match self.tuner_entities.try_lock() {
+            Ok(entities) => entities,
+            Err(_) => {
+                debug!("Pool status requested but entities are locked - returning empty");
+                return Self::create_empty_pool_status();
+            }
+        };
+
+        let inner = match self.pool_ref.try_lock() {
+            Ok(inner) => inner,
             Err(_) => {
                 debug!("Pool status requested but pool is locked - returning empty");
-                Self::create_empty_pool_status()
+                return Self::create_empty_pool_status();
             }
-        }
+        };
+
+        Self::build_status_from_entities(&entities, inner.devices.len())
     }
 }

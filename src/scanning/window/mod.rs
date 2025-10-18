@@ -11,7 +11,7 @@ pub use audio::{
 
 use crate::core::types::{Result, ScanningConfig};
 use crate::hardware::pool::{SegmentTrait, TunerProvider};
-use crate::scanner_state::PauseSignal;
+use crate::pause_signal::PauseSignal;
 use crate::shutdown::ShutdownCoordinator;
 use crate::ui::{ProgressEvent, ProgressEventType, ProgressReporter};
 use std::sync::Arc;

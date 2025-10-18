@@ -1,6 +1,6 @@
 use crate::core::types::{Result, ScannerError, ScanningConfig};
 use crate::hardware::pool::SegmentTrait;
-use crate::scanner_state::PauseSignal;
+use crate::pause_signal::PauseSignal;
 use crate::scanning::window::config::WindowMetadata;
 use crate::ui::{ProgressEvent, ProgressEventType, ProgressReporter};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
