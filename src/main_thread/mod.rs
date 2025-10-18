@@ -2,46 +2,16 @@ pub(crate) mod audio_coordinator;
 mod runner;
 
 use crate::core::types::{ConsoleWriter, Logger, Result, ScanningConfig};
-use crate::ecs::{ScanId, WorkerCommand, WorkerEvent};
+use crate::ecs::{AudioEntity, EntityWorld, ScanEntity, StationEntity};
 use crate::hardware::pool::{Pool, PoolFilter, TuningMode};
 use crate::shutdown::ShutdownCoordinator;
 use crate::task::TaskScheduler;
 use crate::ui::{NoOpProgressReporter, ProgressReporter, ScannerCommand, TuiEvent};
-use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use tracing::{debug, info};
-
-pub struct WorkerChannels {
-    pub event_rx: Receiver<WorkerEvent>,
-    pub command_tx: Sender<WorkerCommand>,
-}
-
-pub struct WorkerHandle {
-    pub event_tx: Sender<WorkerEvent>,
-    pub command_rx: Receiver<WorkerCommand>,
-}
-
-impl WorkerChannels {
-    pub fn new() -> (Self, WorkerHandle) {
-        let (event_tx, event_rx) = channel();
-        let (command_tx, command_rx) = channel();
-
-        let channels = Self {
-            event_rx,
-            command_tx,
-        };
-
-        let handle = WorkerHandle {
-            event_tx,
-            command_rx,
-        };
-
-        (channels, handle)
-    }
-}
 
 pub struct MainThread {
     config: Arc<ScanningConfig>,
@@ -57,12 +27,12 @@ pub struct MainThread {
     #[allow(dead_code)]
     discovered_devices: Vec<crate::hardware::DeviceInfo>,
 
-    #[allow(dead_code)]
+    scan_entities: Arc<RwLock<EntityWorld<ScanEntity>>>,
+    station_entities: Arc<RwLock<EntityWorld<StationEntity>>>,
+    audio_entities: Arc<RwLock<EntityWorld<AudioEntity>>>,
+
     coordinator_handle: Option<JoinHandle<()>>,
-    #[allow(dead_code)]
     coordinator_shutdown: Arc<AtomicBool>,
-    #[allow(dead_code)]
-    worker_channels: Arc<Mutex<HashMap<ScanId, WorkerChannels>>>,
 }
 
 impl MainThread {
@@ -82,7 +52,11 @@ impl MainThread {
             shutdown_coordinator.clone(),
         ));
 
-        Ok(MainThread {
+        let scan_entities = Arc::new(RwLock::new(EntityWorld::new()));
+        let station_entities = Arc::new(RwLock::new(EntityWorld::new()));
+        let audio_entities = Arc::new(RwLock::new(EntityWorld::new()));
+
+        let mut main_thread = MainThread {
             config,
             console_writer,
             _logger: logger,
@@ -94,10 +68,16 @@ impl MainThread {
             pool,
             scheduler,
             discovered_devices: Vec::new(),
+            scan_entities,
+            station_entities,
+            audio_entities,
             coordinator_handle: None,
             coordinator_shutdown: Arc::new(AtomicBool::new(false)),
-            worker_channels: Arc::new(Mutex::new(HashMap::new())),
-        })
+        };
+
+        main_thread.spawn_coordinator();
+
+        Ok(main_thread)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -112,7 +92,11 @@ impl MainThread {
         scheduler: Arc<TaskScheduler>,
         discovered_devices: Vec<crate::hardware::DeviceInfo>,
     ) -> Result<Self> {
-        let main_thread = MainThread {
+        let scan_entities = Arc::new(RwLock::new(EntityWorld::new()));
+        let station_entities = Arc::new(RwLock::new(EntityWorld::new()));
+        let audio_entities = Arc::new(RwLock::new(EntityWorld::new()));
+
+        let mut main_thread = MainThread {
             config,
             console_writer,
             _logger: logger,
@@ -124,10 +108,14 @@ impl MainThread {
             pool,
             scheduler,
             discovered_devices,
+            scan_entities,
+            station_entities,
+            audio_entities,
             coordinator_handle: None,
             coordinator_shutdown: Arc::new(AtomicBool::new(false)),
-            worker_channels: Arc::new(Mutex::new(HashMap::new())),
         };
+
+        main_thread.spawn_coordinator();
 
         Ok(main_thread)
     }
@@ -152,75 +140,41 @@ impl MainThread {
         use crate::ecs::Coordinator;
         use std::sync::atomic::Ordering;
 
-        let coordinator = Coordinator::new(&self.pool);
-        let worker_channels = Arc::clone(&self.worker_channels);
+        let pool = Arc::clone(&self.pool);
+        let scan_entities = Arc::clone(&self.scan_entities);
+        let station_entities = Arc::clone(&self.station_entities);
+        let audio_entities = Arc::clone(&self.audio_entities);
         let shutdown = Arc::clone(&self.coordinator_shutdown);
         let shutdown_coordinator = Arc::clone(&self.shutdown_coordinator);
 
         let handle = std::thread::spawn(move || {
-            let mut coordinator = coordinator;
-            let tick_interval = std::time::Duration::from_millis(100);
+            let mut coordinator = Coordinator::new(&pool)
+                .with_scan_entities(scan_entities)
+                .with_station_entities(station_entities)
+                .with_audio_entities(audio_entities);
 
-            loop {
-                if shutdown.load(Ordering::SeqCst) || shutdown_coordinator.is_shutdown() {
-                    debug!("Coordinator shutting down");
-                    break;
+            coordinator.add_system(Box::new(crate::ecs::systems::DiscoverySystem::new()));
+            coordinator.add_system(Box::new(crate::ecs::systems::AllocationSystem::new()));
+            coordinator.add_system(Box::new(crate::ecs::systems::CoordinationSystem::new()));
+            coordinator.add_system(Box::new(crate::ecs::systems::ManagementSystem::new()));
+
+            debug!(
+                system_count = coordinator.system_count(),
+                "Coordinator thread starting"
+            );
+
+            while !shutdown.load(Ordering::SeqCst) && !shutdown_coordinator.is_shutdown() {
+                if let Err(e) = coordinator.tick() {
+                    debug!(error = ?e, "Coordinator tick failed");
                 }
 
-                if let Ok(channels) = worker_channels.try_lock() {
-                    for (scan_id, worker_channel) in channels.iter() {
-                        if shutdown.load(Ordering::SeqCst) || shutdown_coordinator.is_shutdown() {
-                            break;
-                        }
-
-                        while let Ok(event) = worker_channel.event_rx.try_recv() {
-                            debug!(scan_id = ?scan_id, event = ?event, "Coordinator received event");
-
-                            let command = Self::decide_command(&event);
-
-                            if let Err(e) = worker_channel.command_tx.send(command.clone()) {
-                                debug!(
-                                    scan_id = ?scan_id,
-                                    error = ?e,
-                                    "Failed to send command to worker"
-                                );
-                            } else {
-                                debug!(scan_id = ?scan_id, command = ?command, "Sent command to worker");
-                            }
-                        }
-                    }
-                }
-
-                if !shutdown.load(Ordering::SeqCst)
-                    && !shutdown_coordinator.is_shutdown()
-                    && let Err(e) = coordinator.tick()
-                {
-                    debug!(error = ?e, "Coordinator tick error");
-                }
-
-                std::thread::sleep(tick_interval);
+                std::thread::sleep(std::time::Duration::from_millis(100));
             }
 
-            debug!("Coordinator thread exited");
+            debug!("Coordinator thread shutting down");
         });
 
         self.coordinator_handle = Some(handle);
-    }
-
-    fn decide_command(event: &WorkerEvent) -> WorkerCommand {
-        use WorkerEvent::*;
-
-        match event {
-            ScanStarted { .. } => WorkerCommand::ProcessNextWindow { window_num: 0 },
-            WindowCompleted { window_num, .. } => WorkerCommand::ProcessNextWindow {
-                window_num: window_num + 1,
-            },
-            ScanPaused { .. } => WorkerCommand::ResumeScan,
-            ScanResumed { .. } => WorkerCommand::ProcessNextWindow { window_num: 0 },
-            TunerAllocated { .. } => WorkerCommand::ProcessNextWindow { window_num: 0 },
-            TunerReleased { .. } => WorkerCommand::ProcessNextWindow { window_num: 0 },
-            StationDiscovered { .. } => WorkerCommand::ProcessNextWindow { window_num: 0 },
-        }
     }
 
     pub fn run(mut self, stations: Option<String>) -> Result<()> {
@@ -267,10 +221,14 @@ impl Drop for MainThread {
     fn drop(&mut self) {
         use std::sync::atomic::Ordering;
 
+        debug!("MainThread shutting down");
+
         self.coordinator_shutdown.store(true, Ordering::SeqCst);
 
-        if let Some(handle) = self.coordinator_handle.take() {
-            let _ = handle.join();
+        if let Some(handle) = self.coordinator_handle.take()
+            && let Err(e) = handle.join()
+        {
+            tracing::error!(error = ?e, "Coordinator thread panicked");
         }
 
         self.pool.shutdown();

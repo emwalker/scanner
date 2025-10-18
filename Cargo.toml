@@ -34,6 +34,10 @@ path = "tests/shutdown_test.rs"
 name = "loom_shutdown_test"
 path = "tests/loom_shutdown_test.rs"
 
+[[test]]
+name = "tui_regression_test"
+path = "tests/tui_regression_test.rs"
+
 [[bench]]
 name = "peak_detection_bench"
 harness = false

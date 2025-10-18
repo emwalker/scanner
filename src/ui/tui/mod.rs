@@ -39,10 +39,12 @@ pub struct TuiProgressDisplay {
     current_theme: ThemeName,
     ui_update_system: Option<crate::ecs::systems::UIUpdateSystem>,
     station_entities: Option<
-        std::sync::Arc<std::sync::Mutex<crate::ecs::EntityWorld<crate::ecs::StationEntity>>>,
+        std::sync::Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::StationEntity>>>,
     >,
     audio_entities:
-        Option<std::sync::Arc<std::sync::Mutex<crate::ecs::EntityWorld<crate::ecs::AudioEntity>>>>,
+        Option<std::sync::Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::AudioEntity>>>>,
+    last_station_gen: u64,
+    last_audio_gen: u64,
 }
 
 impl TuiProgressDisplay {
@@ -61,6 +63,8 @@ impl TuiProgressDisplay {
             ui_update_system: None,
             station_entities: None,
             audio_entities: None,
+            last_station_gen: 0,
+            last_audio_gen: 0,
         }
     }
 
@@ -82,6 +86,8 @@ impl TuiProgressDisplay {
             ui_update_system: None,
             station_entities: None,
             audio_entities: None,
+            last_station_gen: 0,
+            last_audio_gen: 0,
         }
     }
 
@@ -95,10 +101,10 @@ impl TuiProgressDisplay {
     pub fn with_entities(
         mut self,
         station_entities: std::sync::Arc<
-            std::sync::Mutex<crate::ecs::EntityWorld<crate::ecs::StationEntity>>,
+            std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::StationEntity>>,
         >,
         audio_entities: std::sync::Arc<
-            std::sync::Mutex<crate::ecs::EntityWorld<crate::ecs::AudioEntity>>,
+            std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::AudioEntity>>,
         >,
     ) -> Self {
         self.station_entities = Some(station_entities);
@@ -209,15 +215,23 @@ impl TuiProgressDisplay {
             && let (Some(station_entities), Some(audio_entities)) =
                 (&self.station_entities, &self.audio_entities)
         {
-            use crate::ecs::{System, SystemContext};
+            let station_gen = station_entities.read().unwrap().generation();
+            let audio_gen = audio_entities.read().unwrap().generation();
 
-            let mut context = SystemContext::new()
-                .with_station_entities(std::sync::Arc::clone(station_entities))
-                .with_audio_entities(std::sync::Arc::clone(audio_entities));
+            if station_gen != self.last_station_gen || audio_gen != self.last_audio_gen {
+                use crate::ecs::{System, SystemContext};
 
-            if system.run(&mut context).is_ok() {
-                self.model.spectrum_stations = system.stations().to_vec();
-                self.model.active_audio_frequency = system.active_frequency();
+                let mut context = SystemContext::new()
+                    .with_station_entities(std::sync::Arc::clone(station_entities))
+                    .with_audio_entities(std::sync::Arc::clone(audio_entities));
+
+                if system.run(&mut context).is_ok() {
+                    self.model.spectrum_stations = system.stations().to_vec();
+                    self.model.active_audio_frequency = system.active_frequency();
+                }
+
+                self.last_station_gen = station_gen;
+                self.last_audio_gen = audio_gen;
             }
         }
     }
@@ -435,8 +449,12 @@ impl TuiProgressDisplay {
             // Update spectrum data from entities
             self.update_spectrum_from_entities();
 
-            // Always redraw for animation
+            // Always mark dirty for smooth spectrum animation at 10 FPS
+            self.model.mark_dirty();
+
+            // Redraw for animation
             terminal.draw(|f| self.ui(f))?;
+            self.model.clear_dirty();
             iterations += 1;
 
             if self.should_quit() {
@@ -448,12 +466,7 @@ impl TuiProgressDisplay {
             }
 
             // Handle keyboard input
-            let needs_redraw = self.handle_keyboard_input(animation_interval)?;
-
-            // Redraw immediately if state changed from keyboard input
-            if needs_redraw {
-                terminal.draw(|f| self.ui(f))?;
-            }
+            self.handle_keyboard_input(animation_interval)?;
 
             // Process TUI events
             self.process_tui_events(&mut iterations)?;

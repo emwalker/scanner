@@ -14,6 +14,22 @@ pub struct AudioAllocationComponent {
     pub graph_thread: Option<std::thread::JoinHandle<()>>,
 }
 
+impl std::fmt::Debug for AudioAllocationComponent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioAllocationComponent")
+            .field("tuner_id", &self.tuner_id)
+            .field(
+                "graph_cancel",
+                &self.graph_cancel.as_ref().map(|_| "<token>"),
+            )
+            .field(
+                "graph_thread",
+                &self.graph_thread.as_ref().map(|_| "<thread>"),
+            )
+            .finish()
+    }
+}
+
 impl AudioAllocationComponent {
     pub fn new(tuner_id: Option<DeviceId>) -> Self {
         Self {

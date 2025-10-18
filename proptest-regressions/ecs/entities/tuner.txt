@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bcbbdef1b4a7ec4a51bd6daa88d29cb2a878489e67eb05f99a965f0be172d3a7 # shrinks to entity = TunerEntity { id: TunerId { device_id: Driver { backend: Unknown("aaa"), driver: "aaa", serial: "0000" }, channel_index: 0 }, device: DeviceComponent { device_id: Driver { backend: Unknown("aaa"), driver: "aaa", serial: "0000" }, channel_index: 0, connected: false, capabilities: Capabilities { device_id: Driver { backend: Unknown("aaa"), driver: "aaa", serial: "0000" }, rx_frequency_ranges: [(24000000.0, 1766000000.0)], rx_sample_rate_ranges: [(225000.0, 2400000.0)], gain_range: (0.0, 48.0), has_agc: true, antenna_options: ["RX"], channels: 1, max_bandwidth: 2400000.0, typical_latency_us: 50 }, backend: Soapy }, allocation: AllocationComponent { state: Allocated, allocated_at: Some(Instant { tv_sec: 58102, tv_nsec: 400593982 }), allocated_to: Some("test_alloc") }, status: StatusComponent { activity: Scanning, current_frequency: None, current_bandwidth: None }, priorities: PriorityComponent { audio_priority: Medium, scanning_priority: Medium }, constraints: ConstraintComponent { allowed_freq_range: None, max_sample_rate: None, blocked_ranges: [] } }

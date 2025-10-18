@@ -382,7 +382,7 @@ impl Pool {
             system.request_allocation(AllocationRequest {
                 requester_id: requester_id.clone(),
                 frequency_hz: requirements.frequency_hz,
-                sample_rate_hz: requirements.bandwidth_hz,
+                sample_rate_hz: requirements.required_sample_rate,
                 priority: Priority::Medium,
                 for_audio: activity == TunerActivity::Listening,
                 filter: Some(Arc::clone(&self.filter)),

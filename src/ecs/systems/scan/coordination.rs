@@ -39,13 +39,32 @@ impl System for CoordinationSystem {
             }
         };
 
-        let entities = scan_entities.lock().unwrap();
+        let mut entities = scan_entities.write().unwrap();
 
         let total_scans = entities.len();
-        let active_scans = entities.iter().filter(|e| e.is_scanning()).count();
-        let paused_scans = entities.iter().filter(|e| e.is_paused()).count();
-        let completed_scans = entities.iter().filter(|e| e.is_completed()).count();
-        let listening_scans = entities.iter().filter(|e| e.is_listening()).count();
+        let mut active_scans = 0;
+        let mut paused_scans = 0;
+        let mut completed_scans = 0;
+        let mut listening_scans = 0;
+
+        for scan in entities.iter_mut() {
+            scan.should_pause = false;
+            scan.should_complete = false;
+
+            if scan.is_scanning() {
+                active_scans += 1;
+            }
+            if scan.is_paused() {
+                paused_scans += 1;
+            }
+            if scan.is_completed() {
+                completed_scans += 1;
+                scan.should_complete = true;
+            }
+            if scan.is_listening() {
+                listening_scans += 1;
+            }
+        }
 
         debug!(
             total = total_scans,
@@ -65,7 +84,7 @@ mod tests {
     use super::*;
     use crate::ecs::components::scan::{ScanConfigComponent, ScanType};
     use crate::ecs::{EntityWorld, ScanEntity};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, RwLock};
 
     fn create_test_scan(freq_min: f64, freq_max: f64) -> ScanEntity {
         let config = ScanConfigComponent::new(
@@ -98,13 +117,13 @@ mod tests {
         world.insert(create_test_scan(88.0e6, 108.0e6));
         world.insert(create_test_scan(144.0e6, 148.0e6));
 
-        let context_entities = Arc::new(Mutex::new(world));
+        let context_entities = Arc::new(RwLock::new(world));
         let mut context = SystemContext::new().with_scan_entities(context_entities.clone());
 
         let result = system.run(&mut context);
         assert!(result.is_ok());
 
-        let entities = context_entities.lock().unwrap();
+        let entities = context_entities.read().unwrap();
         assert_eq!(entities.len(), 2);
     }
 
@@ -124,13 +143,13 @@ mod tests {
         world.insert(scan2);
         world.insert(scan3);
 
-        let context_entities = Arc::new(Mutex::new(world));
+        let context_entities = Arc::new(RwLock::new(world));
         let mut context = SystemContext::new().with_scan_entities(context_entities.clone());
 
         let result = system.run(&mut context);
         assert!(result.is_ok());
 
-        let entities = context_entities.lock().unwrap();
+        let entities = context_entities.read().unwrap();
         assert_eq!(entities.iter().filter(|e| e.is_paused()).count(), 1);
         assert_eq!(entities.iter().filter(|e| e.is_completed()).count(), 1);
         assert_eq!(entities.iter().filter(|e| e.is_scanning()).count(), 1);

@@ -80,6 +80,7 @@ impl Entity for StationEntity {
 mod tests {
     use super::*;
     use crate::audio::quality::AudioQuality;
+    use proptest::prelude::*;
     use std::time::SystemTime;
 
     fn create_test_signal() -> Signal {
@@ -101,6 +102,43 @@ mod tests {
             center_frequency_hz: 88.9e6,
             window_id: 1,
         }
+    }
+
+    fn arb_audio_quality() -> impl Strategy<Value = AudioQuality> {
+        prop_oneof![
+            Just(AudioQuality::Good),
+            Just(AudioQuality::Moderate),
+            Just(AudioQuality::Poor),
+            Just(AudioQuality::NoAudio),
+            Just(AudioQuality::Static),
+            Just(AudioQuality::Unknown),
+        ]
+    }
+
+    fn arb_station_entity() -> impl Strategy<Value = StationEntity> {
+        (
+            88.0e6..108.0e6f64,
+            0.0..=1.0f32,
+            prop::option::of(arb_audio_quality()),
+        )
+            .prop_map(|(frequency, signal_strength, audio_quality)| {
+                let signal = Signal {
+                    frequency_hz: frequency,
+                    signal_strength,
+                    bandwidth_hz: 200_000.0,
+                    modulation: crate::core::types::ModulationType::WFM,
+                    audio_sample_rate: 48000,
+                    detected_at: SystemTime::now(),
+                    analysis_duration_ms: 100,
+                    detection_center_freq: frequency,
+                    audio_quality: audio_quality.unwrap_or(AudioQuality::Good),
+                };
+                let metadata = WindowMetadata {
+                    center_frequency_hz: frequency,
+                    window_id: 1,
+                };
+                StationEntity::from_signal(&signal, ScanId::new(), metadata)
+            })
     }
 
     #[test]
@@ -162,5 +200,36 @@ mod tests {
         assert_eq!(station.last_played_at(), None);
         assert_eq!(station.play_count(), 0);
         assert_eq!(station.total_play_duration(), Duration::ZERO);
+    }
+
+    proptest! {
+        #[test]
+        fn prop_signal_strength_bounds(station in arb_station_entity()) {
+            let strength = station.signal_strength();
+            prop_assert!(strength >= 0.0, "Signal strength {} is negative", strength);
+            prop_assert!(strength <= 1.0, "Signal strength {} exceeds 1.0", strength);
+        }
+
+        #[test]
+        fn prop_frequency_in_fm_band(station in arb_station_entity()) {
+            let freq = station.frequency();
+            prop_assert!(freq >= 88.0e6);
+            prop_assert!(freq <= 108.0e6);
+        }
+
+        #[test]
+        fn prop_initial_state_consistency(station in arb_station_entity()) {
+            prop_assert_eq!(station.play_count(), 0);
+            prop_assert!(!station.is_playing());
+            prop_assert_eq!(station.last_played_at(), None);
+            prop_assert_eq!(station.total_play_duration(), Duration::ZERO);
+        }
+
+        #[test]
+        fn prop_convenience_methods_match_components(station in arb_station_entity()) {
+            prop_assert_eq!(station.frequency(), station.info.frequency);
+            prop_assert_eq!(station.signal_strength(), station.info.signal_strength);
+            prop_assert_eq!(station.play_count(), station.history.play_count);
+        }
     }
 }

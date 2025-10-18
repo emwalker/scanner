@@ -27,6 +27,12 @@ pub struct ScanEntity {
 
     /// Lifecycle timestamps
     pub lifecycle: ScanLifecycleComponent,
+
+    /// Coordinator guidance: worker should pause (advisory)
+    pub should_pause: bool,
+
+    /// Coordinator guidance: worker should complete (advisory)
+    pub should_complete: bool,
 }
 
 impl ScanEntity {
@@ -40,6 +46,8 @@ impl ScanEntity {
             progress: ScanProgressComponent::new(total_windows),
             results: ScanResultsComponent::new(),
             lifecycle: ScanLifecycleComponent::new(),
+            should_pause: false,
+            should_complete: false,
         }
     }
 
@@ -91,6 +99,7 @@ impl Entity for ScanEntity {
 mod tests {
     use super::*;
     use crate::ecs::EntityWorld;
+    use proptest::prelude::*;
 
     fn create_test_scan(freq_min: f64, freq_max: f64) -> ScanEntity {
         let config = ScanConfigComponent::new(
@@ -104,6 +113,71 @@ mod tests {
             3,     // 3 scanning windows
         );
         ScanEntity::new(config)
+    }
+
+    fn arb_scan_type() -> impl Strategy<Value = ScanType> {
+        prop_oneof![Just(ScanType::Band), Just(ScanType::Stations),]
+    }
+
+    fn arb_scan_config() -> impl Strategy<Value = ScanConfigComponent> {
+        (
+            arb_scan_type(),
+            88.0e6..108.0e6f64,
+            1.0e6..3.0e6f64,
+            2.0e6..3.0e6f64,
+            20.0..50.0f64,
+            0.5..5.0f64,
+            1..10usize,
+        )
+            .prop_map(
+                |(
+                    scan_type,
+                    freq_min,
+                    window_size,
+                    sample_rate,
+                    gain_db,
+                    duration,
+                    num_windows,
+                )| {
+                    let freq_max = freq_min + (window_size * num_windows as f64);
+                    ScanConfigComponent::new(
+                        scan_type,
+                        freq_min,
+                        freq_max,
+                        window_size,
+                        sample_rate,
+                        gain_db,
+                        duration,
+                        num_windows,
+                    )
+                },
+            )
+    }
+
+    fn arb_scan_entity() -> impl Strategy<Value = ScanEntity> {
+        (arb_scan_config(), 0..100usize, any::<bool>(), any::<bool>()).prop_map(
+            |(config, windows_completed, paused, completed)| {
+                let mut entity = ScanEntity::new(config);
+                let target_windows = if completed {
+                    entity.progress.total_windows
+                } else {
+                    windows_completed.min(entity.progress.total_windows)
+                };
+                for _ in 0..target_windows {
+                    entity
+                        .progress
+                        .start_window(entity.progress.windows_completed);
+                    entity.progress.complete_window();
+                }
+                if paused && !completed {
+                    entity.progress.pause(entity.progress.windows_completed);
+                }
+                if completed {
+                    entity.progress.mark_complete();
+                }
+                entity
+            },
+        )
     }
 
     #[test]
@@ -268,5 +342,47 @@ mod tests {
 
         assert_eq!(scan.results.total_candidates(), 3);
         assert_eq!(scan.results.stations_discovered, 1);
+    }
+
+    proptest! {
+        #[test]
+        fn prop_progress_bounds(scan in arb_scan_entity()) {
+            prop_assert!(scan.progress.current_window <= scan.progress.total_windows);
+            prop_assert!(scan.progress.windows_completed <= scan.progress.total_windows);
+        }
+
+        #[test]
+        fn prop_percentage_bounds(scan in arb_scan_entity()) {
+            let percentage = scan.progress_percentage();
+            prop_assert!(percentage >= 0.0);
+            prop_assert!(percentage <= 1.0);
+        }
+
+        #[test]
+        fn prop_completion_consistency(scan in arb_scan_entity()) {
+            if scan.is_completed() {
+                prop_assert_eq!(scan.progress.windows_completed, scan.progress.total_windows);
+            }
+        }
+
+        #[test]
+        fn prop_percentage_calculation(scan in arb_scan_entity()) {
+            let expected = if scan.progress.total_windows == 0 {
+                1.0
+            } else {
+                scan.progress.windows_completed as f64 / scan.progress.total_windows as f64
+            };
+            prop_assert!((scan.progress_percentage() - expected).abs() < 1e-6);
+        }
+
+        #[test]
+        fn prop_state_exclusivity(scan in arb_scan_entity()) {
+            let states = [scan.is_scanning(),
+                scan.is_paused(),
+                scan.is_completed(),
+                scan.is_listening()];
+            let active_states = states.iter().filter(|&&s| s).count();
+            prop_assert!(active_states == 1, "Expected exactly one state to be active, got {}", active_states);
+        }
     }
 }

@@ -6,25 +6,30 @@ impl Model {
     /// Request to quit the application
     pub fn quit(&mut self) {
         self.should_quit = true;
+        self.mark_dirty();
     }
 
     pub fn toggle_theme_selector(&mut self) {
         self.theme_selector_open = !self.theme_selector_open;
+        self.mark_dirty();
     }
 
     pub fn close_theme_selector(&mut self) {
         self.theme_selector_open = false;
+        self.mark_dirty();
     }
 
     pub fn theme_selector_next(&mut self, theme_count: usize) {
         if self.theme_selector_open {
             self.theme_selector_index = (self.theme_selector_index + 1) % theme_count;
+            self.mark_dirty();
         }
     }
 
     pub fn theme_selector_prev(&mut self, theme_count: usize) {
         if self.theme_selector_open {
             self.theme_selector_index = (self.theme_selector_index + theme_count - 1) % theme_count;
+            self.mark_dirty();
         }
     }
 
@@ -34,17 +39,20 @@ impl Model {
         if candidate_count > 0 {
             let selected_index = candidate_count - 1;
             self.ui_mode = UiMode::NavigatingScanner { selected_index };
+            self.mark_dirty();
         }
     }
 
     /// Exit selection mode - returns to normal scanning
     pub fn exit_selection_mode(&mut self) {
         self.ui_mode = UiMode::Idle;
+        self.mark_dirty();
     }
 
     /// Exit browsing mode and return to normal scanning (clears both modes)
     pub fn exit_browsing_mode(&mut self) {
         self.ui_mode = UiMode::Idle;
+        self.mark_dirty();
     }
 
     /// Select next candidate (moving forward in time)
@@ -93,6 +101,7 @@ impl Model {
                 UiMode::Idle => {}
             }
             self.adjust_scroll_to_selection(viewport_height);
+            self.mark_dirty();
         }
     }
 
@@ -136,6 +145,7 @@ impl Model {
                 UiMode::Idle => {}
             }
             self.adjust_scroll_to_selection(viewport_height);
+            self.mark_dirty();
         }
     }
 
@@ -144,8 +154,10 @@ impl Model {
         if let Some(selected_idx) = self.selected_candidate_index() {
             if selected_idx < self.scroll_offset {
                 self.scroll_offset = selected_idx;
+                self.mark_dirty();
             } else if selected_idx >= self.scroll_offset + viewport_height {
                 self.scroll_offset = selected_idx.saturating_sub(viewport_height - 1);
+                self.mark_dirty();
             }
         }
     }
@@ -154,6 +166,7 @@ impl Model {
     pub fn scroll_up(&mut self) {
         if self.scroll_offset > 0 {
             self.scroll_offset -= 1;
+            self.mark_dirty();
         }
     }
 
@@ -161,6 +174,7 @@ impl Model {
     pub fn scroll_down(&mut self, total_candidates: usize, viewport_height: usize) {
         if self.scroll_offset + viewport_height < total_candidates {
             self.scroll_offset += 1;
+            self.mark_dirty();
         }
     }
 
@@ -169,6 +183,7 @@ impl Model {
         match self.focus_state {
             FocusState::Spectrum => {
                 self.focus_state = FocusState::Scan;
+                self.mark_dirty();
             }
             FocusState::Scan => {
                 if self.selection_mode() {
@@ -191,6 +206,7 @@ impl Model {
                         self.ui_mode = UiMode::NavigatingScanner { selected_index };
                     }
                     self.focus_state = FocusState::Scan;
+                    self.mark_dirty();
                 } else {
                     let prev_idx = self.selected_candidate_index();
                     self.select_previous_candidate();
@@ -212,11 +228,13 @@ impl Model {
             FocusState::Scan => {
                 if self.selection_mode() && tuner_count > 0 {
                     self.focus_state = FocusState::Tuner(0);
+                    self.mark_dirty();
                 }
             }
             FocusState::Tuner(idx) => {
                 if idx + 1 < tuner_count {
                     self.focus_state = FocusState::Tuner(idx + 1);
+                    self.mark_dirty();
                 }
             }
         }
@@ -230,8 +248,10 @@ impl Model {
             FocusState::Tuner(idx) => {
                 if idx == 0 {
                     self.focus_state = FocusState::Scan;
+                    self.mark_dirty();
                 } else {
                     self.focus_state = FocusState::Tuner(idx - 1);
+                    self.mark_dirty();
                 }
             }
         }

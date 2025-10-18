@@ -2,17 +2,16 @@
 
 use super::context::{LoopControl, ScanContext};
 use crate::core::types::{Result, ScannerError, ScanningConfig};
-use crate::ecs::{ScanEntity, ScanId, ScanType};
+use crate::ecs::{AudioEntity, EntityWorld, ScanEntity, ScanId, ScanType, StationEntity};
 use crate::hardware::pool::Pool;
 use crate::hardware::types::Backend;
-use crate::main_thread::WorkerHandle;
 use crate::pause_signal::PauseSignal;
 use crate::shutdown::ShutdownCoordinator;
 use crate::signal;
 use crate::task::TaskContinuation;
 use crate::ui::{ProgressReporter, ScannerCommand, TuiEvent};
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -32,8 +31,11 @@ pub struct ScanStationsTask {
 
     window_index: usize,
 
-    worker_handle: Option<WorkerHandle>,
     scan_id: ScanId,
+
+    scan_entities: Option<Arc<RwLock<EntityWorld<ScanEntity>>>>,
+    station_entities: Option<Arc<RwLock<EntityWorld<StationEntity>>>>,
+    audio_entities: Option<Arc<RwLock<EntityWorld<AudioEntity>>>>,
 }
 
 impl ScanStationsTask {
@@ -56,8 +58,10 @@ impl ScanStationsTask {
             command_receiver: None,
             tui_event_sender: None,
             window_index: 0,
-            worker_handle: None,
             scan_id: ScanId::new(),
+            scan_entities: None,
+            station_entities: None,
+            audio_entities: None,
         }
     }
 
@@ -82,13 +86,28 @@ impl ScanStationsTask {
             command_receiver,
             tui_event_sender,
             window_index: 0,
-            worker_handle: None,
             scan_id: ScanId::new(),
+            scan_entities: None,
+            station_entities: None,
+            audio_entities: None,
         }
     }
 
-    pub fn with_worker_handle(mut self, worker_handle: WorkerHandle) -> Self {
-        self.worker_handle = Some(worker_handle);
+    pub fn with_scan_entities(mut self, entities: Arc<RwLock<EntityWorld<ScanEntity>>>) -> Self {
+        self.scan_entities = Some(entities);
+        self
+    }
+
+    pub fn with_station_entities(
+        mut self,
+        entities: Arc<RwLock<EntityWorld<StationEntity>>>,
+    ) -> Self {
+        self.station_entities = Some(entities);
+        self
+    }
+
+    pub fn with_audio_entities(mut self, entities: Arc<RwLock<EntityWorld<AudioEntity>>>) -> Self {
+        self.audio_entities = Some(entities);
         self
     }
 

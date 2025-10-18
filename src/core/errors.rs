@@ -133,6 +133,15 @@ pub enum ScannerError {
     SubprocessTimeout(String),
     #[error(transparent)]
     Postcard(#[from] postcard::Error),
+    // Coordinator communication errors
+    #[error("Coordinator channel send failed: {0}")]
+    CoordinatorSendFailed(String),
 }
 
 pub type Result<T> = std::result::Result<T, ScannerError>;
+
+impl<T> From<std::sync::mpsc::SendError<T>> for ScannerError {
+    fn from(e: std::sync::mpsc::SendError<T>) -> Self {
+        ScannerError::CoordinatorSendFailed(e.to_string())
+    }
+}

@@ -78,6 +78,7 @@ mod tests {
     use crate::ecs::EntityWorld;
     use crate::ecs::components::TunerActivity;
     use crate::hardware::{Capabilities, DeviceId};
+    use proptest::prelude::*;
 
     fn create_test_entity(device_serial: &str, channel: usize) -> TunerEntity {
         let device_id = DeviceId::from_serial("sdrplay", device_serial);
@@ -89,6 +90,41 @@ mod tests {
             capabilities,
             hardware::types::Backend::Soapy,
         )
+    }
+
+    fn arb_backend() -> impl Strategy<Value = hardware::types::Backend> {
+        prop_oneof![
+            Just(hardware::types::Backend::Soapy),
+            Just(hardware::types::Backend::Mock),
+            Just(hardware::types::Backend::Usb),
+        ]
+    }
+
+    fn arb_device_id() -> impl Strategy<Value = DeviceId> {
+        ("[a-z]{3,8}", "[0-9]{4,8}")
+            .prop_map(|(driver, serial)| DeviceId::from_serial(&driver, &serial))
+    }
+
+    fn arb_tuner_entity() -> impl Strategy<Value = TunerEntity> {
+        (
+            arb_device_id(),
+            0..4usize,
+            arb_backend(),
+            any::<bool>(),
+            any::<bool>(),
+        )
+            .prop_map(|(device_id, channel, backend, connected, allocated)| {
+                let capabilities = Capabilities::for_device(&device_id);
+                let mut entity = TunerEntity::new(device_id, channel, capabilities, backend);
+                if !connected {
+                    entity.device.disconnect();
+                }
+                if allocated && connected {
+                    entity.allocation.allocate("test_alloc".to_string());
+                    entity.status.start_scanning();
+                }
+                entity
+            })
     }
 
     #[test]
@@ -215,5 +251,36 @@ mod tests {
 
         let available_count = world.iter().filter(|e| e.is_available()).count();
         assert_eq!(available_count, 1);
+    }
+
+    proptest! {
+        #[test]
+        fn prop_allocation_consistency(entity in arb_tuner_entity()) {
+            if entity.allocation.is_allocated() {
+                prop_assert!(entity.allocation.allocated_to.is_some());
+            } else {
+                prop_assert!(entity.allocation.allocated_to.is_none());
+            }
+        }
+
+        #[test]
+        fn prop_connection_prerequisite(entity in arb_tuner_entity()) {
+            if !entity.device.connected {
+                prop_assert!(!entity.allocation.is_allocated());
+            }
+        }
+
+        #[test]
+        fn prop_activity_consistency(entity in arb_tuner_entity()) {
+            if entity.allocation.is_allocated() {
+                prop_assert_ne!(entity.status.activity, TunerActivity::Idle);
+            }
+        }
+
+        #[test]
+        fn prop_is_available_correctness(entity in arb_tuner_entity()) {
+            let expected = entity.device.connected && entity.allocation.is_available();
+            prop_assert_eq!(entity.is_available(), expected);
+        }
     }
 }

@@ -19,7 +19,7 @@ pub trait System: Send {
 
 use crate::ecs::EntityWorld;
 use crate::ecs::{AudioEntity, ScanEntity, StationEntity, TunerEntity};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Context provided to systems during execution
 ///
@@ -27,9 +27,9 @@ use std::sync::{Arc, Mutex};
 /// for system execution.
 pub struct SystemContext {
     pub tuner_entities: Option<Arc<Mutex<EntityWorld<TunerEntity>>>>,
-    pub scan_entities: Option<Arc<Mutex<EntityWorld<ScanEntity>>>>,
-    pub station_entities: Option<Arc<Mutex<EntityWorld<StationEntity>>>>,
-    pub audio_entities: Option<Arc<Mutex<EntityWorld<AudioEntity>>>>,
+    pub scan_entities: Option<Arc<RwLock<EntityWorld<ScanEntity>>>>,
+    pub station_entities: Option<Arc<RwLock<EntityWorld<StationEntity>>>>,
+    pub audio_entities: Option<Arc<RwLock<EntityWorld<AudioEntity>>>>,
 }
 
 impl Default for SystemContext {
@@ -53,20 +53,20 @@ impl SystemContext {
         self
     }
 
-    pub fn with_scan_entities(mut self, entities: Arc<Mutex<EntityWorld<ScanEntity>>>) -> Self {
+    pub fn with_scan_entities(mut self, entities: Arc<RwLock<EntityWorld<ScanEntity>>>) -> Self {
         self.scan_entities = Some(entities);
         self
     }
 
     pub fn with_station_entities(
         mut self,
-        entities: Arc<Mutex<EntityWorld<StationEntity>>>,
+        entities: Arc<RwLock<EntityWorld<StationEntity>>>,
     ) -> Self {
         self.station_entities = Some(entities);
         self
     }
 
-    pub fn with_audio_entities(mut self, entities: Arc<Mutex<EntityWorld<AudioEntity>>>) -> Self {
+    pub fn with_audio_entities(mut self, entities: Arc<RwLock<EntityWorld<AudioEntity>>>) -> Self {
         self.audio_entities = Some(entities);
         self
     }

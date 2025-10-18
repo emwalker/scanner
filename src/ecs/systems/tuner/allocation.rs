@@ -115,6 +115,22 @@ impl System for AllocationSystem {
                         continue;
                     }
 
+                    if !entity
+                        .device
+                        .capabilities
+                        .supports_frequency(request.frequency_hz)
+                    {
+                        continue;
+                    }
+
+                    if !entity
+                        .device
+                        .capabilities
+                        .supports_sample_rate(request.sample_rate_hz)
+                    {
+                        continue;
+                    }
+
                     best_tuner = Some(entity.id().clone());
                     break;
                 }

@@ -51,7 +51,7 @@ impl System for ManagementSystem {
         let mut entities_to_remove = Vec::new();
 
         {
-            let entities = audio_entities.lock().unwrap();
+            let entities = audio_entities.read().unwrap();
 
             for entity in entities.iter() {
                 if !entity.is_playing() {
@@ -83,7 +83,7 @@ impl System for ManagementSystem {
         }
 
         if !entities_to_remove.is_empty() {
-            let mut entities = audio_entities.lock().unwrap();
+            let mut entities = audio_entities.write().unwrap();
             for audio_id in entities_to_remove {
                 if let Some(mut entity) = entities.remove(&audio_id) {
                     entity.stop();
@@ -102,7 +102,7 @@ mod tests {
     use crate::audio::quality::AudioQuality;
     use crate::core::types::{ModulationType, Signal};
     use crate::ecs::{AudioEntity, EntityWorld};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, RwLock};
     use std::time::{Duration, SystemTime};
 
     fn create_test_signal() -> Signal {
@@ -137,13 +137,13 @@ mod tests {
         world.insert(AudioEntity::new(signal.clone(), 88.9e6, None));
         world.insert(AudioEntity::new(signal, 89.3e6, None));
 
-        let context_entities = Arc::new(Mutex::new(world));
+        let context_entities = Arc::new(RwLock::new(world));
         let mut context = SystemContext::new().with_audio_entities(context_entities.clone());
 
         let result = system.run(&mut context);
         assert!(result.is_ok());
 
-        let entities = context_entities.lock().unwrap();
+        let entities = context_entities.read().unwrap();
         assert_eq!(entities.len(), 2);
     }
 
@@ -158,13 +158,13 @@ mod tests {
         world.insert(stopped_audio);
         world.insert(AudioEntity::new(signal, 89.3e6, None));
 
-        let context_entities = Arc::new(Mutex::new(world));
+        let context_entities = Arc::new(RwLock::new(world));
         let mut context = SystemContext::new().with_audio_entities(context_entities.clone());
 
         let result = system.run(&mut context);
         assert!(result.is_ok());
 
-        let entities = context_entities.lock().unwrap();
+        let entities = context_entities.read().unwrap();
         assert_eq!(entities.len(), 1);
         assert!(entities.iter().all(|e| e.is_playing()));
     }
@@ -177,14 +177,14 @@ mod tests {
         let signal = create_test_signal();
         world.insert(AudioEntity::new(signal, 88.9e6, None));
 
-        let context_entities = Arc::new(Mutex::new(world));
+        let context_entities = Arc::new(RwLock::new(world));
         let mut context = SystemContext::new().with_audio_entities(context_entities.clone());
 
         let result = system.run(&mut context);
         assert!(result.is_ok());
 
         {
-            let entities = context_entities.lock().unwrap();
+            let entities = context_entities.read().unwrap();
             assert_eq!(
                 entities.len(),
                 1,
@@ -193,7 +193,7 @@ mod tests {
         }
 
         {
-            let mut entities = context_entities.lock().unwrap();
+            let mut entities = context_entities.write().unwrap();
             let entity = entities.iter_mut().next().unwrap();
             let old_time = entity.playback.started_at() - Duration::from_secs(2);
             entity.playback.set_started_at_for_test(old_time);
@@ -202,7 +202,7 @@ mod tests {
         let result = system.run(&mut context);
         assert!(result.is_ok());
 
-        let entities = context_entities.lock().unwrap();
+        let entities = context_entities.read().unwrap();
         assert_eq!(
             entities.len(),
             0,
@@ -218,11 +218,11 @@ mod tests {
         let signal = create_test_signal();
         world.insert(AudioEntity::new(signal, 88.9e6, None));
 
-        let context_entities = Arc::new(Mutex::new(world));
+        let context_entities = Arc::new(RwLock::new(world));
         let mut context = SystemContext::new().with_audio_entities(context_entities.clone());
 
         {
-            let mut entities = context_entities.lock().unwrap();
+            let mut entities = context_entities.write().unwrap();
             let entity = entities.iter_mut().next().unwrap();
             let old_time = entity.playback.started_at() - Duration::from_secs(3600);
             entity.playback.set_started_at_for_test(old_time);
@@ -231,7 +231,7 @@ mod tests {
         let result = system.run(&mut context);
         assert!(result.is_ok());
 
-        let entities = context_entities.lock().unwrap();
+        let entities = context_entities.read().unwrap();
         assert_eq!(
             entities.len(),
             1,

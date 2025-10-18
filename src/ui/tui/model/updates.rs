@@ -26,6 +26,21 @@ impl Model {
                 debug!(tuner_id = ?tuner_id, ui_mode = ?self.ui_mode, "Scanning paused, tuner now available");
             }
             TuiEvent::ActiveTunersUpdated { status } => {
+                let status_changed = if let Some(prev_status) = &self.pool_status {
+                    prev_status.tuners.len() != status.tuners.len()
+                        || prev_status.tuners.iter().zip(status.tuners.iter()).any(
+                            |(prev, curr)| {
+                                prev.state != curr.state || prev.activity != curr.activity
+                            },
+                        )
+                } else {
+                    true
+                };
+
+                if !status_changed {
+                    return;
+                }
+
                 debug!(
                     total_tuners = status.tuners.len(),
                     available_count = status
@@ -91,6 +106,7 @@ impl Model {
                 }
 
                 self.pool_status = Some(status);
+                self.mark_dirty();
             }
         }
     }
@@ -108,6 +124,7 @@ impl Model {
         }
 
         self.complete_window_if_done();
+        self.mark_dirty();
     }
 
     fn should_process_event(&self, event: &ProgressEvent) -> bool {

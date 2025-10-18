@@ -10,6 +10,7 @@ use std::collections::HashMap;
 /// cache-friendly memory layout since we have dozens of entities, not thousands.
 pub struct EntityWorld<E: Entity> {
     entities: HashMap<E::Id, E>,
+    generation: u64,
 }
 
 impl<E: Entity> EntityWorld<E> {
@@ -17,7 +18,17 @@ impl<E: Entity> EntityWorld<E> {
     pub fn new() -> Self {
         Self {
             entities: HashMap::new(),
+            generation: 0,
         }
+    }
+
+    /// Get current generation (increments on any mutation)
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    fn mark_changed(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Insert an entity into the world
@@ -25,6 +36,7 @@ impl<E: Entity> EntityWorld<E> {
     /// If an entity with the same ID already exists, it will be replaced
     /// and the old entity will be returned.
     pub fn insert(&mut self, entity: E) -> Option<E> {
+        self.mark_changed();
         let id = entity.id().clone();
         self.entities.insert(id, entity)
     }
@@ -36,6 +48,7 @@ impl<E: Entity> EntityWorld<E> {
 
     /// Get a mutable reference to an entity by ID
     pub fn get_mut(&mut self, id: &E::Id) -> Option<&mut E> {
+        self.mark_changed();
         self.entities.get_mut(id)
     }
 
@@ -43,6 +56,7 @@ impl<E: Entity> EntityWorld<E> {
     ///
     /// Returns the removed entity if it existed.
     pub fn remove(&mut self, id: &E::Id) -> Option<E> {
+        self.mark_changed();
         self.entities.remove(id)
     }
 
@@ -53,6 +67,7 @@ impl<E: Entity> EntityWorld<E> {
 
     /// Iterate over all entities mutably
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut E> {
+        self.mark_changed();
         self.entities.values_mut()
     }
 
@@ -68,6 +83,7 @@ impl<E: Entity> EntityWorld<E> {
 
     /// Clear all entities from the world
     pub fn clear(&mut self) {
+        self.mark_changed();
         self.entities.clear();
     }
 }

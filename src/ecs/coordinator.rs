@@ -6,7 +6,7 @@ use crate::ecs::Scheduler;
 use crate::ecs::system::SystemContext;
 use crate::ecs::{AudioEntity, ScanEntity, StationEntity, TunerEntity};
 use crate::hardware::pool::Pool;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Coordinator manages system execution and provides the update loop
 ///
@@ -17,9 +17,9 @@ use std::sync::{Arc, Mutex};
 pub struct Coordinator {
     scheduler: Scheduler,
     tuner_entities: Arc<Mutex<EntityWorld<TunerEntity>>>,
-    scan_entities: Option<Arc<Mutex<EntityWorld<ScanEntity>>>>,
-    station_entities: Option<Arc<Mutex<EntityWorld<StationEntity>>>>,
-    audio_entities: Option<Arc<Mutex<EntityWorld<AudioEntity>>>>,
+    scan_entities: Option<Arc<RwLock<EntityWorld<ScanEntity>>>>,
+    station_entities: Option<Arc<RwLock<EntityWorld<StationEntity>>>>,
+    audio_entities: Option<Arc<RwLock<EntityWorld<AudioEntity>>>>,
 }
 
 impl Coordinator {
@@ -35,7 +35,7 @@ impl Coordinator {
     }
 
     /// Add scan entities to the coordinator
-    pub fn with_scan_entities(mut self, entities: Arc<Mutex<EntityWorld<ScanEntity>>>) -> Self {
+    pub fn with_scan_entities(mut self, entities: Arc<RwLock<EntityWorld<ScanEntity>>>) -> Self {
         self.scan_entities = Some(entities);
         self
     }
@@ -43,14 +43,14 @@ impl Coordinator {
     /// Add station entities to the coordinator
     pub fn with_station_entities(
         mut self,
-        entities: Arc<Mutex<EntityWorld<StationEntity>>>,
+        entities: Arc<RwLock<EntityWorld<StationEntity>>>,
     ) -> Self {
         self.station_entities = Some(entities);
         self
     }
 
     /// Add audio entities to the coordinator
-    pub fn with_audio_entities(mut self, entities: Arc<Mutex<EntityWorld<AudioEntity>>>) -> Self {
+    pub fn with_audio_entities(mut self, entities: Arc<RwLock<EntityWorld<AudioEntity>>>) -> Self {
         self.audio_entities = Some(entities);
         self
     }
@@ -113,9 +113,9 @@ mod tests {
     #[test]
     fn test_coordinator_with_entities() {
         let pool = Arc::new(Pool::new(PoolFilter::allow_all(), None));
-        let scan_entities = Arc::new(Mutex::new(EntityWorld::new()));
-        let station_entities = Arc::new(Mutex::new(EntityWorld::new()));
-        let audio_entities = Arc::new(Mutex::new(EntityWorld::new()));
+        let scan_entities = Arc::new(RwLock::new(EntityWorld::new()));
+        let station_entities = Arc::new(RwLock::new(EntityWorld::new()));
+        let audio_entities = Arc::new(RwLock::new(EntityWorld::new()));
 
         let coordinator = Coordinator::new(&pool)
             .with_scan_entities(scan_entities)

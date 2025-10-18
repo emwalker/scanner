@@ -43,6 +43,7 @@ pub struct Model {
     pub devices: HashMap<crate::hardware::DeviceId, crate::hardware::DeviceInfo>,
     pub spectrum_stations: Vec<SpectrumStation>,
     pub active_audio_frequency: Option<f64>,
+    dirty: bool,
 }
 
 impl Default for Model {
@@ -70,6 +71,19 @@ impl Model {
             devices: HashMap::new(),
             spectrum_stations: Vec::new(),
             active_audio_frequency: None,
+            dirty: true,
         }
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn clear_dirty(&mut self) {
+        self.dirty = false;
     }
 }

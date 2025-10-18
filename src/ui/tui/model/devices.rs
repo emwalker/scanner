@@ -27,6 +27,7 @@ impl Model {
     /// If a device with the same serial number already exists, prefer USB labels
     /// over backend labels while keeping the functional device ID for operations.
     pub fn add_device(&mut self, device: DeviceInfo) {
+        self.mark_dirty();
         let device_id = device.id.clone();
         let serial = Self::device_serial(&device_id);
 
@@ -164,6 +165,7 @@ impl Model {
         if self.devices.remove(device_id).is_some() {
             self.tuners.retain(|t| &t.id.device_id != device_id);
             debug!(device_id = ?device_id, "Device and all its tuners removed from TUI model");
+            self.mark_dirty();
         }
     }
 

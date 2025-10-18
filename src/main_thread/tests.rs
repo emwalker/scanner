@@ -326,7 +326,7 @@ fn test_coordinator_thread_lifecycle() {
     let backend = create_test_backend();
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
-    let mut main_thread = MainThread::new(
+    let main_thread = MainThread::new(
         Arc::new(config),
         console_writer,
         logger,
@@ -336,15 +336,8 @@ fn test_coordinator_thread_lifecycle() {
     .unwrap();
 
     assert!(
-        main_thread.coordinator_handle.is_none(),
-        "Coordinator should not be spawned yet"
-    );
-
-    main_thread.spawn_coordinator();
-
-    assert!(
         main_thread.coordinator_handle.is_some(),
-        "Coordinator should be spawned"
+        "Coordinator should be spawned automatically in new()"
     );
 
     std::thread::sleep(std::time::Duration::from_millis(250));
@@ -391,28 +384,5 @@ fn test_coordinator_shutdown_on_drop() {
     assert!(
         shutdown_flag.load(Ordering::SeqCst),
         "Coordinator should be shut down after drop"
-    );
-}
-
-#[test]
-fn test_worker_channels_creation() {
-    let (channels, handle) = WorkerChannels::new();
-
-    assert!(channels.event_rx.try_recv().is_err(), "No events yet");
-
-    handle
-        .event_tx
-        .send(WorkerEvent::ScanStarted {
-            scan_id: ScanId::new(),
-        })
-        .unwrap();
-
-    assert!(channels.event_rx.try_recv().is_ok(), "Should receive event");
-
-    channels.command_tx.send(WorkerCommand::PauseScan).unwrap();
-
-    assert!(
-        handle.command_rx.try_recv().is_ok(),
-        "Should receive command"
     );
 }

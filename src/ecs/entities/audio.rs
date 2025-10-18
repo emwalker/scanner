@@ -9,6 +9,7 @@ use crate::hardware::DeviceId;
 use std::time::{Duration, Instant};
 
 /// Entity representing an active audio playback session
+#[derive(Debug)]
 pub struct AudioEntity {
     pub id: AudioId,
     pub tuning: AudioTuningComponent,
@@ -69,6 +70,7 @@ mod tests {
     use super::*;
     use crate::audio::quality::AudioQuality;
     use crate::core::types::ModulationType;
+    use proptest::prelude::*;
     use std::thread;
     use std::time::SystemTime;
 
@@ -84,6 +86,33 @@ mod tests {
             detection_center_freq: 88.9e6,
             audio_quality: AudioQuality::Good,
         }
+    }
+
+    fn arb_device_id() -> impl Strategy<Value = DeviceId> {
+        ("[a-z]{3,8}", "[0-9]{4,8}")
+            .prop_map(|(driver, serial)| DeviceId::from_serial(&driver, &serial))
+    }
+
+    fn arb_audio_entity() -> impl Strategy<Value = AudioEntity> {
+        (
+            88.0e6..108.0e6f64,
+            0.0..=1.0f32,
+            prop::option::of(arb_device_id()),
+        )
+            .prop_map(|(frequency, signal_strength, tuner_id)| {
+                let signal = Signal {
+                    frequency_hz: frequency,
+                    signal_strength,
+                    bandwidth_hz: 200_000.0,
+                    modulation: ModulationType::WFM,
+                    audio_sample_rate: 48000,
+                    detected_at: SystemTime::now(),
+                    analysis_duration_ms: 100,
+                    detection_center_freq: frequency,
+                    audio_quality: AudioQuality::Good,
+                };
+                AudioEntity::new(signal, frequency, tuner_id)
+            })
     }
 
     #[test]
@@ -143,5 +172,39 @@ mod tests {
         assert_eq!(audio.frequency(), signal.frequency_hz);
         assert_eq!(audio.signal_strength(), signal.signal_strength);
         assert!(audio.started_at().elapsed().as_millis() < 10);
+    }
+
+    proptest! {
+        #[test]
+        fn prop_frequency_consistency(audio in arb_audio_entity()) {
+            let tuning_freq = audio.tuning.signal.frequency_hz;
+            prop_assert_eq!(audio.frequency(), tuning_freq);
+        }
+
+        #[test]
+        fn prop_signal_strength_bounds(audio in arb_audio_entity()) {
+            let strength = audio.signal_strength();
+            prop_assert!(strength >= 0.0);
+            prop_assert!(strength <= 1.0);
+        }
+
+        #[test]
+        fn prop_initially_playing(audio in arb_audio_entity()) {
+            prop_assert!(audio.is_playing());
+        }
+
+        #[test]
+        fn prop_tuner_assignment_consistency(audio in arb_audio_entity()) {
+            let has_tuner_id = audio.tuner_id().is_some();
+            let allocation_has_tuner = audio.allocation.tuner_id.is_some();
+            prop_assert_eq!(has_tuner_id, allocation_has_tuner);
+        }
+
+        #[test]
+        fn prop_convenience_methods_match_components(audio in arb_audio_entity()) {
+            prop_assert_eq!(audio.frequency(), audio.tuning.frequency());
+            prop_assert_eq!(audio.signal_strength(), audio.tuning.signal_strength());
+            prop_assert_eq!(audio.is_playing(), audio.playback.is_playing());
+        }
     }
 }

@@ -52,7 +52,7 @@ impl System for UIUpdateSystem {
         self.active_frequency = None;
 
         if let Some(ref station_entities) = context.station_entities {
-            let entities = station_entities.lock().unwrap();
+            let entities = station_entities.read().unwrap();
 
             for entity in entities.iter() {
                 self.stations.push(SpectrumStation {
@@ -69,7 +69,7 @@ impl System for UIUpdateSystem {
         }
 
         if let Some(ref audio_entities) = context.audio_entities {
-            let entities = audio_entities.lock().unwrap();
+            let entities = audio_entities.read().unwrap();
 
             if let Some(audio_entity) = entities.iter().find(|e| e.is_playing()) {
                 let freq = audio_entity.frequency();
@@ -95,7 +95,7 @@ mod tests {
     use crate::audio::quality::AudioQuality;
     use crate::core::types::{ModulationType, Signal};
     use crate::ecs::{AudioEntity, EntityWorld, StationEntity};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, RwLock};
     use std::time::SystemTime;
 
     fn create_test_signal(frequency: f64) -> Signal {
@@ -140,7 +140,7 @@ mod tests {
         station_world.insert(StationEntity::from_signal(&signal1, scan_id, metadata));
         station_world.insert(StationEntity::from_signal(&signal2, scan_id, metadata));
 
-        let context_entities = Arc::new(Mutex::new(station_world));
+        let context_entities = Arc::new(RwLock::new(station_world));
         let mut context = SystemContext::new().with_station_entities(context_entities);
 
         let result = system.run(&mut context);
@@ -168,8 +168,8 @@ mod tests {
         let mut audio_world = EntityWorld::new();
         audio_world.insert(AudioEntity::new(signal, 88.9e6, None));
 
-        let station_entities = Arc::new(Mutex::new(station_world));
-        let audio_entities = Arc::new(Mutex::new(audio_world));
+        let station_entities = Arc::new(RwLock::new(station_world));
+        let audio_entities = Arc::new(RwLock::new(audio_world));
 
         let mut context = SystemContext::new()
             .with_station_entities(station_entities)
@@ -207,8 +207,8 @@ mod tests {
         let mut audio_world = EntityWorld::new();
         audio_world.insert(AudioEntity::new(create_test_signal(95.5e6), 95.5e6, None));
 
-        let station_entities = Arc::new(Mutex::new(station_world));
-        let audio_entities = Arc::new(Mutex::new(audio_world));
+        let station_entities = Arc::new(RwLock::new(station_world));
+        let audio_entities = Arc::new(RwLock::new(audio_world));
 
         let mut context = SystemContext::new()
             .with_station_entities(station_entities)
