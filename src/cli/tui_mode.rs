@@ -1,7 +1,6 @@
-use crate::core::types::{Logger, Result, ScannerError, ScanningConfig};
+use crate::core::types::{Result, ScannerError, ScanningConfig};
 use crate::hardware::pool::Pool;
-use crate::logging::DefaultLogger;
-use crate::main_thread::{DefaultConsoleWriter, MainThread};
+use crate::main_thread::MainThread;
 use crate::shutdown::ShutdownCoordinator;
 use crate::task::TaskScheduler;
 use crate::ui::TuiEvent;
@@ -10,22 +9,6 @@ use crate::ui::tui::themes::{ThemeName, create_theme};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
-
-use super::args::ScanArgs;
-use super::config::determine_format;
-
-/// No-op logger that doesn't initialize tracing to suppress all log output
-#[derive(Debug)]
-struct NoOpLogger;
-
-unsafe impl Send for NoOpLogger {}
-unsafe impl Sync for NoOpLogger {}
-
-impl Logger for NoOpLogger {
-    fn init(&self) -> Result<()> {
-        Ok(())
-    }
-}
 
 pub struct TuiContext {
     pub tui_event_sender: mpsc::Sender<TuiEvent>,
@@ -67,23 +50,12 @@ pub fn start_tui(
     })
 }
 
-pub fn create_logger(args: &ScanArgs) -> Arc<dyn Logger + Send + Sync> {
-    let format = determine_format(args);
-
-    if args.log_file.is_some() {
-        Arc::new(DefaultLogger::new(true, format).with_log_file(args.log_file.clone()))
-    } else {
-        Arc::new(NoOpLogger)
-    }
-}
-
 pub struct TuiRunContext {
     pub config: ScanningConfig,
     pub stations: Option<String>,
     pub shutdown_coordinator: Arc<ShutdownCoordinator>,
     pub pool: Arc<Pool>,
     pub scheduler: Arc<TaskScheduler>,
-    pub logger: Arc<dyn Logger + Send + Sync>,
     pub scan_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::ScanEntity>>>,
     pub station_entities:
         Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::StationEntity>>>,
@@ -99,13 +71,10 @@ pub fn run_with_tui(
         std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>,
     >,
 ) -> Result<()> {
-    let console_writer = Arc::new(DefaultConsoleWriter);
     let backend = Arc::new(crate::hardware::Soapy);
 
     let main_thread = MainThread::new_with_entities(
         Arc::new(context.config),
-        console_writer,
-        context.logger,
         backend,
         context.shutdown_coordinator.clone(),
         context.pool.clone(),

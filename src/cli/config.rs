@@ -82,10 +82,10 @@ pub fn create_audio_analyzer(
 pub fn determine_format(args: &ScanArgs) -> Format {
     if args.json {
         Format::Json
-    } else if args.log {
-        Format::Log
-    } else {
+    } else if args.text {
         Format::Text
+    } else {
+        Format::Log
     }
 }
 

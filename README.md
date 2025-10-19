@@ -5,6 +5,7 @@ This project is a software-defined radio (SDR) scanner. Eventually it will sweep
 ```sh
 $ cargo run -- scan --band fm
 $ cargo run -- scan --duration 60 --stations 88.9e6 # 88.9 MHz
+$ cargo run -- scan --json
 ```
 
 At the moment, only basic FM demodulation is working.

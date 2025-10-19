@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
-use tracing::debug;
+use tracing::{debug, info};
 
 impl Pool {
     fn create_and_insert_device_entry(
@@ -100,7 +100,7 @@ impl Pool {
             );
             entities.insert(entity);
             exposed_count += 1;
-            debug!(tuner_id = ?tuner_id, "Created TunerEntity");
+            info!(tuner_id = ?tuner_id, "Created TunerEntity");
         }
 
         exposed_count
@@ -286,7 +286,7 @@ impl Pool {
         for channel_index in 0..num_tuners {
             let tuner_id = TunerId::new(device_id.clone(), channel_index);
             entities.remove(&tuner_id);
-            debug!(tuner_id = ?tuner_id, "Removed TunerEntity");
+            info!(tuner_id = ?tuner_id, "Removed TunerEntity");
         }
 
         inner.devices.remove(device_id);

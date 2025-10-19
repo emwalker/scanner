@@ -1,17 +1,13 @@
 use crate::core::types::Result;
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
 
 use super::args::TrainArgs;
 use super::model::generate_versioned_filename;
 
 pub fn handle_train_command(args: TrainArgs) -> Result<()> {
-    let logger = Arc::new(crate::logging::DefaultLogger::new(
-        args.verbose,
-        crate::core::types::Format::Text,
-    ));
-    crate::logging::init(logger.as_ref(), args.verbose)?;
+    let level = crate::logging::level_from_flags(args.verbose, args.quiet);
+    crate::logging::init(level, crate::core::types::Format::Text, None)?;
 
     let output_model = args
         .output_model

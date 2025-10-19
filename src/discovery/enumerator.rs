@@ -2,7 +2,7 @@
 
 use crate::hardware;
 use std::collections::HashMap;
-use tracing::debug;
+use tracing::{debug, info};
 
 pub trait DeviceEnumerator: Send {
     fn enumerate(&self) -> Result<Vec<hardware::DeviceInfo>, Box<dyn std::error::Error>>;
@@ -105,7 +105,7 @@ impl SubprocessEnumerator {
         use std::thread;
         use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-        debug!(backend = %self.backend_name, "Starting subprocess enumeration");
+        info!(backend = %self.backend_name, "Starting subprocess enumeration");
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)

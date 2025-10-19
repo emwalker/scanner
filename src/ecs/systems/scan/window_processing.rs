@@ -11,7 +11,7 @@ use crate::shutdown::ShutdownCoordinator;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, info};
 
 pub struct WindowProcessingSystem {
     config: Arc<ScanningConfig>,
@@ -220,7 +220,7 @@ impl WindowProcessingSystem {
     }
 
     fn handle_pending_state(&self, scan: &mut crate::ecs::ScanEntity) {
-        debug!(
+        info!(
             scan_id = ?scan.id(),
             "WindowProcessingSystem: Scan pending, transitioning to Scanning"
         );
@@ -233,13 +233,6 @@ impl WindowProcessingSystem {
         scan: &mut crate::ecs::ScanEntity,
         context: &mut SystemContext,
     ) -> Result<()> {
-        debug!(
-            scan_id = ?scan.id(),
-            has_window_task = scan.window_task.is_some(),
-            has_window_allocation = scan.window_allocation.is_some(),
-            "WindowProcessingSystem: Processing scan in Scanning state"
-        );
-
         if let Some(task) = scan.window_task.take() {
             self.handle_window_task(task, scan, context)?;
         } else if let Some(WindowAllocationRequest::Allocated {
@@ -274,7 +267,7 @@ impl WindowProcessingSystem {
                     self.process_window_results(&result, scan, context)?;
 
                     if scan.progress.completed_windows.len() >= scan.progress.total_windows {
-                        debug!(
+                        info!(
                             scan_id = ?scan.id(),
                             "WindowProcessingSystem: All windows complete"
                         );

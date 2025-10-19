@@ -7,7 +7,7 @@ use crate::hardware::pool::types::{DeviceEntry, PoolStatus};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tracing::debug;
+use tracing::{debug, info};
 
 /// Callback invoked when tuner state changes
 pub type StateChangeCallback = Arc<Mutex<Vec<Box<dyn Fn(PoolStatus) + Send + Sync>>>>;
@@ -107,7 +107,7 @@ impl Pool {
         }
 
         self.shutdown_mode.store(true, Ordering::SeqCst);
-        debug!("Pool entered shutdown mode");
+        info!("Pool entered shutdown mode");
 
         if let Ok(mut subprocesses) = self.subprocesses.lock() {
             let count = subprocesses.len();

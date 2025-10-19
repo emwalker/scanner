@@ -102,17 +102,9 @@ pub struct ScanArgs {
     #[arg(long, help = "SDR gain in dB (0 to 48 for SDRplay, default 24)")]
     pub gain: Option<f64>,
 
-    /// Output format: JSON
-    #[arg(long, group = "output_format")]
-    pub json: bool,
-
     /// Duration in seconds for squelch to analyze audio vs noise
     #[arg(long, default_value_t = 1.0)]
     pub learning_duration: f32,
-
-    /// Output format: structured logging
-    #[arg(long, group = "output_format")]
-    pub log: bool,
 
     /// Write debug logs to file (useful with TUI to capture diagnostics)
     #[arg(long, default_value = "/tmp/scanner.log")]
@@ -144,16 +136,17 @@ pub struct ScanArgs {
     #[arg(long)]
     pub stations: Option<String>,
 
-    /// Output format: plain text (default)
-    #[arg(long, group = "output_format")]
-    pub text: bool,
-
     /// Required accuracy for frequency tracking convergence (Hz)
     #[arg(long, default_value_t = 5000.0)]
     pub tracking_accuracy: f64,
 
+    /// Reduce log output (show only INFO and above)
     #[arg(long)]
     pub verbose: bool,
+
+    /// Suppress debug and info logs (only show WARN and ERROR)
+    #[arg(long)]
+    pub quiet: bool,
 
     /// Window overlap percentage for band scanning (0.0-1.0, where 0.75 = 75% overlap)
     #[arg(long, default_value_t = 0.75)]
@@ -162,6 +155,18 @@ pub struct ScanArgs {
     /// TUI theme selection (basic-dark, basic-light, bladerunner-dark, bladerunner-light, interstellar-dark, interstellar-light, dune-dark, dune-light, transport-dark, transport-light, archive-dark, archive-light, minimal-dark, minimal-light)
     #[arg(long, default_value = "caladan-dark")]
     pub theme: String,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+
+    /// Output in standard log format
+    #[arg(long)]
+    pub log: bool,
+
+    /// Output in simplified text format
+    #[arg(long)]
+    pub text: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -182,8 +187,13 @@ pub struct TrainArgs {
     #[arg(long, default_value = "tests/data/audio/quality")]
     pub training_data_dir: String,
 
+    /// Reduce log output (show only INFO and above)
     #[arg(long)]
     pub verbose: bool,
+
+    /// Suppress debug and info logs (only show WARN and ERROR)
+    #[arg(long)]
+    pub quiet: bool,
 }
 
 #[derive(Subcommand, Debug)]

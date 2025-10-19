@@ -5,7 +5,7 @@ use cpal::{BufferSize, SampleFormat, StreamConfig};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, info};
 
 pub enum AudioThreadCommand {
     Shutdown,
@@ -25,7 +25,7 @@ impl AudioThread {
         let (command_tx, command_rx) = mpsc::channel();
 
         let thread_handle = thread::spawn(move || {
-            debug!("AudioThread: Starting");
+            info!("AudioThread: Starting");
 
             let (audio_device, supported_config) = match setup_audio_device(audio_sample_rate) {
                 Ok(result) => result,
@@ -59,12 +59,12 @@ impl AudioThread {
                 debug!(error = ?e, "AudioThread: Failed to start stream");
                 return;
             }
-            debug!("AudioThread: Stream started");
+            info!("AudioThread: Stream started");
 
             loop {
                 match command_rx.recv_timeout(Duration::from_millis(100)) {
                     Ok(AudioThreadCommand::Shutdown) => {
-                        debug!("AudioThread: Received Shutdown command");
+                        info!("AudioThread: Received Shutdown command");
                         break;
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -77,9 +77,9 @@ impl AudioThread {
                 }
             }
 
-            debug!("AudioThread: Dropping stream");
+            info!("AudioThread: Dropping stream");
             drop(stream);
-            debug!("AudioThread: Shutdown complete");
+            info!("AudioThread: Shutdown complete");
         });
 
         Ok(Self {
@@ -89,7 +89,7 @@ impl AudioThread {
     }
 
     pub fn shutdown(&mut self) {
-        debug!("AudioThread: Sending shutdown command");
+        info!("AudioThread: Sending shutdown command");
         if let Err(e) = self.command_tx.send(AudioThreadCommand::Shutdown) {
             debug!(error = ?e, "AudioThread: Failed to send shutdown command (thread may have already exited)");
         }

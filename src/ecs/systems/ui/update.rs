@@ -155,12 +155,6 @@ impl System for UIUpdateSystem {
                     is_active: false,
                 });
             }
-
-            debug!(
-                station_count = self.stations.len(),
-                frequencies_mhz = ?self.stations.iter().map(|s| s.frequency_hz / 1e6).collect::<Vec<_>>(),
-                "UIUpdateSystem collected stations"
-            );
         }
 
         if let Some(ref candidate_entities) = context.candidate_entities {
@@ -182,24 +176,10 @@ impl System for UIUpdateSystem {
                     .or_default()
                     .push(candidate_data);
             }
-
-            debug!(
-                candidate_count = entities.iter().count(),
-                window_count = self.candidates_by_window.len(),
-                "UIUpdateSystem collected candidates"
-            );
         }
 
         if let Some(ref audio_entities) = context.audio_entities {
             let entities = audio_entities.read().unwrap();
-            let audio_count = entities.iter().count();
-            let playing_count = entities.iter().filter(|e| e.is_playing()).count();
-
-            debug!(
-                audio_count = audio_count,
-                playing_count = playing_count,
-                "UIUpdateSystem checking audio entities"
-            );
 
             if let Some(audio_entity) = entities.iter().find(|e| e.is_playing()) {
                 let freq = audio_entity.frequency();
@@ -226,8 +206,6 @@ impl System for UIUpdateSystem {
                     marked_count = marked_count,
                     "UIUpdateSystem found active audio and marked stations"
                 );
-            } else {
-                debug!("UIUpdateSystem found no playing audio");
             }
         }
 

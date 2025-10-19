@@ -73,13 +73,6 @@ impl System for ManagementSystem {
                     }
                 }
             }
-
-            debug!(
-                total_sessions = entities.len(),
-                active_sessions = entities.iter().filter(|e| e.is_playing()).count(),
-                to_cleanup = entities_to_remove.len(),
-                "Audio management system ran"
-            );
         }
 
         if !entities_to_remove.is_empty() {

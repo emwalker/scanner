@@ -9,4 +9,4 @@ pub use bands::Band;
 pub use config::{ScanningConfig, WindowType};
 pub use errors::{Result, ScannerError, TEST_FREQUENCY_HZ};
 pub use signals::{Candidate, ModulationType, Peak, Signal};
-pub use types::{ConsoleWriter, Format, Logger};
+pub use types::Format;

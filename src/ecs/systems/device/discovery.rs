@@ -2,7 +2,6 @@
 
 use crate::core::types::Result;
 use crate::ecs::system::{System, SystemContext};
-use tracing::debug;
 
 /// System that synchronizes device discovery state
 ///
@@ -28,29 +27,7 @@ impl System for DiscoverySystem {
         "DeviceDiscovery"
     }
 
-    fn run(&mut self, context: &mut SystemContext) -> Result<()> {
-        let tuner_entities = match &context.tuner_entities {
-            Some(entities) => entities,
-            None => {
-                debug!("No tuner entities in context");
-                return Ok(());
-            }
-        };
-
-        let entities = match tuner_entities.try_lock() {
-            Ok(entities) => entities,
-            Err(_) => return Ok(()),
-        };
-        let connected_count = entities.iter().filter(|e| e.is_connected()).count();
-        let available_count = entities.iter().filter(|e| e.is_available()).count();
-
-        debug!(
-            total = entities.len(),
-            connected = connected_count,
-            available = available_count,
-            "Device discovery system ran"
-        );
-
+    fn run(&mut self, _context: &mut SystemContext) -> Result<()> {
         Ok(())
     }
 }

@@ -6,7 +6,7 @@ use crate::ui::TuiEvent;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
-use tracing::debug;
+use tracing::{debug, info};
 
 pub struct DiscoverySetup {
     pub discovery_handle: thread::JoinHandle<()>,
@@ -33,10 +33,10 @@ pub fn start_discovery_service(
         let shutdown = shutdown_coordinator.clone();
 
         thread::spawn(move || {
-            debug!("Discovery forwarder thread started");
+            info!("Discovery forwarder thread started");
             loop {
                 if shutdown.is_shutdown() {
-                    debug!("Discovery forwarder shutting down");
+                    info!("Discovery forwarder shutting down");
                     break;
                 }
 

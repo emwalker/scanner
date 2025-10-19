@@ -6,15 +6,6 @@ pub use crate::core::config::{ScanningConfig, WindowType};
 pub use crate::core::errors::{Result, ScannerError, TEST_FREQUENCY_HZ};
 pub use crate::core::signals::{Candidate, ModulationType, Peak, Signal};
 
-pub trait ConsoleWriter {
-    fn write_info(&self, message: &str);
-    fn write_debug(&self, message: &str);
-}
-
-pub trait Logger {
-    fn init(&self) -> crate::core::errors::Result<()>;
-}
-
 #[derive(ValueEnum, Copy, Clone, Debug)]
 pub enum Format {
     /// JSON structured logging format

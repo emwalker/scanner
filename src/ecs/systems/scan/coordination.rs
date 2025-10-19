@@ -41,39 +41,14 @@ impl System for CoordinationSystem {
 
         let mut entities = scan_entities.write().unwrap();
 
-        let total_scans = entities.len();
-        let mut active_scans = 0;
-        let mut paused_scans = 0;
-        let mut completed_scans = 0;
-        let mut listening_scans = 0;
-
         for scan in entities.iter_mut() {
             scan.should_pause = false;
             scan.should_complete = false;
 
-            if scan.is_scanning() {
-                active_scans += 1;
-            }
-            if scan.is_paused() {
-                paused_scans += 1;
-            }
             if scan.is_completed() {
-                completed_scans += 1;
                 scan.should_complete = true;
             }
-            if scan.is_listening() {
-                listening_scans += 1;
-            }
         }
-
-        debug!(
-            total = total_scans,
-            active = active_scans,
-            paused = paused_scans,
-            completed = completed_scans,
-            listening = listening_scans,
-            "Scan coordination system ran"
-        );
 
         Ok(())
     }

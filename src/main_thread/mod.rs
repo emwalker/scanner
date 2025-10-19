@@ -1,6 +1,6 @@
 pub(crate) mod audio_coordinator;
 
-use crate::core::types::{ConsoleWriter, Logger, Result, ScanningConfig};
+use crate::core::types::{Result, ScanningConfig};
 use crate::ecs::{AudioEntity, CandidateEntity, Entities, EntityWorld, ScanEntity, StationEntity};
 use crate::hardware::pool::{Pool, PoolFilter, TuningMode};
 use crate::shutdown::ShutdownCoordinator;
@@ -14,8 +14,6 @@ use tracing::{debug, info};
 
 pub struct MainThread {
     config: Arc<ScanningConfig>,
-    console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
-    _logger: Arc<dyn Logger + Send + Sync>,
     _backend: Arc<dyn crate::hardware::Backend>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
     tui_event_sender: Option<Sender<TuiEvent>>,
@@ -36,8 +34,6 @@ pub struct MainThread {
 impl MainThread {
     pub fn new(
         config: Arc<ScanningConfig>,
-        console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
-        logger: Arc<dyn Logger + Send + Sync>,
         backend: Arc<dyn crate::hardware::Backend>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
     ) -> Result<Self> {
@@ -57,8 +53,6 @@ impl MainThread {
 
         let main_thread = MainThread {
             config,
-            console_writer,
-            _logger: logger,
             _backend: backend,
             shutdown_coordinator,
             tui_event_sender: None,
@@ -79,8 +73,6 @@ impl MainThread {
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_entities(
         config: Arc<ScanningConfig>,
-        console_writer: Arc<dyn ConsoleWriter + Send + Sync>,
-        logger: Arc<dyn Logger + Send + Sync>,
         backend: Arc<dyn crate::hardware::Backend>,
         shutdown_coordinator: Arc<ShutdownCoordinator>,
         pool: Arc<Pool>,
@@ -93,8 +85,6 @@ impl MainThread {
     ) -> Result<Self> {
         let main_thread = MainThread {
             config,
-            console_writer,
-            _logger: logger,
             _backend: backend,
             shutdown_coordinator,
             tui_event_sender: None,
@@ -171,7 +161,7 @@ impl MainThread {
             }
             coordinator.add_system(Box::new(ui_update_system));
 
-            debug!(
+            info!(
                 system_count = coordinator.system_count(),
                 "Coordinator thread starting"
             );
@@ -184,7 +174,7 @@ impl MainThread {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
 
-            debug!("Coordinator thread shutting down");
+            info!("Coordinator thread shutting down");
         });
 
         self.coordinator_handle = Some(handle);
@@ -198,7 +188,7 @@ impl MainThread {
             "Pool status at startup"
         );
 
-        self.console_writer.write_info("Scanning for stations ...");
+        info!("Scanning for stations ...");
 
         while !self.shutdown_coordinator.is_shutdown() {
             if let Ok(entities) = self.scan_entities.read()
@@ -210,21 +200,8 @@ impl MainThread {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
-        self.console_writer.write_info("Scan complete.");
+        info!("Scan complete.");
         Ok(())
-    }
-}
-
-// Default implementations for production use
-pub struct DefaultConsoleWriter;
-
-impl ConsoleWriter for DefaultConsoleWriter {
-    fn write_info(&self, message: &str) {
-        info!("{}", message);
-    }
-
-    fn write_debug(&self, message: &str) {
-        debug!("{}", message);
     }
 }
 
@@ -232,7 +209,7 @@ impl Drop for MainThread {
     fn drop(&mut self) {
         use std::sync::atomic::Ordering;
 
-        debug!("MainThread shutting down");
+        info!("MainThread shutting down");
 
         self.coordinator_shutdown.store(true, Ordering::SeqCst);
 

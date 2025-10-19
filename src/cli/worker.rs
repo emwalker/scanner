@@ -35,11 +35,9 @@ pub fn handle_enumerate_command(
             .append(true)
             .open(log_path)?;
 
-        let file_writer = crate::logging::FileWriter::new(file);
-
         let _ = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::DEBUG)
-            .with_writer(file_writer)
+            .with_writer(move || file.try_clone().unwrap())
             .with_ansi(false)
             .try_init();
     }
@@ -115,11 +113,9 @@ pub fn handle_device_command(
             .append(true)
             .open(log_path)?;
 
-        let file_writer = crate::logging::FileWriter::new(file);
-
         let _ = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::DEBUG)
-            .with_writer(file_writer)
+            .with_writer(move || file.try_clone().unwrap())
             .with_ansi(false)
             .try_init();
     }

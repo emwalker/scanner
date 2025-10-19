@@ -1,6 +1,7 @@
 mod args;
 mod config;
 mod discovery;
+mod log_mode;
 mod model;
 mod scan;
 mod signals;
