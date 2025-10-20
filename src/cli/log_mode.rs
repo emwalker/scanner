@@ -23,6 +23,12 @@ pub struct LogRunContext {
 pub fn run_with_logs(context: LogRunContext) -> Result<()> {
     let backend = Arc::new(crate::hardware::Soapy);
 
+    let window_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
+
+    let pause_request_queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
+        crate::ecs::PauseRequest,
+    >::new()));
+
     let main_thread = MainThread::new_with_entities(
         Arc::new(context.config),
         backend,
@@ -31,9 +37,11 @@ pub fn run_with_logs(context: LogRunContext) -> Result<()> {
         context.scheduler,
         Vec::new(),
         context.scan_entities,
+        window_entities,
         context.station_entities,
         context.audio_entities,
         context.candidate_entities,
+        pause_request_queue,
     )?
     .start();
 

@@ -5,7 +5,7 @@ use crate::ecs::Entity;
 use crate::ecs::components::scan::ScanId;
 use crate::ecs::components::station::{
     StationDiscoveryComponent, StationHistoryComponent, StationId, StationInfoComponent,
-    TuneRequestComponent,
+    StationPlaybackComponent, TuneRequestComponent, TuneTransitionComponent,
 };
 use crate::scanning::window::WindowMetadata;
 use std::time::{Duration, Instant};
@@ -17,7 +17,9 @@ pub struct StationEntity {
     pub info: StationInfoComponent,
     pub discovery: StationDiscoveryComponent,
     pub history: StationHistoryComponent,
+    pub playback: StationPlaybackComponent,
     pub tune_request: Option<TuneRequestComponent>,
+    pub transition: Option<TuneTransitionComponent>,
 }
 
 impl StationEntity {
@@ -36,7 +38,9 @@ impl StationEntity {
                 window_metadata,
             ),
             history: StationHistoryComponent::new(),
+            playback: StationPlaybackComponent::new(),
             tune_request: None,
+            transition: None,
         }
     }
 

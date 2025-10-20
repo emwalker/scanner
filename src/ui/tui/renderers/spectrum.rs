@@ -1,6 +1,8 @@
 //! Spectrum visualization rendering
 
-use crate::ui::tui::{layout::SpectrumLayout, model::Model, themes::Theme};
+use crate::ui::tui::{
+    colors::ACTIVE_STATE_GREEN, layout::SpectrumLayout, model::Model, themes::Theme,
+};
 use ratatui::{
     Frame,
     style::{Modifier, Style},
@@ -131,7 +133,7 @@ pub fn render_spectrum(
         {
             // Station marker with theme colors
             let color = if *is_active {
-                theme.status_playing()
+                ACTIVE_STATE_GREEN
             } else {
                 theme.status_signal()
             };

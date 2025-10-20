@@ -13,6 +13,7 @@
 
 pub mod components;
 pub mod entities;
+pub mod queue;
 pub mod systems;
 
 mod coordinator;
@@ -23,8 +24,9 @@ mod world;
 
 pub use coordinator::Coordinator;
 pub use entity::Entity;
+pub use queue::{PauseRequest, PauseRequestQueue};
 pub use schedule::Scheduler;
-pub use system::{System, SystemContext};
+pub use system::{Resource, System, SystemContext};
 pub use world::EntityWorld;
 
 // Type alias for shared entity worlds
@@ -36,9 +38,14 @@ pub use components::{
     AllocationComponent, AllocationState, AudioAllocationComponent, AudioId,
     AudioPlaybackComponent, AudioTuningComponent, CandidateId, CandidateInfoComponent,
     CandidateLifecycleComponent, CandidateProgressComponent, CandidateState, ConstraintComponent,
-    DeviceComponent, Priority, PriorityComponent, ScanConfigComponent, ScanId,
+    DeviceComponent, HardwareConnectionComponent, HardwareConnectionState, HardwareInfoComponent,
+    HardwareLifecycleComponent, Priority, PriorityComponent, ScanConfigComponent, ScanId,
     ScanLifecycleComponent, ScanPauseState, ScanProgressComponent, ScanResultsComponent, ScanType,
-    StationDiscoveryComponent, StationHistoryComponent, StationId, StationInfoComponent,
-    StatusComponent,
+    SegmentComponent, StationDiscoveryComponent, StationHistoryComponent, StationId,
+    StationInfoComponent, StationPlaybackComponent, StationPlaybackState, StatusComponent,
+    WindowAllocationComponent, WindowId, WindowProgressComponent, WindowProgressState,
 };
-pub use entities::{AudioEntity, CandidateEntity, ScanEntity, StationEntity, TunerEntity};
+pub use entities::{
+    AudioEntity, CandidateEntity, HardwareEntity, ScanEntity, StationEntity, TunerEntity,
+    WindowEntity,
+};

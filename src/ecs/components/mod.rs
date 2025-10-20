@@ -11,8 +11,10 @@ mod status;
 
 pub mod audio;
 pub mod candidate;
+pub mod hardware;
 pub mod scan;
 pub mod station;
+pub mod window;
 
 pub use allocation::{AllocationComponent, AllocationState};
 pub use audio::{
@@ -25,6 +27,10 @@ pub use candidate::{
 };
 pub use constraint::ConstraintComponent;
 pub use device::DeviceComponent;
+pub use hardware::{
+    HardwareConnectionComponent, HardwareConnectionState, HardwareInfoComponent,
+    HardwareLifecycleComponent,
+};
 pub use priority::{Priority, PriorityComponent};
 pub use scan::{
     PauseRequestComponent, ResumeRequestComponent, ScanConfigComponent, ScanId,
@@ -32,5 +38,10 @@ pub use scan::{
 };
 pub use station::{
     StationDiscoveryComponent, StationHistoryComponent, StationId, StationInfoComponent,
+    StationPlaybackComponent, StationPlaybackState,
 };
 pub use status::{StatusComponent, TunerActivity};
+pub use window::{
+    SegmentComponent, WindowAllocationComponent, WindowId, WindowProgressComponent,
+    WindowProgressState,
+};

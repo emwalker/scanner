@@ -1,4 +1,5 @@
-use crate::core::types::{Result, ScannerError, ScanningConfig};
+use crate::core::types::{Result, ScannerError, ScanningConfig, Signal};
+use crate::ecs::{AudioEntity, Entity};
 use crate::hardware::pool::SegmentTrait;
 use crate::pause_signal::PauseSignal;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -351,6 +352,98 @@ pub fn create_audio_fm_graph(
         audio_packet_size,
     )));
     Ok(graph)
+}
+
+/// Spawn audio entity with all resources allocated
+///
+/// This function is used by both:
+/// - AudioPlaybackSystem (coordinator-based modes: TUI, LogMode)
+/// - Window::process (scanning mode)
+///
+/// Creates an AudioEntity with:
+/// - cpal stream (returned separately, can't be in entity - not Send)
+/// - Audio graph thread (worker, does FM demod)
+/// - All handles stored in allocation component
+///
+/// Returns (AudioEntity, cpal::Stream) - caller must hold stream to keep audio alive
+pub fn spawn_audio_entity(
+    signal: Signal,
+    sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
+    config: &ScanningConfig,
+    center_freq: f64,
+) -> Result<(AudioEntity, cpal::Stream)> {
+    let audio_packet_size = 4096;
+    let audio_buffer_packets = 16;
+    let (audio_tx, audio_rx) =
+        std::sync::mpsc::sync_channel::<crate::mpsc::AudioPacket>(audio_buffer_packets);
+
+    let (audio_device, supported_config) = setup_audio_device(config.audio.sample_rate)?;
+    let sample_format = supported_config.sample_format();
+    let mut stream_config: StreamConfig = supported_config.into();
+    stream_config.buffer_size = BufferSize::Fixed(config.audio.buffer_size);
+
+    let stream = match sample_format {
+        SampleFormat::F32 => create_audio_stream(&audio_device, &stream_config, audio_rx)?,
+        _ => {
+            return Err(ScannerError::UnsupportedAudioFormat(
+                "WAV format required".to_string(),
+            ));
+        }
+    };
+
+    stream.play()?;
+    debug!(
+        frequency_mhz = signal.frequency_hz / 1e6,
+        "Audio stream started"
+    );
+
+    let mut audio_graph = create_audio_fm_graph(
+        &signal,
+        sdr_rx,
+        audio_tx,
+        config,
+        center_freq,
+        audio_packet_size,
+    )?;
+
+    let cancel_token = audio_graph.cancel_token();
+    let frequency_for_log = signal.frequency_hz;
+    let graph_handle = std::thread::spawn(move || {
+        let _ = thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
+        debug!(
+            frequency_mhz = frequency_for_log / 1e6,
+            thread_id = ?std::thread::current().id(),
+            "Audio graph thread STARTED with low priority, running graph..."
+        );
+        if let Err(e) = audio_graph.run() {
+            debug!(
+                frequency_mhz = frequency_for_log / 1e6,
+                error = %e,
+                "Audio graph error"
+            );
+        } else {
+            debug!(
+                frequency_mhz = frequency_for_log / 1e6,
+                "Audio graph completed successfully"
+            );
+        }
+        debug!(
+            frequency_mhz = frequency_for_log / 1e6,
+            thread_id = ?std::thread::current().id(),
+            "Audio graph thread EXITING"
+        );
+    });
+
+    let mut entity = AudioEntity::new(signal.clone(), center_freq, None);
+    entity.allocation.set_graph(cancel_token, graph_handle);
+
+    debug!(
+        frequency_mhz = signal.frequency_hz / 1e6,
+        audio_id = ?entity.id(),
+        "AudioEntity spawned with graph resources (stream returned separately)"
+    );
+
+    Ok((entity, stream))
 }
 
 pub(super) fn play_signals(

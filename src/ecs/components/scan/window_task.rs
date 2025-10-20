@@ -8,6 +8,7 @@ pub struct WindowTaskComponent {
     pub task_handle: JoinHandle<Result<WindowTaskResult>>,
     pub cancellation_token: CancellationToken,
     pub started_at: Instant,
+    pub cancelling: bool,
 }
 
 impl std::fmt::Debug for WindowTaskComponent {
@@ -17,6 +18,7 @@ impl std::fmt::Debug for WindowTaskComponent {
             .field("task_handle", &"<JoinHandle>")
             .field("cancellation_token", &self.cancellation_token)
             .field("started_at", &self.started_at)
+            .field("cancelling", &self.cancelling)
             .finish()
     }
 }

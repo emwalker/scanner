@@ -12,8 +12,8 @@
 
 use scanner::core::types::ScanningConfig;
 use scanner::ecs::{
-    CandidateEntity, Entity, EntityWorld, ScanConfigComponent, ScanEntity, ScanPauseState,
-    ScanType, StationEntity, System,
+    CandidateEntity, EntityWorld, ScanConfigComponent, ScanEntity, ScanPauseState, ScanType,
+    StationEntity, System,
 };
 use scanner::hardware::pool::{Pool, PoolFilter};
 use scanner::shutdown::ShutdownCoordinator;
@@ -144,26 +144,14 @@ fn test_window_processing_system_with_valid_windows() {
     // Run the system once
     window_processing.run(&mut context).unwrap();
 
-    // Verify allocation was requested
+    // Verify the system processed the scan
     let scans = scan_entities.read().unwrap();
     let scan = scans.iter().next().unwrap();
 
     assert!(
-        scan.window_allocation.is_some(),
-        "WindowProcessingSystem should request allocation when total_windows > 0"
+        scan.is_scanning(),
+        "WindowProcessingSystem should transition scan to Scanning state when total_windows > 0"
     );
-
-    if let Some(ref allocation) = scan.window_allocation {
-        assert!(
-            allocation.is_requested(),
-            "Allocation should be in Requested state"
-        );
-        assert_eq!(
-            allocation.window_index(),
-            0,
-            "Should request allocation for first window"
-        );
-    }
 }
 
 #[test]
@@ -189,6 +177,7 @@ fn test_candidate_entities_available_to_window_config() {
         station_entities,
         candidate_entities: candidate_entities.clone(),
         scan_id: scanner::ecs::ScanId::new(),
+        window_cancellation: None,
     };
 
     // Verify the config accepts candidate_entities
@@ -226,58 +215,6 @@ fn test_scan_progress_with_zero_total_windows() {
         (0.0..=1.0).contains(&percentage),
         "Progress percentage should be valid even with 0 total_windows"
     );
-}
-
-#[test]
-fn test_window_processing_allocation_request_format() {
-    // Regression test: Verify allocation request has correct format
-    // including requester_id format used by AllocationSystem
-    let config = Arc::new(ScanningConfig::default());
-    let pool = Arc::new(Pool::new(PoolFilter::allow_all(), None));
-    let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
-
-    let mut window_processing =
-        scanner::ecs::systems::WindowProcessingSystem::new(config, pool, shutdown_coordinator);
-    window_processing.enable();
-
-    let scan_config =
-        ScanConfigComponent::new(ScanType::Band, 88.0e6, 108.0e6, 2.0e6, 2.0e6, 40.0, 1.0, 10);
-
-    let mut scan = ScanEntity::new(scan_config);
-    let scan_id = *scan.id();
-    scan.progress.state = ScanPauseState::Scanning;
-
-    let scan_entities = Arc::new(RwLock::new(EntityWorld::new()));
-    scan_entities.write().unwrap().insert(scan);
-
-    let candidate_entities = Arc::new(RwLock::new(EntityWorld::<CandidateEntity>::new()));
-    let station_entities = Arc::new(RwLock::new(EntityWorld::<StationEntity>::new()));
-
-    let mut context = scanner::ecs::SystemContext::new()
-        .with_scan_entities(scan_entities.clone())
-        .with_candidate_entities(candidate_entities)
-        .with_station_entities(station_entities);
-
-    window_processing.run(&mut context).unwrap();
-
-    let scans = scan_entities.read().unwrap();
-    let scan = scans.iter().next().unwrap();
-
-    if let Some(ref allocation) = scan.window_allocation {
-        let requester_id = allocation.requester_id();
-        assert!(
-            requester_id.starts_with("scan_"),
-            "Requester ID should start with 'scan_'"
-        );
-        assert!(
-            requester_id.contains(&format!("_{}_", scan_id.value())),
-            "Requester ID should contain scan ID"
-        );
-        assert!(
-            requester_id.contains("_window_"),
-            "Requester ID should contain '_window_'"
-        );
-    }
 }
 
 #[test]

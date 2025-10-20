@@ -1,4 +1,4 @@
-use crate::ui::tui::{model::Model, themes::Theme};
+use crate::ui::tui::{colors::ACTIVE_STATE_GREEN, model::Model, themes::Theme};
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -70,7 +70,7 @@ fn quality_color(
     theme: &dyn Theme,
 ) -> Color {
     if is_active {
-        return theme.status_playing();
+        return ACTIVE_STATE_GREEN;
     }
     match quality {
         Some(crate::audio::quality::AudioQuality::Good) => theme.quality_good(),

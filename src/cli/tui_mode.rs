@@ -20,6 +20,7 @@ pub fn setup_tui_channels() -> (TuiContext, mpsc::Receiver<TuiEvent>) {
     (TuiContext { tui_event_sender }, tui_event_receiver)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn start_tui(
     tui_event_receiver: mpsc::Receiver<TuiEvent>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
@@ -30,6 +31,7 @@ pub fn start_tui(
     candidate_entities: Arc<
         std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::CandidateEntity>>,
     >,
+    pause_request_queue: crate::ecs::Resource<crate::ecs::PauseRequestQueue>,
 ) -> thread::JoinHandle<std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>> {
     let theme = create_theme(&theme_name);
 
@@ -45,7 +47,8 @@ pub fn start_tui(
             station_entities,
             audio_entities,
             candidate_entities,
-        );
+        )
+        .with_pause_request_queue(pause_request_queue);
         tui_display.run()
     })
 }
@@ -62,6 +65,7 @@ pub struct TuiRunContext {
     pub audio_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::AudioEntity>>>,
     pub candidate_entities:
         Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::CandidateEntity>>>,
+    pub pause_request_queue: crate::ecs::Resource<crate::ecs::PauseRequestQueue>,
 }
 
 pub fn run_with_tui(
@@ -73,6 +77,8 @@ pub fn run_with_tui(
 ) -> Result<()> {
     let backend = Arc::new(crate::hardware::Soapy);
 
+    let window_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
+
     let main_thread = MainThread::new_with_entities(
         Arc::new(context.config),
         backend,
@@ -81,11 +87,14 @@ pub fn run_with_tui(
         context.scheduler,
         Vec::new(),
         context.scan_entities,
+        window_entities,
         context.station_entities,
         context.audio_entities,
         context.candidate_entities,
+        context.pause_request_queue,
     )?
-    .with_tui_event_sender(tui_context.tui_event_sender);
+    .with_tui_event_sender(tui_context.tui_event_sender)
+    .start();
 
     let main_handle = thread::spawn(move || main_thread.run(context.stations));
 

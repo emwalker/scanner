@@ -225,6 +225,7 @@ impl BroadcastSource {
 
         let mut packets_received = 0;
         let max_packets_per_work = 64;
+        let mut empty_count = 0;
         while written < out_slice.len() && packets_received < max_packets_per_work {
             match self.receiver.try_recv() {
                 Ok(packet) => {
@@ -239,7 +240,18 @@ impl BroadcastSource {
                         break;
                     }
                 }
-                Err(broadcast::error::TryRecvError::Empty) => break,
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    empty_count += 1;
+                    if empty_count > 10 {
+                        debug!(
+                            empty_count,
+                            written,
+                            requested = out_slice.len(),
+                            "BroadcastSource: Many consecutive empty receives - possible busy wait"
+                        );
+                    }
+                    break;
+                }
                 Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
                     Self::log_lag_event(skipped);
                     continue;
@@ -316,7 +328,7 @@ impl Block for BroadcastSource {
             self.log_buffer_drain_status(count);
             Ok(BlockRet::Again)
         } else {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(std::time::Duration::from_millis(10));
             Ok(BlockRet::Again)
         }
     }

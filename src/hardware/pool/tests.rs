@@ -183,7 +183,9 @@ fn test_status_never_blocks_when_pool_locked() {
     let pool_clone = Arc::clone(&pool);
     let handle = thread::spawn(move || {
         let status = pool_clone.status();
-        assert_eq!(status.device_count, 0);
+        // After migrating to hardware_entities, status() can still get device count
+        // even when pool_ref is locked, since hardware_entities is a separate lock
+        assert_eq!(status.device_count, 1);
     });
 
     let result = handle.join();
@@ -299,14 +301,14 @@ fn test_remove_device_rejected_during_shutdown() {
 }
 
 #[test]
-fn test_add_device_never_blocks_when_pool_locked() {
+fn test_add_device_never_blocks_when_entities_locked() {
     use std::time::Duration;
 
     let pool = Pool::new_unfiltered();
-    let pool_arc = pool.pool_ref.clone();
+    let entities_arc = pool.hardware_entities.clone();
 
     // Hold the lock in this thread
-    let _lock = pool_arc.lock().unwrap();
+    let _lock = entities_arc.lock().unwrap();
 
     // Try to add device from another thread
     let handle = thread::spawn(move || {
@@ -317,7 +319,10 @@ fn test_add_device_never_blocks_when_pool_locked() {
         let result = pool_in_thread.add_device(device, crate::hardware::types::Backend::Mock);
         let elapsed = start.elapsed();
 
-        assert!(result.is_err(), "Should return error when pool is locked");
+        assert!(
+            result.is_err(),
+            "Should return error when hardware entities are locked"
+        );
         assert!(
             elapsed < Duration::from_millis(100),
             "Should return immediately, took {:?}",
@@ -330,7 +335,7 @@ fn test_add_device_never_blocks_when_pool_locked() {
 }
 
 #[test]
-fn test_remove_device_never_blocks_when_pool_locked() {
+fn test_remove_device_never_blocks_when_entities_locked() {
     use std::time::Duration;
 
     let pool = Pool::new_unfiltered();
@@ -340,8 +345,8 @@ fn test_remove_device_never_blocks_when_pool_locked() {
     pool.add_device(device, crate::hardware::types::Backend::Mock)
         .unwrap();
 
-    let pool_arc = pool.pool_ref.clone();
-    let _lock = pool_arc.lock().unwrap();
+    let entities_arc = pool.hardware_entities.clone();
+    let _lock = entities_arc.lock().unwrap();
 
     let handle = thread::spawn(move || {
         let pool_in_thread = pool;
@@ -349,7 +354,10 @@ fn test_remove_device_never_blocks_when_pool_locked() {
         let result = pool_in_thread.remove_device(&device_id);
         let elapsed = start.elapsed();
 
-        assert!(result.is_err(), "Should return error when pool is locked");
+        assert!(
+            result.is_err(),
+            "Should return error when hardware entities are locked"
+        );
         assert!(
             elapsed < Duration::from_millis(100),
             "Should return immediately, took {:?}",

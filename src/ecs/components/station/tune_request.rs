@@ -3,8 +3,8 @@
 /// Component marking a station as requested for tuning/playback
 ///
 /// When user selects a station (e.g., presses Enter in TUI), this component
-/// is added to the StationEntity. AudioCoordinationSystem queries for entities
-/// with this component, creates AudioEntity, and clears the request.
+/// is added to the StationEntity. The AudioPlaybackSystem processes tune requests
+/// deterministically by checking if the scan's window tasks have released their tuners.
 #[derive(Debug, Clone)]
 pub struct TuneRequestComponent {
     /// Additional context for tuning (e.g., window metadata)

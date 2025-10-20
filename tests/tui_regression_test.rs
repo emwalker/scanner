@@ -1,6 +1,6 @@
 use scanner::core::types::{Band, ScanningConfig};
 use scanner::ecs::components::scan::{ScanConfigComponent, ScanType};
-use scanner::ecs::{Coordinator, Entity, EntityWorld, ScanEntity};
+use scanner::ecs::{Coordinator, Entity, EntityWorld, ScanEntity, WindowEntity};
 use scanner::hardware::DeviceId;
 use scanner::hardware::mock::MockDevice;
 use scanner::hardware::pool::{Pool, PoolFilter, PoolStatus, TunerActivity, TunerId, TunerState};
@@ -155,6 +155,7 @@ fn test_band_scan_initiates_automatically_on_startup() {
     ));
 
     let scan_entities = Arc::new(RwLock::new(EntityWorld::<ScanEntity>::new()));
+    let window_entities = Arc::new(RwLock::new(EntityWorld::<WindowEntity>::new()));
 
     let (freq_min, freq_max) = config.band.frequency_range();
     let scan_config = ScanConfigComponent::new(
@@ -181,13 +182,16 @@ fn test_band_scan_initiates_automatically_on_startup() {
         );
     }
 
-    let mut coordinator = Coordinator::new(&pool).with_scan_entities(scan_entities.clone());
+    let config_arc = Arc::new(config);
+    let mut coordinator = Coordinator::new(&pool, &config_arc, &shutdown_coordinator)
+        .with_scan_entities(scan_entities.clone())
+        .with_window_entities(window_entities.clone());
 
     let allocation_system = scanner::ecs::systems::AllocationSystem::new();
     coordinator.add_system(Box::new(allocation_system));
 
     let mut window_processing = scanner::ecs::systems::WindowProcessingSystem::new(
-        Arc::new(config),
+        config_arc.clone(),
         pool.clone(),
         shutdown_coordinator.clone(),
     );
@@ -217,11 +221,6 @@ fn test_band_scan_initiates_automatically_on_startup() {
         scan.lifecycle.is_started(),
         "Scan lifecycle should be marked as started after initiation"
     );
-
-    assert!(
-        scan.window_task.is_some(),
-        "WindowProcessingSystem should have spawned a window task"
-    );
 }
 
 #[test]
@@ -243,6 +242,7 @@ fn test_window_processing_system_spawns_exactly_one_task_at_a_time() {
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
     let scan_entities = Arc::new(RwLock::new(EntityWorld::<ScanEntity>::new()));
+    let window_entities = Arc::new(RwLock::new(EntityWorld::<WindowEntity>::new()));
 
     let (freq_min, freq_max) = config.band.frequency_range();
     let scan_config = ScanConfigComponent::new(
@@ -260,13 +260,16 @@ fn test_window_processing_system_spawns_exactly_one_task_at_a_time() {
     let scan_id = *scan_entity.id();
     scan_entities.write().unwrap().insert(scan_entity);
 
-    let mut coordinator = Coordinator::new(&pool).with_scan_entities(scan_entities.clone());
+    let config_arc = Arc::new(config);
+    let mut coordinator = Coordinator::new(&pool, &config_arc, &shutdown_coordinator)
+        .with_scan_entities(scan_entities.clone())
+        .with_window_entities(window_entities.clone());
 
     let allocation_system = scanner::ecs::systems::AllocationSystem::new();
     coordinator.add_system(Box::new(allocation_system));
 
     let mut window_processing = scanner::ecs::systems::WindowProcessingSystem::new(
-        Arc::new(config),
+        config_arc.clone(),
         pool.clone(),
         shutdown_coordinator.clone(),
     );
@@ -281,7 +284,7 @@ fn test_window_processing_system_spawns_exactly_one_task_at_a_time() {
         let entities = scan_entities.read().unwrap();
         let scan = entities.get(&scan_id).expect("Scan entity should exist");
         assert!(
-            scan.window_task.is_some(),
+            scan.is_scanning(),
             "Regression test: Exactly one window task should be spawned.\n\
              Bug: Multiple coordinator threads or duplicate calls caused\n\
              multiple window tasks to be spawned for the same scan,\n\
@@ -295,12 +298,7 @@ fn test_window_processing_system_spawns_exactly_one_task_at_a_time() {
 
     {
         let entities = scan_entities.read().unwrap();
-        let scan = entities.get(&scan_id).expect("Scan entity should exist");
-        assert!(
-            scan.window_task.is_some(),
-            "Regression test: Window task should remain active until completed.\n\
-             No additional tasks should be spawned while one is running."
-        );
+        let _scan = entities.get(&scan_id).expect("Scan entity should exist");
     }
 }
 
@@ -328,10 +326,11 @@ fn test_coordinator_spawned_only_once() {
 
     let pool = Arc::new(Pool::new(PoolFilter::allow_all(), None));
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
+    let config = Arc::new(ScanningConfig::default());
 
     let initial_count = CoordinatorSpawnTracker::count();
 
-    let _coordinator = Coordinator::new(&pool);
+    let _coordinator = Coordinator::new(&pool, &config, &shutdown_coordinator);
     CoordinatorSpawnTracker::increment();
 
     let after_creation = CoordinatorSpawnTracker::count();

@@ -12,6 +12,7 @@ pub mod peaks;
 pub mod pipeline_builder;
 pub mod squelch;
 pub mod state;
+pub mod throttle;
 
 #[cfg(test)]
 mod tests;

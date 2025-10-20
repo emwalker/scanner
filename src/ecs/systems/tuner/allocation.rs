@@ -61,17 +61,16 @@ impl System for AllocationSystem {
 
     #[allow(clippy::cognitive_complexity)]
     fn run(&mut self, context: &mut SystemContext) -> Result<()> {
-        // First, collect allocation requests from ScanEntity window_allocation components
-        if let Some(ref scan_entities) = context.scan_entities
-            && let Ok(scans) = scan_entities.read()
+        // First, collect allocation requests from WindowEntity allocation components
+        if let Some(ref window_entities) = context.window_entities
+            && let Ok(windows) = window_entities.read()
         {
-            for scan in scans.iter() {
-                if let Some(crate::ecs::WindowAllocationRequest::Requested {
+            for window in windows.iter() {
+                if let crate::ecs::components::window::WindowAllocationComponent::Requested {
                     requirements,
                     activity,
                     requester_id,
-                    ..
-                }) = &scan.window_allocation
+                } = &window.allocation
                 {
                     // Check if we already have this request
                     if !self
@@ -82,7 +81,7 @@ impl System for AllocationSystem {
                         debug!(
                             requester_id = %requester_id,
                             frequency_hz = requirements.frequency_hz,
-                            "AllocationSystem: Adding window allocation request from ScanEntity"
+                            "AllocationSystem: Adding window allocation request from WindowEntity"
                         );
                         self.pending_requests.push(AllocationRequest {
                             requester_id: requester_id.clone(),
@@ -204,16 +203,15 @@ impl System for AllocationSystem {
         self.pending_requests
             .retain(|req| !successfully_allocated.contains(&req.requester_id));
 
-        // Update ScanEntity window_allocation from Requested to Allocated
-        if let Some(ref scan_entities) = context.scan_entities
-            && let Ok(mut scans) = scan_entities.write()
+        // Update WindowEntity allocation from Requested to Allocated
+        if let Some(ref window_entities) = context.window_entities
+            && let Ok(mut windows) = window_entities.write()
         {
-            for scan in scans.iter_mut() {
-                if let Some(crate::ecs::WindowAllocationRequest::Requested {
-                    window_index,
+            for window in windows.iter_mut() {
+                if let crate::ecs::components::window::WindowAllocationComponent::Requested {
                     requester_id,
                     ..
-                }) = &scan.window_allocation
+                } = &window.allocation
                 {
                     // Check if this request was successfully allocated
                     if successfully_allocated.contains(requester_id) {
@@ -226,14 +224,9 @@ impl System for AllocationSystem {
                             debug!(
                                 requester_id = %requester_id,
                                 tuner_id = ?tuner_entity.id(),
-                                "AllocationSystem: Updating ScanEntity window_allocation to Allocated"
+                                "AllocationSystem: Updating WindowEntity allocation to Allocated"
                             );
-                            scan.window_allocation =
-                                Some(crate::ecs::WindowAllocationRequest::Allocated {
-                                    window_index: *window_index,
-                                    tuner_id: tuner_entity.id().clone(),
-                                    requester_id: requester_id.clone(),
-                                });
+                            window.allocation.allocate(tuner_entity.id().clone());
                         }
                     }
                 }

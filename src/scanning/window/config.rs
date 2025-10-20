@@ -4,6 +4,7 @@ use crate::hardware::pool::TunerProvider;
 use crate::pause_signal::PauseSignal;
 use crate::shutdown::ShutdownCoordinator;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WindowMetadata {
@@ -18,6 +19,7 @@ pub struct WindowConfig {
     pub tuner_provider: Arc<dyn TunerProvider>,
     pub config: Arc<ScanningConfig>,
     pub shutdown_coordinator: Arc<ShutdownCoordinator>,
+    pub window_cancellation: Option<CancellationToken>,
     pub pause_signal: Option<PauseSignal>,
     pub station_entities: Option<Entities<StationEntity>>,
     pub candidate_entities: Option<Entities<CandidateEntity>>,

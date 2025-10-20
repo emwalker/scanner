@@ -20,6 +20,7 @@ pub struct CandidateData {
     pub completion: f64,
     pub audio_quality: Option<AudioQuality>,
     pub signal_strength: Option<f64>,
+    pub transition_status: Option<String>,
 }
 
 /// System that updates TUI model with entity state
@@ -152,7 +153,7 @@ impl System for UIUpdateSystem {
                     frequency_hz: entity.frequency(),
                     signal_strength: entity.info.signal_strength,
                     audio_quality: entity.info.audio_quality,
-                    is_active: false,
+                    is_active: entity.playback.is_playing(),
                 });
             }
         }
@@ -160,8 +161,30 @@ impl System for UIUpdateSystem {
         if let Some(ref candidate_entities) = context.candidate_entities {
             let entities = candidate_entities.read().unwrap();
 
+            // Build frequency-to-transition-status lookup from stations
+            let transition_statuses: std::collections::HashMap<u64, String> =
+                if let Some(ref station_entities) = context.station_entities {
+                    let stations = station_entities.read().unwrap();
+                    stations
+                        .iter()
+                        .filter_map(|s| {
+                            s.transition.as_ref().map(|t| {
+                                (
+                                    (s.frequency() * 1000.0) as u64,
+                                    t.status_message().to_string(),
+                                )
+                            })
+                        })
+                        .collect()
+                } else {
+                    std::collections::HashMap::new()
+                };
+
             for entity in entities.iter() {
                 let window_id = entity.progress.metadata.window_id;
+                let freq_key = (entity.info.frequency_hz * 1000.0) as u64;
+                let transition_status = transition_statuses.get(&freq_key).cloned();
+
                 let candidate_data = CandidateData {
                     candidate_id: entity.id().as_str().to_string(),
                     frequency_hz: entity.info.frequency_hz,
@@ -169,6 +192,7 @@ impl System for UIUpdateSystem {
                     completion: entity.completion(),
                     audio_quality: entity.info.audio_quality,
                     signal_strength: entity.info.signal_strength,
+                    transition_status,
                 };
 
                 self.candidates_by_window

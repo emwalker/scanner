@@ -67,6 +67,7 @@ impl TunerId {
 }
 
 /// Device entry (physical SDR hardware)
+#[derive(Clone)]
 pub struct DeviceEntry {
     /// Shared reference to the device
     /// Multiple tuners from the same device share this

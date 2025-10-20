@@ -1,10 +1,8 @@
 //! Core pool state structures
 
-use crate::hardware;
-use crate::hardware::pool::SubprocessHandle;
+use crate::ecs::Entity;
 use crate::hardware::pool::filter::PoolFilter;
-use crate::hardware::pool::types::{DeviceEntry, PoolStatus};
-use std::collections::HashMap;
+use crate::hardware::pool::types::PoolStatus;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info};
@@ -34,9 +32,11 @@ pub enum PoolState {
 }
 
 /// Internal state (needed for Arc<Mutex<>> pattern)
+///
+/// NOTE: This used to hold devices HashMap, but that has been migrated to hardware_entities.
+/// We keep this struct for now in case we need to add back shared state in the future.
 pub struct PoolInner {
-    /// Devices (physical hardware)
-    pub devices: HashMap<hardware::DeviceId, DeviceEntry>,
+    // Currently empty - devices migrated to hardware_entities
 }
 
 /// Dynamic inventory of available tuners
@@ -56,22 +56,20 @@ pub struct Pool {
     /// Callbacks invoked when tuner state changes (acquire/release)
     pub(crate) on_state_change: StateChangeCallback,
 
-    /// Device worker subprocesses (one per device, lazily spawned)
-    pub(crate) subprocesses: Mutex<HashMap<hardware::DeviceId, Arc<SubprocessHandle>>>,
-
     /// Parent process log file path (used to derive worker log paths)
     pub(crate) parent_log_file: Option<String>,
 
     /// ECS tuner entities (authoritative source of tuner state)
     pub(crate) tuner_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>>,
+
+    /// ECS hardware entities (authoritative source of device-level state)
+    pub(crate) hardware_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::HardwareEntity>>>,
 }
 
 impl Pool {
     /// Create new pool with filter and optional parent log file
     pub fn new(filter: PoolFilter, parent_log_file: Option<String>) -> Self {
-        let inner = PoolInner {
-            devices: HashMap::new(),
-        };
+        let inner = PoolInner {};
 
         Self {
             state: Mutex::new(PoolState::Active(Active)),
@@ -79,9 +77,9 @@ impl Pool {
             filter: Arc::new(filter),
             shutdown_mode: Arc::new(AtomicBool::new(false)),
             on_state_change: Arc::new(Mutex::new(Vec::new())),
-            subprocesses: Mutex::new(HashMap::new()),
             parent_log_file,
             tuner_entities: Arc::new(Mutex::new(crate::ecs::EntityWorld::new())),
+            hardware_entities: Arc::new(Mutex::new(crate::ecs::EntityWorld::new())),
         }
     }
 
@@ -109,23 +107,29 @@ impl Pool {
         self.shutdown_mode.store(true, Ordering::SeqCst);
         info!("Pool entered shutdown mode");
 
-        if let Ok(mut subprocesses) = self.subprocesses.lock() {
-            let count = subprocesses.len();
-            if count > 0 {
+        // Shutdown subprocesses from hardware_entities
+        if let Ok(mut hardware_entities) = self.hardware_entities.try_lock() {
+            let subprocess_count = hardware_entities
+                .iter()
+                .filter(|e| e.connection.subprocess.is_some())
+                .count();
+
+            if subprocess_count > 0 {
                 debug!(
-                    subprocess_count = count,
-                    "Shutting down device subprocesses"
+                    subprocess_count = subprocess_count,
+                    "Shutting down device subprocesses from hardware entities"
                 );
             }
 
-            for (device_id, handle) in subprocesses.iter_mut() {
-                debug!(device_id = ?device_id, "Shutting down subprocess");
-                if let Some(handle) = Arc::get_mut(handle) {
-                    let _ = handle.shutdown();
+            for entity in hardware_entities.iter_mut() {
+                let device_id = entity.id().clone();
+                if let Some(subprocess) = &mut entity.connection.subprocess {
+                    debug!(device_id = ?device_id, "Shutting down subprocess");
+                    if let Some(handle) = Arc::get_mut(subprocess) {
+                        let _ = handle.shutdown();
+                    }
                 }
             }
-
-            subprocesses.clear();
         }
     }
 

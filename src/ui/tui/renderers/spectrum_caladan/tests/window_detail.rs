@@ -1,6 +1,7 @@
 use super::MockTheme;
 use crate::audio::quality::AudioQuality;
 use crate::ui::tui::{
+    colors::ACTIVE_STATE_GREEN,
     model::{Model, types::SpectrumStation},
     renderers::spectrum_caladan::window_detail::render_window_detail_row,
 };
@@ -120,5 +121,123 @@ fn test_rejected_stations_shown() {
     assert!(
         content.contains("90.5"),
         "Should contain rejected station 90.5"
+    );
+}
+
+#[test]
+fn test_active_station_uses_active_state_green() {
+    let theme = MockTheme;
+    let width = 100;
+    let window_start = Some(89.5e6);
+    let window_width = 2.4e6;
+
+    let mut model = Model::new();
+
+    model.spectrum_stations = vec![SpectrumStation {
+        frequency_hz: 89.9e6,
+        signal_strength: 0.5,
+        audio_quality: Some(AudioQuality::Good),
+        is_active: true,
+    }];
+
+    let line = render_window_detail_row(width, window_start, window_width, &model, &theme);
+
+    let active_spans: Vec<_> = line
+        .spans
+        .iter()
+        .filter(|span| span.content.trim() != "")
+        .filter(|span| span.style.fg == Some(ACTIVE_STATE_GREEN))
+        .collect();
+
+    assert!(
+        !active_spans.is_empty(),
+        "Active station should use ACTIVE_STATE_GREEN color (RGB 150, 255, 150)"
+    );
+}
+
+#[test]
+fn test_inactive_station_does_not_use_active_state_green() {
+    let theme = MockTheme;
+    let width = 100;
+    let window_start = Some(89.5e6);
+    let window_width = 2.4e6;
+
+    let mut model = Model::new();
+
+    model.spectrum_stations = vec![SpectrumStation {
+        frequency_hz: 89.9e6,
+        signal_strength: 0.5,
+        audio_quality: Some(AudioQuality::Good),
+        is_active: false,
+    }];
+
+    let line = render_window_detail_row(width, window_start, window_width, &model, &theme);
+
+    let green_spans: Vec<_> = line
+        .spans
+        .iter()
+        .filter(|span| span.content.trim() != "")
+        .filter(|span| span.style.fg == Some(ACTIVE_STATE_GREEN))
+        .collect();
+
+    assert!(
+        green_spans.is_empty(),
+        "Inactive station should not use ACTIVE_STATE_GREEN color"
+    );
+}
+
+#[test]
+fn test_active_and_inactive_stations_different_colors() {
+    let theme = MockTheme;
+    let width = 100;
+    let window_start = Some(89.5e6);
+    let window_width = 2.4e6;
+
+    let mut model = Model::new();
+
+    model.spectrum_stations = vec![
+        SpectrumStation {
+            frequency_hz: 89.9e6,
+            signal_strength: 0.5,
+            audio_quality: Some(AudioQuality::Good),
+            is_active: true,
+        },
+        SpectrumStation {
+            frequency_hz: 90.5e6,
+            signal_strength: 0.5,
+            audio_quality: Some(AudioQuality::Good),
+            is_active: false,
+        },
+    ];
+
+    let line = render_window_detail_row(width, window_start, window_width, &model, &theme);
+
+    let all_colors: Vec<_> = line
+        .spans
+        .iter()
+        .filter(|span| span.content.trim() != "")
+        .filter_map(|span| span.style.fg)
+        .collect();
+
+    assert!(
+        all_colors.contains(&ACTIVE_STATE_GREEN),
+        "Should contain ACTIVE_STATE_GREEN for active station"
+    );
+
+    let unique_colors: std::collections::HashSet<_> = all_colors.iter().collect();
+    assert!(
+        unique_colors.len() > 1,
+        "Active and inactive stations should use different colors"
+    );
+}
+
+#[test]
+fn test_active_state_green_constant_value() {
+    use ratatui::style::Color;
+
+    assert_eq!(
+        ACTIVE_STATE_GREEN,
+        Color::Rgb(150, 255, 150),
+        "ACTIVE_STATE_GREEN must be RGB(150, 255, 150) to match tuner Scanning/Listening color"
     );
 }

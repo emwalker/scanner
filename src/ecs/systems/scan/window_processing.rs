@@ -1,11 +1,10 @@
 //! Window processing system - manages window task lifecycle
 
 use crate::core::types::{Result, ScanningConfig};
-use crate::ecs::components::scan::{
-    WindowAllocationRequest, WindowTaskComponent, WindowTaskResult,
-};
+use crate::ecs::components::scan::{WindowTaskComponent, WindowTaskResult};
+use crate::ecs::components::window::WindowId;
 use crate::ecs::system::{System, SystemContext};
-use crate::ecs::{CandidateEntity, Entities, Entity, ScanPauseState, StationEntity};
+use crate::ecs::{Entity, ScanPauseState, WindowEntity};
 use crate::hardware::pool::{Pool, TaskRequirements, TunerActivity};
 use crate::shutdown::ShutdownCoordinator;
 use std::sync::Arc;
@@ -17,8 +16,6 @@ pub struct WindowProcessingSystem {
     config: Arc<ScanningConfig>,
     pool: Arc<Pool>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
-    candidate_entities: Option<Entities<CandidateEntity>>,
-    station_entities: Option<Entities<StationEntity>>,
     enabled: bool,
 }
 
@@ -32,8 +29,6 @@ impl WindowProcessingSystem {
             config,
             pool,
             shutdown_coordinator,
-            candidate_entities: None,
-            station_entities: None,
             enabled: false,
         }
     }
@@ -51,7 +46,12 @@ impl WindowProcessingSystem {
             .find(|&window_index| !scan.progress.is_window_completed(window_index))
     }
 
-    fn request_window_allocation(&self, window_index: usize, scan: &mut crate::ecs::ScanEntity) {
+    fn request_window_allocation(
+        &self,
+        window_index: usize,
+        scan: &crate::ecs::ScanEntity,
+        window_entities: &std::sync::Arc<std::sync::RwLock<crate::ecs::EntityWorld<WindowEntity>>>,
+    ) {
         let center_freq = scan.config.freq_min + (window_index as f64 * scan.config.window_size);
 
         let requirements = TaskRequirements {
@@ -63,12 +63,13 @@ impl WindowProcessingSystem {
 
         let requester_id = format!("scan_{}_window_{}", scan.id().value(), window_index);
 
-        scan.window_allocation = Some(WindowAllocationRequest::Requested {
-            window_index,
-            requirements,
-            activity: TunerActivity::Scanning,
-            requester_id,
-        });
+        let window_id = WindowId::new(*scan.id(), window_index);
+        let mut windows = window_entities.write().unwrap();
+        if let Some(window) = windows.get_mut(&window_id) {
+            window
+                .allocation
+                .request(requirements, TunerActivity::Scanning, requester_id);
+        }
 
         debug!(
             scan_id = ?scan.id(),
@@ -83,6 +84,7 @@ impl WindowProcessingSystem {
         window_index: usize,
         tuner_id: crate::hardware::pool::TunerId,
         scan: &crate::ecs::ScanEntity,
+        context: &SystemContext,
     ) -> Result<WindowTaskComponent> {
         let cancellation_token = CancellationToken::new();
         let cancel_clone = cancellation_token.clone();
@@ -92,8 +94,8 @@ impl WindowProcessingSystem {
         let pool = self.pool.clone();
         let shutdown_coordinator = self.shutdown_coordinator.clone();
         let total_windows = scan.progress.total_windows;
-        let candidate_entities = self.candidate_entities.clone();
-        let station_entities = self.station_entities.clone();
+        let candidate_entities = context.candidate_entities.clone();
+        let station_entities = context.station_entities.clone();
         let scan_id = *scan.id();
 
         debug!(
@@ -155,6 +157,7 @@ impl WindowProcessingSystem {
                 tuner_provider: pool.clone(),
                 config: config.clone(),
                 shutdown_coordinator: shutdown_coordinator.clone(),
+                window_cancellation: Some(cancel_clone.clone()),
                 pause_signal: None,
                 station_entities,
                 candidate_entities,
@@ -198,6 +201,7 @@ impl WindowProcessingSystem {
             task_handle,
             cancellation_token,
             started_at: Instant::now(),
+            cancelling: false,
         })
     }
 
@@ -233,20 +237,82 @@ impl WindowProcessingSystem {
         scan: &mut crate::ecs::ScanEntity,
         context: &mut SystemContext,
     ) -> Result<()> {
-        if let Some(task) = scan.window_task.take() {
+        let window_entities = match &context.window_entities {
+            Some(we) => we.clone(),
+            None => return Ok(()),
+        };
+
+        for window_index in 0..scan.progress.total_windows {
+            let window_id = WindowId::new(*scan.id(), window_index);
+            let mut windows = window_entities.write().unwrap();
+            if windows.get(&window_id).is_none() {
+                windows.insert(WindowEntity::new(window_id));
+            }
+        }
+
+        let task_to_handle = {
+            let mut windows = window_entities.write().unwrap();
+            windows
+                .iter_mut()
+                .find(|w| w.id().scan_id == *scan.id() && w.task.is_some())
+                .and_then(|w| w.task.take())
+        };
+
+        if let Some(task) = task_to_handle {
             self.handle_window_task(task, scan, context)?;
-        } else if let Some(WindowAllocationRequest::Allocated {
-            window_index,
-            tuner_id,
-            ..
-        }) = scan.window_allocation.take()
-        {
-            self.handle_allocated_tuner(window_index, tuner_id, scan)?;
-        } else if scan.window_allocation.is_none() {
-            self.handle_no_allocation(scan);
+            return Ok(());
+        }
+
+        let allocation_to_handle = {
+            let mut windows = window_entities.write().unwrap();
+            windows
+                .iter_mut()
+                .find(|w| w.id().scan_id == *scan.id() && w.allocation.is_allocated())
+                .map(|w| {
+                    let tuner_id = w.allocation.tuner_id().unwrap().clone();
+                    let window_index = w.window_index();
+                    w.allocation.clear();
+                    (window_index, tuner_id)
+                })
+        };
+
+        if let Some((window_index, tuner_id)) = allocation_to_handle {
+            self.handle_allocated_tuner(window_index, tuner_id, scan, context)?;
+            return Ok(());
+        }
+
+        let needs_allocation = {
+            let windows = window_entities.read().unwrap();
+            windows
+                .iter()
+                .any(|w| w.id().scan_id == *scan.id() && w.allocation.is_none() && w.is_pending())
+        };
+
+        if needs_allocation {
+            self.handle_no_allocation(scan, &window_entities);
         }
 
         Ok(())
+    }
+
+    fn deallocate_window_tuner(&self, window_id: &WindowId, context: &SystemContext) {
+        if let Some(window_entities) = &context.window_entities {
+            let windows = window_entities.read().unwrap();
+            if let Some(window) = windows.get(window_id)
+                && let Some(tuner_id) = window.allocation.tuner_id()
+                && let Some(tuner_entities) = &context.tuner_entities
+                && let Ok(mut tuners) = tuner_entities.try_lock()
+                && let Some(tuner) = tuners.get_mut(tuner_id)
+            {
+                debug!(
+                    tuner_id = ?tuner_id,
+                    window_id = ?window_id,
+                    "Deallocating tuner for completed window"
+                );
+                tuner.allocation.deallocate();
+                tuner.status.idle();
+            }
+        }
     }
 
     fn handle_window_task(
@@ -255,25 +321,45 @@ impl WindowProcessingSystem {
         scan: &mut crate::ecs::ScanEntity,
         context: &mut SystemContext,
     ) -> Result<()> {
+        let window_id = WindowId::new(*scan.id(), task.window_index);
+
         if task.task_handle.is_finished() {
             debug!(
                 scan_id = ?scan.id(),
                 window_index = task.window_index,
+                cancelling = task.cancelling,
                 "WindowProcessingSystem: Task finished, extracting results"
             );
 
             match task.task_handle.join() {
                 Ok(Ok(result)) => {
-                    self.process_window_results(&result, scan, context)?;
+                    if !task.cancelling {
+                        self.process_window_results(&result, scan, context)?;
 
-                    if scan.progress.completed_windows.len() >= scan.progress.total_windows {
-                        info!(
+                        if let Some(window_entities) = &context.window_entities {
+                            let mut windows = window_entities.write().unwrap();
+                            if let Some(window) = windows.get_mut(&window_id) {
+                                window.progress.mark_completed();
+                            }
+                        }
+
+                        if scan.progress.completed_windows.len() >= scan.progress.total_windows {
+                            info!(
+                                scan_id = ?scan.id(),
+                                "WindowProcessingSystem: All windows complete"
+                            );
+                            scan.progress.state = ScanPauseState::Completed;
+                            scan.lifecycle.complete();
+                        }
+                    } else {
+                        debug!(
                             scan_id = ?scan.id(),
-                            "WindowProcessingSystem: All windows complete"
+                            window_index = task.window_index,
+                            "WindowProcessingSystem: Task was cancelled, skipping result processing"
                         );
-                        scan.progress.state = ScanPauseState::Completed;
-                        scan.lifecycle.complete();
                     }
+
+                    self.deallocate_window_tuner(&window_id, context);
                 }
                 Ok(Err(e)) => {
                     debug!(
@@ -282,6 +368,15 @@ impl WindowProcessingSystem {
                         error = ?e,
                         "WindowProcessingSystem: Task failed, continuing"
                     );
+
+                    if let Some(window_entities) = &context.window_entities {
+                        let mut windows = window_entities.write().unwrap();
+                        if let Some(window) = windows.get_mut(&window_id) {
+                            window.progress.mark_failed();
+                        }
+                    }
+
+                    self.deallocate_window_tuner(&window_id, context);
                 }
                 Err(e) => {
                     debug!(
@@ -290,10 +385,22 @@ impl WindowProcessingSystem {
                         error = ?e,
                         "WindowProcessingSystem: Task panicked, continuing"
                     );
+
+                    if let Some(window_entities) = &context.window_entities {
+                        let mut windows = window_entities.write().unwrap();
+                        if let Some(window) = windows.get_mut(&window_id) {
+                            window.progress.mark_failed();
+                        }
+                    }
+
+                    self.deallocate_window_tuner(&window_id, context);
                 }
             }
-        } else {
-            scan.window_task = Some(task);
+        } else if let Some(window_entities) = &context.window_entities {
+            let mut windows = window_entities.write().unwrap();
+            if let Some(window) = windows.get_mut(&window_id) {
+                window.task = Some(task);
+            }
         }
 
         Ok(())
@@ -304,6 +411,7 @@ impl WindowProcessingSystem {
         window_index: usize,
         tuner_id: crate::hardware::pool::TunerId,
         scan: &mut crate::ecs::ScanEntity,
+        context: &SystemContext,
     ) -> Result<()> {
         debug!(
             scan_id = ?scan.id(),
@@ -311,12 +419,24 @@ impl WindowProcessingSystem {
             tuner_id = ?tuner_id,
             "WindowProcessingSystem: Allocation complete, spawning window task"
         );
-        let task = self.spawn_window_task_with_tuner(window_index, tuner_id, scan)?;
-        scan.window_task = Some(task);
+        let task = self.spawn_window_task_with_tuner(window_index, tuner_id, scan, context)?;
+
+        let window_id = WindowId::new(*scan.id(), window_index);
+        if let Some(window_entities) = &context.window_entities {
+            let mut windows = window_entities.write().unwrap();
+            if let Some(window) = windows.get_mut(&window_id) {
+                window.task = Some(task);
+                window.progress.start_processing();
+            }
+        }
         Ok(())
     }
 
-    fn handle_no_allocation(&self, scan: &mut crate::ecs::ScanEntity) {
+    fn handle_no_allocation(
+        &self,
+        scan: &crate::ecs::ScanEntity,
+        window_entities: &std::sync::Arc<std::sync::RwLock<crate::ecs::EntityWorld<WindowEntity>>>,
+    ) {
         debug!(
             scan_id = ?scan.id(),
             total_windows = scan.progress.total_windows,
@@ -329,7 +449,7 @@ impl WindowProcessingSystem {
                 window_index = next_window,
                 "WindowProcessingSystem: Requesting tuner allocation for next window"
             );
-            self.request_window_allocation(next_window, scan);
+            self.request_window_allocation(next_window, scan, window_entities);
         } else {
             debug!(
                 scan_id = ?scan.id(),
@@ -340,16 +460,52 @@ impl WindowProcessingSystem {
 
     fn handle_paused_or_listening_state(
         &self,
-        scan: &mut crate::ecs::ScanEntity,
+        scan: &crate::ecs::ScanEntity,
         state_name: &str,
+        window_entities: &std::sync::Arc<std::sync::RwLock<crate::ecs::EntityWorld<WindowEntity>>>,
     ) {
-        if let Some(task) = scan.window_task.take() {
-            debug!(
-                scan_id = ?scan.id(),
-                window_index = task.window_index,
-                "WindowProcessingSystem: Cancelling task ({})", state_name
-            );
-            task.cancellation_token.cancel();
+        let mut windows = window_entities.write().unwrap();
+        for window in windows.iter_mut() {
+            if window.id().scan_id != *scan.id() {
+                continue;
+            }
+
+            if let Some(mut task) = window.task.take() {
+                if !task.cancelling {
+                    debug!(
+                        scan_id = ?scan.id(),
+                        window_index = task.window_index,
+                        "WindowProcessingSystem: Cancelling task ({})", state_name
+                    );
+                    task.cancellation_token.cancel();
+                    task.cancelling = true;
+                }
+
+                if task.task_handle.is_finished() {
+                    debug!(
+                        scan_id = ?scan.id(),
+                        window_index = task.window_index,
+                        "WindowProcessingSystem: Task finished, cleaning up"
+                    );
+                    let _ = task.task_handle.join();
+                } else {
+                    debug!(
+                        scan_id = ?scan.id(),
+                        window_index = task.window_index,
+                        "WindowProcessingSystem: Task still running, will check again"
+                    );
+                    window.task = Some(task);
+                }
+            }
+
+            if !window.allocation.is_none() {
+                debug!(
+                    scan_id = ?scan.id(),
+                    window_index = window.window_index(),
+                    "WindowProcessingSystem: Clearing window allocation ({})", state_name
+                );
+                window.allocation.clear();
+            }
         }
     }
 }
@@ -364,16 +520,13 @@ impl System for WindowProcessingSystem {
             return Ok(());
         }
 
-        if self.candidate_entities.is_none() && context.candidate_entities.is_some() {
-            self.candidate_entities = context.candidate_entities.clone();
-        }
-
-        if self.station_entities.is_none() && context.station_entities.is_some() {
-            self.station_entities = context.station_entities.clone();
-        }
-
         let scan_entities = match &context.scan_entities {
             Some(entities) => entities.clone(),
+            None => return Ok(()),
+        };
+
+        let window_entities = match &context.window_entities {
+            Some(we) => we.clone(),
             None => return Ok(()),
         };
 
@@ -384,10 +537,10 @@ impl System for WindowProcessingSystem {
                 ScanPauseState::Pending => self.handle_pending_state(scan),
                 ScanPauseState::Scanning => self.handle_scanning_state(scan, context)?,
                 ScanPauseState::PausedAtWindow { .. } => {
-                    self.handle_paused_or_listening_state(scan, "paused")
+                    self.handle_paused_or_listening_state(scan, "paused", &window_entities)
                 }
                 ScanPauseState::Listening { .. } => {
-                    self.handle_paused_or_listening_state(scan, "listening")
+                    self.handle_paused_or_listening_state(scan, "listening", &window_entities)
                 }
                 ScanPauseState::Completed => {}
             }

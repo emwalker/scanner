@@ -4,7 +4,6 @@ use crate::ecs::Entity;
 use crate::ecs::components::scan::{
     PauseRequestComponent, ResumeRequestComponent, ScanConfigComponent, ScanId,
     ScanLifecycleComponent, ScanProgressComponent, ScanResultsComponent, ScanType,
-    WindowAllocationRequest, WindowTaskComponent,
 };
 
 /// Entity representing an active scan operation
@@ -40,12 +39,6 @@ pub struct ScanEntity {
 
     /// Request to resume scanning (ECS Phase 1)
     pub resume_request: Option<ResumeRequestComponent>,
-
-    /// Window allocation request state
-    pub window_allocation: Option<WindowAllocationRequest>,
-
-    /// Active window processing task
-    pub window_task: Option<WindowTaskComponent>,
 }
 
 impl ScanEntity {
@@ -63,8 +56,6 @@ impl ScanEntity {
             should_complete: false,
             pause_request: None,
             resume_request: None,
-            window_allocation: None,
-            window_task: None,
         }
     }
 
@@ -155,8 +146,6 @@ impl Clone for ScanEntity {
             should_complete: self.should_complete,
             pause_request: self.pause_request.clone(),
             resume_request: self.resume_request.clone(),
-            window_allocation: self.window_allocation.clone(),
-            window_task: None,
         }
     }
 }

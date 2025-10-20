@@ -73,6 +73,7 @@ impl Block for SubprocessSource {
             Err(e) => {
                 let err_str = e.to_string();
                 if err_str.contains("would block") || err_str.contains("timed out") {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                     Ok(BlockRet::Again)
                 } else {
                     Err(rustradio::Error::msg(format!("Data receiver error: {}", e)))

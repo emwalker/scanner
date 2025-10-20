@@ -228,6 +228,9 @@ fn test_tui_event_sender_wired_to_ui_update_system() {
         None,
     ));
 
+    let config = Arc::new(crate::core::types::ScanningConfig::default());
+    let shutdown = Arc::new(crate::shutdown::ShutdownCoordinator::new());
+
     let scan_entities = Arc::new(RwLock::new(crate::ecs::EntityWorld::new()));
     let station_entities = Arc::new(RwLock::new(crate::ecs::EntityWorld::new()));
     let audio_entities = Arc::new(RwLock::new(crate::ecs::EntityWorld::new()));
@@ -249,7 +252,7 @@ fn test_tui_event_sender_wired_to_ui_update_system() {
         ));
     }
 
-    let mut coordinator = Coordinator::new(&pool)
+    let mut coordinator = Coordinator::new(&pool, &config, &shutdown)
         .with_scan_entities(scan_entities)
         .with_station_entities(station_entities)
         .with_audio_entities(audio_entities)

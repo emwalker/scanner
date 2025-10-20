@@ -1,7 +1,9 @@
 pub(crate) mod audio_coordinator;
 
 use crate::core::types::{Result, ScanningConfig};
-use crate::ecs::{AudioEntity, CandidateEntity, Entities, EntityWorld, ScanEntity, StationEntity};
+use crate::ecs::{
+    AudioEntity, CandidateEntity, Entities, EntityWorld, ScanEntity, StationEntity, WindowEntity,
+};
 use crate::hardware::pool::{Pool, PoolFilter, TuningMode};
 use crate::shutdown::ShutdownCoordinator;
 use crate::task::TaskScheduler;
@@ -23,12 +25,14 @@ pub struct MainThread {
     discovered_devices: Vec<crate::hardware::DeviceInfo>,
 
     scan_entities: Entities<ScanEntity>,
+    window_entities: Entities<WindowEntity>,
     station_entities: Entities<StationEntity>,
     audio_entities: Entities<AudioEntity>,
     candidate_entities: Entities<CandidateEntity>,
 
     coordinator_handle: Option<JoinHandle<()>>,
     coordinator_shutdown: Arc<AtomicBool>,
+    pause_request_queue: Option<crate::ecs::Resource<crate::ecs::PauseRequestQueue>>,
 }
 
 impl MainThread {
@@ -47,9 +51,14 @@ impl MainThread {
         ));
 
         let scan_entities = Arc::new(RwLock::new(EntityWorld::new()));
+        let window_entities = Arc::new(RwLock::new(EntityWorld::new()));
         let station_entities = Arc::new(RwLock::new(EntityWorld::new()));
         let audio_entities = Arc::new(RwLock::new(EntityWorld::new()));
         let candidate_entities = Arc::new(RwLock::new(EntityWorld::new()));
+
+        let pause_request_queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
+            crate::ecs::PauseRequest,
+        >::new()));
 
         let main_thread = MainThread {
             config,
@@ -60,11 +69,13 @@ impl MainThread {
             scheduler,
             discovered_devices: Vec::new(),
             scan_entities,
+            window_entities,
             station_entities,
             audio_entities,
             candidate_entities,
             coordinator_handle: None,
             coordinator_shutdown: Arc::new(AtomicBool::new(false)),
+            pause_request_queue: Some(pause_request_queue),
         };
 
         Ok(main_thread)
@@ -79,9 +90,11 @@ impl MainThread {
         scheduler: Arc<TaskScheduler>,
         discovered_devices: Vec<crate::hardware::DeviceInfo>,
         scan_entities: Entities<ScanEntity>,
+        window_entities: Entities<WindowEntity>,
         station_entities: Entities<StationEntity>,
         audio_entities: Entities<AudioEntity>,
         candidate_entities: Entities<CandidateEntity>,
+        pause_request_queue: crate::ecs::Resource<crate::ecs::PauseRequestQueue>,
     ) -> Result<Self> {
         let main_thread = MainThread {
             config,
@@ -92,11 +105,13 @@ impl MainThread {
             scheduler,
             discovered_devices,
             scan_entities,
+            window_entities,
             station_entities,
             audio_entities,
             candidate_entities,
             coordinator_handle: None,
             coordinator_shutdown: Arc::new(AtomicBool::new(false)),
+            pause_request_queue: Some(pause_request_queue),
         };
 
         Ok(main_thread)
@@ -123,6 +138,7 @@ impl MainThread {
         let pool = Arc::clone(&self.pool);
         let _scheduler = Arc::clone(&self.scheduler);
         let scan_entities = Arc::clone(&self.scan_entities);
+        let window_entities = Arc::clone(&self.window_entities);
         let station_entities = Arc::clone(&self.station_entities);
         let audio_entities = Arc::clone(&self.audio_entities);
         let candidate_entities = Arc::clone(&self.candidate_entities);
@@ -130,15 +146,28 @@ impl MainThread {
         let shutdown_coordinator = Arc::clone(&self.shutdown_coordinator);
         let tui_event_sender = self.tui_event_sender.clone();
 
+        let pause_request_queue = self
+            .pause_request_queue
+            .clone()
+            .expect("Pause request queue should be set");
+
         let handle = std::thread::spawn(move || {
-            let mut coordinator = Coordinator::new(&pool)
+            let mut coordinator = Coordinator::new(&pool, &config, &shutdown_coordinator)
                 .with_scan_entities(scan_entities)
+                .with_window_entities(window_entities)
                 .with_station_entities(station_entities)
                 .with_audio_entities(audio_entities)
-                .with_candidate_entities(candidate_entities);
+                .with_candidate_entities(candidate_entities)
+                .with_pause_request_queue(pause_request_queue);
 
             coordinator.add_system(Box::new(crate::ecs::systems::DiscoverySystem::new()));
             coordinator.add_system(Box::new(crate::ecs::systems::AllocationSystem::new()));
+
+            coordinator.add_system(Box::new(crate::ecs::systems::ScanCoordinationSystem::new()));
+            coordinator.add_system(Box::new(
+                crate::ecs::systems::ScanRequestProcessorSystem::new(),
+            ));
+            coordinator.add_system(Box::new(crate::ecs::systems::TuneTransitionSystem::new()));
 
             let mut window_processing_system = crate::ecs::systems::WindowProcessingSystem::new(
                 config.clone(),
@@ -148,10 +177,7 @@ impl MainThread {
             window_processing_system.enable();
             coordinator.add_system(Box::new(window_processing_system));
 
-            coordinator.add_system(Box::new(crate::ecs::systems::ScanCoordinationSystem::new()));
-            coordinator.add_system(Box::new(
-                crate::ecs::systems::ScanRequestProcessorSystem::new(),
-            ));
+            coordinator.add_system(Box::new(crate::ecs::systems::AudioPlaybackSystem::new()));
             coordinator.add_system(Box::new(crate::ecs::systems::AudioCoordinationSystem::new()));
             coordinator.add_system(Box::new(crate::ecs::systems::ManagementSystem::new()));
 

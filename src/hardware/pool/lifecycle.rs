@@ -6,13 +6,11 @@ use crate::hardware;
 use crate::hardware::pool::state::{Pool, PoolInner};
 use crate::hardware::pool::tuner::Tuner;
 use crate::hardware::pool::types::{
-    AddDeviceResult, DeviceEntry, PoolStatus, TaskRequirements, TunerActivity, TunerAllocation,
-    TunerId, TunerState, TunerStatus,
+    AddDeviceResult, PoolStatus, TaskRequirements, TunerActivity, TunerAllocation, TunerId,
+    TunerState, TunerStatus,
 };
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
 use tracing::{debug, info};
 
 impl Pool {
@@ -33,23 +31,36 @@ impl Pool {
             "Adding device to pool"
         );
 
-        let device_entry = DeviceEntry {
-            device: device.map(|d| Arc::new(Mutex::new(d))),
-            capabilities: capabilities.clone(),
-            backend: backend.clone(),
-            num_tuners,
-            added_at: Instant::now(),
-        };
-
-        let mut inner = match self.pool_ref.try_lock() {
+        // Create HardwareEntity
+        let mut hardware_entities = match self.hardware_entities.try_lock() {
             Ok(guard) => guard,
             Err(_) => {
-                debug!(device_id = ?device_id, "Add device failed - pool is locked");
+                debug!(device_id = ?device_id, "Add device failed - hardware entities locked");
                 return None;
             }
         };
 
-        inner.devices.insert(device_id.clone(), device_entry);
+        let label = device_id.as_str();
+        let hardware_entity = if device.is_some() {
+            crate::ecs::HardwareEntity::new(
+                device_id.clone(),
+                label,
+                capabilities.clone(),
+                backend.clone(),
+                device,
+            )
+        } else {
+            crate::ecs::HardwareEntity::new_metadata_only(
+                device_id.clone(),
+                label,
+                capabilities.clone(),
+                backend.clone(),
+            )
+        };
+
+        hardware_entities.insert(hardware_entity);
+        debug!(device_id = ?device_id, "Created HardwareEntity");
+
         Some(device_id)
     }
 
@@ -250,20 +261,28 @@ impl Pool {
             return Ok(());
         }
 
-        // Use try_lock to avoid blocking
-        let mut inner = match self.pool_ref.try_lock() {
-            Ok(guard) => guard,
+        // Get device info from hardware_entities
+        let hardware_entities = match self.hardware_entities.try_lock() {
+            Ok(entities) => entities,
             Err(_) => {
-                debug!(device_id = ?device_id, "Remove device failed - pool is locked");
-                return Err(ScannerError::PoolLockTimeout);
+                debug!(device_id = ?device_id, "Failed to remove device - hardware entities locked");
+                return Err(ScannerError::Custom("Hardware entities locked".to_string()));
             }
         };
 
+        let hardware_entity = hardware_entities
+            .get(device_id)
+            .ok_or_else(|| ScannerError::DeviceNotFound(device_id.clone()))?;
+
+        let num_tuners = hardware_entity.num_tuners();
+        drop(hardware_entities);
+
+        // Check tuner allocation status
         let mut entities = match self.tuner_entities.try_lock() {
             Ok(entities) => entities,
             Err(_) => {
-                debug!(device_id = ?device_id, "Failed to remove device - entities locked");
-                return Err(ScannerError::Custom("Entities locked".to_string()));
+                debug!(device_id = ?device_id, "Failed to remove device - tuner entities locked");
+                return Err(ScannerError::Custom("Tuner entities locked".to_string()));
             }
         };
 
@@ -276,23 +295,25 @@ impl Pool {
             return Err(ScannerError::DeviceInUse(device_id.clone()));
         }
 
-        let device_entry = inner
-            .devices
-            .get(device_id)
-            .ok_or_else(|| ScannerError::DeviceNotFound(device_id.clone()))?;
-
-        let num_tuners = device_entry.num_tuners;
-
+        // Remove all tuner entities for this device
         for channel_index in 0..num_tuners {
             let tuner_id = TunerId::new(device_id.clone(), channel_index);
             entities.remove(&tuner_id);
             info!(tuner_id = ?tuner_id, "Removed TunerEntity");
         }
+        drop(entities);
 
-        inner.devices.remove(device_id);
+        // Remove HardwareEntity
+        let mut hardware_entities = match self.hardware_entities.try_lock() {
+            Ok(entities) => entities,
+            Err(_) => {
+                debug!(device_id = ?device_id, "Failed to remove hardware entity - locked");
+                return Err(ScannerError::Custom("Hardware entities locked".to_string()));
+            }
+        };
 
-        debug!(device_id = ?device_id, "Device and all tuners removed");
-        drop(inner);
+        hardware_entities.remove(device_id);
+        debug!(device_id = ?device_id, "Device and all tuners removed, HardwareEntity removed");
 
         self.notify_state_change();
         Ok(())
@@ -314,32 +335,17 @@ impl Pool {
     /// Create a Tuner handle from a pre-allocated tuner_id
     ///
     /// This method is used when allocation has already been performed by AllocationSystem.
-    /// It verifies the tuner is allocated and creates a Tuner handle for it.
+    /// The Pool acts as a Resource here - it trusts that the allocation is valid and
+    /// simply creates the hardware handle.
     ///
     /// Returns None if:
-    /// - The tuner_id doesn't exist
-    /// - The tuner is not currently allocated
     /// - Pool is shutting down
+    /// - Cannot spawn subprocess for the device
     pub fn create_tuner_from_allocated(&self, tuner_id: TunerId) -> Option<Tuner> {
         if self.shutdown_mode.load(Ordering::SeqCst) {
             debug!("create_tuner_from_allocated rejected - pool in shutdown mode");
             return None;
         }
-
-        let inner = self.pool_ref.try_lock().ok()?;
-        let entities = self.tuner_entities.try_lock().ok()?;
-
-        let entity = entities.get(&tuner_id)?;
-        if !entity.allocation.is_allocated() {
-            debug!(
-                tuner_id = ?tuner_id,
-                "create_tuner_from_allocated rejected - tuner not allocated"
-            );
-            return None;
-        }
-
-        drop(entities);
-        drop(inner);
 
         let subprocess_handle = self.get_or_spawn_subprocess(&tuner_id.device_id).ok()?;
 
@@ -504,8 +510,8 @@ impl Pool {
         backend: crate::hardware::pool::tuner::TunerBackend,
     ) -> crate::hardware::pool::tuner::Tuner {
         let on_state_change = Arc::clone(&self.on_state_change);
-        let pool_ref = Arc::clone(&self.pool_ref);
         let tuner_entities = Arc::clone(&self.tuner_entities);
+        let hardware_entities = Arc::clone(&self.hardware_entities);
         let shutdown_mode_clone = Arc::clone(&self.shutdown_mode);
 
         self.notify_state_change();
@@ -524,9 +530,13 @@ impl Pool {
                     Err(_) => return,
                 };
 
-                let device_count = match pool_ref.try_lock() {
-                    Ok(inner) => inner.devices.len(),
-                    Err(_) => entities.len(),
+                // Get device count from hardware_entities
+                let device_count = match hardware_entities.try_lock() {
+                    Ok(hw_entities) => hw_entities.len(),
+                    Err(_) => {
+                        // Fallback: estimate from tuner count (may be inaccurate for multi-tuner devices)
+                        entities.len()
+                    }
                 };
 
                 let status = crate::hardware::pool::Pool::build_status_from_entities(
@@ -575,33 +585,28 @@ impl Pool {
     ) -> Result<Arc<crate::hardware::pool::SubprocessHandle>> {
         use crate::hardware::pool::SubprocessHandle;
 
-        let mut subprocesses = self
-            .subprocesses
-            .lock()
-            .map_err(|e| ScannerError::Custom(format!("Subprocess lock failed: {}", e)))?;
+        // First, check if subprocess already exists in HardwareEntity
+        let hardware_entities = self
+            .hardware_entities
+            .try_lock()
+            .map_err(|_| ScannerError::Custom("Hardware entities locked".to_string()))?;
 
-        if let Some(handle) = subprocesses.get(device_id) {
-            debug!(device_id = ?device_id, "Reusing existing subprocess");
-            return Ok(Arc::clone(handle));
+        if let Some(entity) = hardware_entities.get(device_id) {
+            if let Some(handle) = entity.connection.subprocess() {
+                debug!(device_id = ?device_id, "Reusing existing subprocess from HardwareEntity");
+                return Ok(handle);
+            }
+        } else {
+            return Err(ScannerError::DeviceNotFound(device_id.clone()));
         }
 
-        let pool_inner = self
-            .pool_ref
-            .try_lock()
-            .map_err(|_| ScannerError::PoolLockTimeout)?;
-
-        let device_entry = pool_inner
-            .devices
-            .get(device_id)
-            .ok_or_else(|| ScannerError::DeviceNotFound(device_id.clone()))?;
-
+        // Subprocess doesn't exist yet, spawn it
         debug!(
             device_id = ?device_id,
-            num_tuners = device_entry.num_tuners,
             "Spawning new subprocess (first allocation)"
         );
 
-        drop(pool_inner);
+        drop(hardware_entities);
 
         let handle = Arc::new(SubprocessHandle::spawn(
             device_id.clone(),
@@ -609,7 +614,16 @@ impl Pool {
             self.parent_log_file.as_deref(),
         )?);
 
-        subprocesses.insert(device_id.clone(), Arc::clone(&handle));
+        // Store subprocess in HardwareEntity
+        let mut hardware_entities = self
+            .hardware_entities
+            .try_lock()
+            .map_err(|_| ScannerError::Custom("Hardware entities locked".to_string()))?;
+
+        if let Some(entity) = hardware_entities.get_mut(device_id) {
+            entity.connection.attach_subprocess(Arc::clone(&handle));
+            debug!(device_id = ?device_id, "Attached subprocess to HardwareEntity");
+        }
 
         Ok(handle)
     }
@@ -689,14 +703,15 @@ impl Pool {
             }
         };
 
-        let inner = match self.pool_ref.try_lock() {
-            Ok(inner) => inner,
+        // Get device count from hardware_entities
+        let hardware_entities = match self.hardware_entities.try_lock() {
+            Ok(hw_entities) => hw_entities,
             Err(_) => {
-                debug!("Pool status requested but pool is locked - returning empty");
+                debug!("Pool status requested but hardware entities are locked - returning empty");
                 return Self::create_empty_pool_status();
             }
         };
 
-        Self::build_status_from_entities(&entities, inner.devices.len())
+        Self::build_status_from_entities(&entities, hardware_entities.len())
     }
 }

@@ -18,6 +18,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
+pub mod colors;
 pub mod layout;
 pub mod model;
 pub mod renderers;
@@ -44,6 +45,7 @@ pub struct TuiProgressDisplay {
     station_entities: Option<Entities<StationEntity>>,
     audio_entities: Option<Entities<AudioEntity>>,
     candidate_entities: Option<Entities<CandidateEntity>>,
+    pause_request_queue: Option<crate::ecs::Resource<crate::ecs::PauseRequestQueue>>,
     last_station_gen: u64,
     last_audio_gen: u64,
     last_candidate_gen: u64,
@@ -66,6 +68,7 @@ impl TuiProgressDisplay {
             station_entities: None,
             audio_entities: None,
             candidate_entities: None,
+            pause_request_queue: None,
             last_station_gen: 0,
             last_audio_gen: 0,
             last_candidate_gen: 0,
@@ -91,6 +94,7 @@ impl TuiProgressDisplay {
             station_entities: None,
             audio_entities: None,
             candidate_entities: None,
+            pause_request_queue: None,
             last_station_gen: 0,
             last_audio_gen: 0,
             last_candidate_gen: 0,
@@ -110,6 +114,14 @@ impl TuiProgressDisplay {
         self.audio_entities = Some(audio_entities);
         self.candidate_entities = Some(candidate_entities);
         self.ui_update_system = Some(crate::ecs::systems::UIUpdateSystem::new());
+        self
+    }
+
+    pub fn with_pause_request_queue(
+        mut self,
+        queue: crate::ecs::Resource<crate::ecs::PauseRequestQueue>,
+    ) -> Self {
+        self.pause_request_queue = Some(queue);
         self
     }
 
@@ -216,7 +228,7 @@ impl TuiProgressDisplay {
         }
 
         if let Some(ref scan_entities) = self.scan_entities
-            && let Ok(entities) = scan_entities.read()
+            && let Ok(entities) = scan_entities.try_read()
             && let Some(scan) = entities.iter().next()
             && scan.is_paused()
             && let model::UiMode::AwaitingTune {
@@ -225,15 +237,30 @@ impl TuiProgressDisplay {
             } = self.model.ui_mode
             && let Some(info) = self.model.selected_candidate_info()
         {
-            self.model.ui_mode = model::UiMode::Listening {
-                navigation_index,
-                playing_index: tuning_index,
-                playing_candidate_id: info.candidate_id.clone(),
+            // Wait for audio entity to actually start playing before transitioning
+            let audio_is_playing = if let Some(ref audio_entities) = self.audio_entities
+                && let Ok(audios) = audio_entities.try_read()
+            {
+                audios.iter().any(|audio| {
+                    (audio.frequency() - info.candidate_frequency).abs() < 1000.0
+                        && audio.is_playing()
+                })
+            } else {
+                false
             };
-            debug!(
-                candidate_id = ?info.candidate_id,
-                "TUI: Transitioned from AwaitingTune to Listening"
-            );
+
+            if audio_is_playing {
+                self.model.ui_mode = model::UiMode::Listening {
+                    navigation_index,
+                    playing_index: tuning_index,
+                    playing_candidate_id: info.candidate_id.clone(),
+                };
+                debug!(
+                    candidate_id = ?info.candidate_id,
+                    frequency_mhz = info.candidate_frequency / 1e6,
+                    "TUI: Transitioned from AwaitingTune to Listening (audio confirmed playing)"
+                );
+            }
         }
     }
 
@@ -246,9 +273,20 @@ impl TuiProgressDisplay {
                 &self.candidate_entities,
             )
         {
-            let station_gen = station_entities.read().unwrap().generation();
-            let audio_gen = audio_entities.read().unwrap().generation();
-            let candidate_gen = candidate_entities.read().unwrap().generation();
+            let (station_gen, audio_gen, candidate_gen) = match (
+                station_entities.try_read(),
+                audio_entities.try_read(),
+                candidate_entities.try_read(),
+            ) {
+                (Ok(stations), Ok(audios), Ok(candidates)) => (
+                    stations.generation(),
+                    audios.generation(),
+                    candidates.generation(),
+                ),
+                _ => {
+                    return;
+                }
+            };
 
             if station_gen != self.last_station_gen
                 || audio_gen != self.last_audio_gen
@@ -376,33 +414,38 @@ impl TuiProgressDisplay {
             tuning_index: selected_index,
         };
 
-        // ECS Phase 5: Pure ECS - set pause_request with station info
-        if let Some(ref scan_entities) = self.scan_entities
-            && let Ok(mut entities) = scan_entities.write()
-            && let Some(scan) = entities.iter_mut().next()
+        // ECS-native: Push pause request to command queue
+        if let Some(ref pause_request_queue) = self.pause_request_queue
+            && let Some(ref scan_entities) = self.scan_entities
+            && let Ok(entities) = scan_entities.try_read()
+            && let Some(scan) = entities.iter().next()
         {
             let window_num = self.model.current_window;
+            let scan_id = *scan.id();
 
-            if let Some(info) = self.model.selected_candidate_info() {
-                scan.request_pause_with_station(
+            let request = if let Some(info) = self.model.selected_candidate_info() {
+                debug!(
+                    scan_id = ?scan_id,
+                    window_num = window_num,
+                    station_frequency_mhz = info.candidate_frequency / 1e6,
+                    "TUI: Queuing pause request with station"
+                );
+                crate::ecs::PauseRequest::with_station(
+                    scan_id,
                     window_num,
                     info.candidate_frequency,
                     info.metadata.center_frequency_hz,
-                );
-                debug!(
-                    scan_id = ?scan.id(),
-                    window_num = window_num,
-                    station_frequency_mhz = info.candidate_frequency / 1e6,
-                    "TUI: Set pause_request with station on ScanEntity"
-                );
+                )
             } else {
-                scan.request_pause(window_num);
                 debug!(
-                    scan_id = ?scan.id(),
+                    scan_id = ?scan_id,
                     window_num = window_num,
-                    "TUI: Set pause_request on ScanEntity (no station selected)"
+                    "TUI: Queuing pause request (no station selected)"
                 );
-            }
+                crate::ecs::PauseRequest::new(scan_id, window_num)
+            };
+
+            pause_request_queue.lock().unwrap().push_back(request);
         }
 
         true
@@ -425,24 +468,30 @@ impl TuiProgressDisplay {
             tuning_index: selected_index,
         };
 
-        // ECS Phase 5: RequestProcessorSystem will handle the tune_request
-        // Just set pause_request with the new station info
-        if let Some(ref scan_entities) = self.scan_entities
-            && let Ok(mut entities) = scan_entities.write()
-            && let Some(scan) = entities.iter_mut().next()
+        // ECS-native: Push pause request to command queue
+        if let Some(ref pause_request_queue) = self.pause_request_queue
+            && let Some(ref scan_entities) = self.scan_entities
+            && let Ok(entities) = scan_entities.try_read()
+            && let Some(scan) = entities.iter().next()
         {
             let window_num = self.model.current_window;
-            scan.request_pause_with_station(
+            let scan_id = *scan.id();
+
+            let request = crate::ecs::PauseRequest::with_station(
+                scan_id,
                 window_num,
                 info.candidate_frequency,
                 info.metadata.center_frequency_hz,
             );
+
             debug!(
-                scan_id = ?scan.id(),
+                scan_id = ?scan_id,
                 window_num = window_num,
                 station_frequency_mhz = info.candidate_frequency / 1e6,
-                "TUI: Set pause_request with new station on ScanEntity"
+                "TUI: Queuing pause request with new station"
             );
+
+            pause_request_queue.lock().unwrap().push_back(request);
         }
 
         self.model.playback_active = true;
@@ -455,7 +504,7 @@ impl TuiProgressDisplay {
 
         // ECS Phase 5: Pure ECS - only set component, no commands
         if let Some(ref scan_entities) = self.scan_entities
-            && let Ok(mut entities) = scan_entities.write()
+            && let Ok(mut entities) = scan_entities.try_write()
             && let Some(scan) = entities.iter_mut().next()
         {
             let window_num = self.model.current_window;
@@ -470,7 +519,7 @@ impl TuiProgressDisplay {
         // ECS Phase 5: Pure ECS - only set component, no commands
         if self.model.playback_active {
             if let Some(ref audio_entities) = self.audio_entities
-                && let Ok(mut entities) = audio_entities.write()
+                && let Ok(mut entities) = audio_entities.try_write()
                 && let Some(audio) = entities.iter_mut().next()
             {
                 audio.request_stop_listening();
@@ -488,20 +537,9 @@ impl TuiProgressDisplay {
 
     /// Handle tuning/playback actions (Enter key in various contexts)
     fn handle_tuning_actions(&mut self, key: &event::KeyEvent) -> bool {
-        tracing::error!(key_code = ?key.code, theme_selector_open = self.model.theme_selector_open, "TUI: handle_tuning_actions called");
-
         if key.code != KeyCode::Enter || self.model.theme_selector_open {
-            tracing::error!("TUI: Not ENTER or theme selector open, returning false");
             return false;
         }
-
-        tracing::error!(
-            focus_state = ?self.model.focus_state,
-            browsing_mode = self.model.browsing_mode(),
-            selected_index = ?self.model.selected_candidate_index(),
-            ui_mode = ?self.model.ui_mode,
-            "TUI: ENTER key pressed - CONFIRMED"
-        );
 
         // Case 1: Enter browsing mode from scan mode
         // Allow entering browsing mode when:
@@ -513,25 +551,28 @@ impl TuiProgressDisplay {
             && !self.model.browsing_mode()
             && let Some(selected_index) = self.model.selected_candidate_index()
         {
-            tracing::error!(
-                selected_index = selected_index,
-                "TUI: Calling handle_enter_browsing_mode"
-            );
             return self.handle_enter_browsing_mode(selected_index);
-        } else {
-            tracing::error!(
-                focus_state = ?self.model.focus_state,
-                browsing_mode = self.model.browsing_mode(),
-                selected_index = ?self.model.selected_candidate_index(),
-                "TUI: Case 1 condition FAILED - not entering browsing mode"
-            );
         }
 
         // Case 2: Switch station while listening
-        if matches!(self.model.ui_mode, model::UiMode::Listening { .. })
+        if let model::UiMode::Listening {
+            playing_candidate_id,
+            ..
+        } = &self.model.ui_mode
             && !self.model.is_continue_scan_selected()
             && let Some(selected_index) = self.model.selected_candidate_index()
             && let Some(info) = self.model.selected_candidate_info()
+            && &info.candidate_id != playing_candidate_id
+        {
+            return self.handle_switch_station(selected_index, info);
+        }
+
+        // Case 2b: Switch station while awaiting tune (allows canceling pending tune)
+        if let model::UiMode::AwaitingTune { tuning_index, .. } = self.model.ui_mode
+            && !self.model.is_continue_scan_selected()
+            && let Some(selected_index) = self.model.selected_candidate_index()
+            && let Some(info) = self.model.selected_candidate_info()
+            && selected_index != tuning_index
         {
             return self.handle_switch_station(selected_index, info);
         }
@@ -562,16 +603,6 @@ impl TuiProgressDisplay {
         if event::poll(animation_interval)? {
             match event::read() {
                 Ok(Event::Key(key)) => {
-                    // Log ALL keys including char codes with ERROR level so they show up
-                    match key.code {
-                        KeyCode::Char(c) => {
-                            tracing::error!(key_code = ?key.code, char_value = ?c, char_as_u8 = c as u8, modifiers = ?key.modifiers, kind = ?key.kind, "TUI: Char key event");
-                        }
-                        _ => {
-                            tracing::error!(key_code = ?key.code, modifiers = ?key.modifiers, kind = ?key.kind, "TUI: Key event received");
-                        }
-                    }
-
                     // Check for quit keys first
                     if self.handle_quit_keys(&key) {
                         return Ok(false);
@@ -605,12 +636,7 @@ impl TuiProgressDisplay {
                     }
 
                     // Handle tuning actions (Enter key)
-                    tracing::error!("TUI: About to call handle_tuning_actions");
                     let needs_redraw = self.handle_tuning_actions(&key);
-                    tracing::error!(
-                        needs_redraw = needs_redraw,
-                        "TUI: handle_tuning_actions returned"
-                    );
                     return Ok(needs_redraw);
                 }
                 Ok(other_event) => {

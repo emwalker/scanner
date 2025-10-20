@@ -4,9 +4,10 @@ mod processing;
 
 pub use config::{WindowConfig, WindowMetadata};
 
-// Re-export public audio functions that are used by audio_session.rs
+// Re-export public audio functions that are used by audio_session.rs and ECS systems
 pub use audio::{
     create_audio_fm_graph, create_audio_stream, process_signal_for_audio, setup_audio_device,
+    spawn_audio_entity,
 };
 
 use crate::core::types::{Result, ScanningConfig};
@@ -28,6 +29,7 @@ pub struct Window {
     tuner_provider: Arc<dyn TunerProvider>,
     config: Arc<ScanningConfig>,
     shutdown_token: CancellationToken,
+    window_cancellation: Option<CancellationToken>,
     metadata: WindowMetadata,
     pause_signal: Option<PauseSignal>,
     station_entities: Option<Entities<StationEntity>>,
@@ -45,6 +47,7 @@ impl Window {
             tuner_provider: window_config.tuner_provider,
             config: window_config.config,
             shutdown_token: window_config.shutdown_coordinator.token(),
+            window_cancellation: window_config.window_cancellation,
             metadata: WindowMetadata {
                 center_frequency_hz: window_config.center_freq,
                 window_id: window_config.window_num,
@@ -72,6 +75,7 @@ impl Window {
             tuner_provider,
             config,
             shutdown_token: shutdown_coordinator.token(),
+            window_cancellation: None,
             metadata: WindowMetadata {
                 center_frequency_hz: center_freq,
                 window_id: window_num,
@@ -236,6 +240,12 @@ impl Window {
         if self.shutdown_token.is_cancelled() {
             debug!("Shutdown signal detected, stopping thread wait");
             true
+        } else if let Some(ref token) = self.window_cancellation {
+            if token.is_cancelled() {
+                debug!("Window cancellation signal detected, stopping thread wait");
+                return true;
+            }
+            false
         } else {
             false
         }

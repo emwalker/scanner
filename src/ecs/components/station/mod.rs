@@ -3,11 +3,15 @@
 mod discovery;
 mod history;
 mod info;
+mod playback;
+mod transition;
 mod tune_request;
 
 pub use discovery::StationDiscoveryComponent;
 pub use history::StationHistoryComponent;
 pub use info::StationInfoComponent;
+pub use playback::{StationPlaybackComponent, StationPlaybackState};
+pub use transition::{TuneStage, TuneTransitionComponent};
 pub use tune_request::TuneRequestComponent;
 
 use std::sync::atomic::{AtomicU64, Ordering};

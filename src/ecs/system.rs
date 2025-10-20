@@ -17,10 +17,20 @@ pub trait System: Send {
     fn run(&mut self, context: &mut SystemContext) -> Result<()>;
 }
 
+use crate::core::types::ScanningConfig;
+use crate::ecs::components::audio::AudioId;
+use crate::ecs::queue::{PauseRequestQueue, TunerRequestQueue};
 use crate::ecs::{
     AudioEntity, CandidateEntity, Entities, EntityWorld, ScanEntity, StationEntity, TunerEntity,
+    WindowEntity,
 };
+use crate::hardware::pool::{Pool, Segment};
+use crate::shutdown::ShutdownCoordinator;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+/// Type alias for ECS resources
+pub type Resource<T> = Arc<Mutex<T>>;
 
 /// Context provided to systems during execution
 ///
@@ -29,9 +39,26 @@ use std::sync::{Arc, Mutex};
 pub struct SystemContext {
     pub tuner_entities: Option<Arc<Mutex<EntityWorld<TunerEntity>>>>,
     pub scan_entities: Option<Entities<ScanEntity>>,
+    pub window_entities: Option<Entities<WindowEntity>>,
     pub station_entities: Option<Entities<StationEntity>>,
     pub audio_entities: Option<Entities<AudioEntity>>,
     pub candidate_entities: Option<Entities<CandidateEntity>>,
+
+    /// Audio streams resource (can't be in entities - cpal::Stream is not Send)
+    pub audio_streams: Option<Resource<HashMap<AudioId, cpal::Stream>>>,
+
+    /// SDR segments resource (can't be in entities - Segment contains PooledTuner which is not Send)
+    pub audio_segments: Option<Resource<HashMap<AudioId, Segment>>>,
+
+    /// FIFO queue for tuner acquisition requests
+    pub tuner_request_queue: Option<Resource<TunerRequestQueue>>,
+
+    /// FIFO queue for pause requests
+    pub pause_request_queue: Option<Resource<PauseRequestQueue>>,
+
+    pub pool: Option<Arc<Pool>>,
+    pub config: Option<Arc<ScanningConfig>>,
+    pub shutdown_coordinator: Option<Arc<ShutdownCoordinator>>,
 }
 
 impl Default for SystemContext {
@@ -45,9 +72,17 @@ impl SystemContext {
         Self {
             tuner_entities: None,
             scan_entities: None,
+            window_entities: None,
             station_entities: None,
             audio_entities: None,
             candidate_entities: None,
+            audio_streams: None,
+            audio_segments: None,
+            tuner_request_queue: None,
+            pause_request_queue: None,
+            pool: None,
+            config: None,
+            shutdown_coordinator: None,
         }
     }
 
@@ -58,6 +93,11 @@ impl SystemContext {
 
     pub fn with_scan_entities(mut self, entities: Entities<ScanEntity>) -> Self {
         self.scan_entities = Some(entities);
+        self
+    }
+
+    pub fn with_window_entities(mut self, entities: Entities<WindowEntity>) -> Self {
+        self.window_entities = Some(entities);
         self
     }
 
@@ -73,6 +113,41 @@ impl SystemContext {
 
     pub fn with_candidate_entities(mut self, entities: Entities<CandidateEntity>) -> Self {
         self.candidate_entities = Some(entities);
+        self
+    }
+
+    pub fn with_audio_streams(mut self, streams: Resource<HashMap<AudioId, cpal::Stream>>) -> Self {
+        self.audio_streams = Some(streams);
+        self
+    }
+
+    pub fn with_audio_segments(mut self, segments: Resource<HashMap<AudioId, Segment>>) -> Self {
+        self.audio_segments = Some(segments);
+        self
+    }
+
+    pub fn with_tuner_request_queue(mut self, queue: Resource<TunerRequestQueue>) -> Self {
+        self.tuner_request_queue = Some(queue);
+        self
+    }
+
+    pub fn with_pause_request_queue(mut self, queue: Resource<PauseRequestQueue>) -> Self {
+        self.pause_request_queue = Some(queue);
+        self
+    }
+
+    pub fn with_pool(mut self, pool: Arc<Pool>) -> Self {
+        self.pool = Some(pool);
+        self
+    }
+
+    pub fn with_config(mut self, config: Arc<ScanningConfig>) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    pub fn with_shutdown_coordinator(mut self, shutdown: Arc<ShutdownCoordinator>) -> Self {
+        self.shutdown_coordinator = Some(shutdown);
         self
     }
 }

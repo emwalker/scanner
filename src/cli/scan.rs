@@ -81,6 +81,10 @@ fn run_tui_mode(
     let audio_entities = Arc::new(RwLock::new(EntityWorld::<AudioEntity>::new()));
     let candidate_entities = Arc::new(RwLock::new(EntityWorld::<CandidateEntity>::new()));
 
+    let pause_request_queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
+        crate::ecs::PauseRequest,
+    >::new()));
+
     if let Some(ref stations_str) = args.stations {
         let stations = parse_stations(stations_str)?;
         let freq_min = stations.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -125,6 +129,7 @@ fn run_tui_mode(
         station_entities.clone(),
         audio_entities.clone(),
         candidate_entities.clone(),
+        pause_request_queue.clone(),
     );
 
     let format = super::config::determine_format(args);
@@ -141,6 +146,7 @@ fn run_tui_mode(
         station_entities,
         audio_entities,
         candidate_entities,
+        pause_request_queue,
     };
 
     let result = run_with_tui(run_context, tui_context, tui_handle);
@@ -196,6 +202,10 @@ fn run_log_mode(
     let station_entities = Arc::new(RwLock::new(EntityWorld::<StationEntity>::new()));
     let audio_entities = Arc::new(RwLock::new(EntityWorld::<AudioEntity>::new()));
     let candidate_entities = Arc::new(RwLock::new(EntityWorld::<CandidateEntity>::new()));
+
+    let _pause_request_queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
+        crate::ecs::PauseRequest,
+    >::new()));
 
     if let Some(ref stations_str) = args.stations {
         let stations = parse_stations(stations_str)?;

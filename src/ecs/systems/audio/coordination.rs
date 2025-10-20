@@ -38,87 +38,93 @@ impl System for CoordinationSystem {
                 _ => return Ok(()),
             };
 
-        let mut stations = station_entities.write().unwrap();
-        let mut audios = audio_entities.write().unwrap();
+        // ECS Pattern: Phase 1 - Read-only check to see if there's work to do
+        // This avoids marking audio_entities as changed when nothing needs to change
+        let (audios_to_stop, audios_to_remove) = {
+            let stations = match station_entities.try_read() {
+                Ok(s) => s,
+                Err(_) => return Ok(()),
+            };
 
-        // First, check if any audio entities need to be stopped because their station's tune request was cleared
-        let station_frequencies_with_tune_requests: std::collections::HashSet<u64> = stations
-            .iter()
-            .filter(|s| s.has_tune_request())
-            .map(|s| (s.frequency() * 1000.0) as u64)
-            .collect();
+            let audios = match audio_entities.try_read() {
+                Ok(a) => a,
+                Err(_) => return Ok(()),
+            };
 
-        for audio in audios.iter_mut() {
-            let audio_freq_key = (audio.frequency() * 1000.0) as u64;
-            if !station_frequencies_with_tune_requests.contains(&audio_freq_key)
-                && audio.is_playing()
-            {
+            // Early exit if no audio entities exist
+            if audios.is_empty() {
+                return Ok(());
+            }
+
+            // Collect station frequencies that are playing
+            let station_frequencies_playing: std::collections::HashSet<u64> = stations
+                .iter()
+                .filter(|s| s.playback.is_playing())
+                .map(|s| (s.frequency() * 1000.0) as u64)
+                .collect();
+
+            // Find audios that need to be stopped (playing but station is idle)
+            let to_stop: Vec<_> = audios
+                .iter()
+                .filter(|audio| {
+                    let audio_freq_key = (audio.frequency() * 1000.0) as u64;
+                    !station_frequencies_playing.contains(&audio_freq_key) && audio.is_playing()
+                })
+                .map(|a| (*a.id(), a.frequency()))
+                .collect();
+
+            // Find audios that need to be removed (stop_listening_request)
+            let to_remove: Vec<_> = audios
+                .iter()
+                .filter(|a| a.stop_listening_request.is_some())
+                .map(|a| (*a.id(), a.frequency()))
+                .collect();
+
+            (to_stop, to_remove)
+        };
+
+        // Early exit if no work to do
+        if audios_to_stop.is_empty() && audios_to_remove.is_empty() {
+            return Ok(());
+        }
+
+        // ECS Pattern: Phase 2 - Acquire write lock and mutate
+        // Only reached if there's actual work to do
+        let mut audios = match audio_entities.try_write() {
+            Ok(a) => a,
+            Err(_) => return Ok(()),
+        };
+
+        // Stop audio entities
+        for (audio_id, frequency) in audios_to_stop {
+            if let Some(audio) = audios.get_mut(&audio_id) {
                 debug!(
-                    audio_id = ?audio.id(),
-                    frequency_mhz = audio.frequency() / 1e6,
-                    "AudioCoordinationSystem: Stopping audio (tune request cleared)"
+                    audio_id = ?audio_id,
+                    frequency_mhz = frequency / 1e6,
+                    "AudioCoordinationSystem: Stopping audio (station playback state changed to Idle)"
                 );
                 audio.stop();
             }
         }
 
-        // Process stop_listening requests
-        for audio in audios.iter_mut() {
-            if audio.stop_listening_request.is_some() {
+        // Remove audio entities
+        for (audio_id, frequency) in audios_to_remove {
+            if let Some(mut audio) = audios.remove(&audio_id) {
                 debug!(
-                    audio_id = ?audio.id(),
-                    frequency_mhz = audio.frequency() / 1e6,
-                    "AudioCoordinationSystem: Processing stop_listening request"
-                );
-                audio.stop();
-                audio.clear_stop_listening_request();
-            }
-        }
-
-        for station in stations.iter_mut() {
-            if let Some(ref tune_request) = station.tune_request {
-                let station_id = *station.id();
-                debug!(
-                    station_id = ?station_id,
-                    frequency_mhz = station.frequency() / 1e6,
-                    window_id = tune_request.window_id,
-                    "AudioCoordinationSystem: Processing tune request"
+                    audio_id = ?audio_id,
+                    frequency_mhz = frequency / 1e6,
+                    "AudioCoordinationSystem: Stopping audio playback"
                 );
 
-                // Create AudioEntity for listening
-                // TODO: Allocate actual tuner and create real audio session
-                // For now, create a placeholder Signal from station info
-                use crate::core::types::{ModulationType, Signal};
-                let signal = Signal {
-                    frequency_hz: station.frequency(),
-                    signal_strength: station.signal_strength(),
-                    bandwidth_hz: 200_000.0,
-                    modulation: ModulationType::WFM,
-                    audio_sample_rate: 48000,
-                    detected_at: std::time::SystemTime::now(),
-                    analysis_duration_ms: 100,
-                    detection_center_freq: tune_request.center_frequency,
-                    audio_quality: station
-                        .info
-                        .audio_quality
-                        .unwrap_or(crate::audio::quality::AudioQuality::Unknown),
-                };
+                audio.allocation.cancel_graph();
 
-                let audio_entity = crate::ecs::AudioEntity::new(
-                    signal,
-                    tune_request.center_frequency,
-                    None, // TODO: allocate tuner from pool
-                );
+                if let Some(handle) = audio.allocation.take_thread() {
+                    debug!(audio_id = ?audio_id, "Waiting for audio graph thread to finish");
+                    let _ = handle.join();
+                    debug!(audio_id = ?audio_id, "Audio graph thread finished");
+                }
 
-                debug!(
-                    station_id = ?station_id,
-                    audio_id = ?audio_entity.id(),
-                    frequency_mhz = station.frequency() / 1e6,
-                    "AudioCoordinationSystem: Created AudioEntity (placeholder - no actual audio)"
-                );
-
-                audios.insert(audio_entity);
-                station.clear_tune_request();
+                debug!(audio_id = ?audio_id, "Audio playback stopped");
             }
         }
 
@@ -131,7 +137,7 @@ mod tests {
     use super::*;
     use crate::audio::quality::AudioQuality;
     use crate::core::types::{ModulationType, Signal};
-    use crate::ecs::{EntityWorld, ScanId, StationEntity};
+    use crate::ecs::{AudioEntity, EntityWorld, ScanId, StationEntity};
     use crate::scanning::window::WindowMetadata;
     use std::sync::{Arc, RwLock};
     use std::time::SystemTime;
@@ -182,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn test_processes_tune_request() {
+    fn test_stops_audio_when_playback_state_idle() {
         let mut system = CoordinationSystem::new();
 
         let mut station_world = EntityWorld::new();
@@ -192,29 +198,29 @@ mod tests {
             window_id: 1,
         };
 
-        let mut station = StationEntity::from_signal(&signal, ScanId::new(), metadata);
-        station.request_tune(1, 88.9e6);
-        assert!(station.has_tune_request());
-
+        let station = StationEntity::from_signal(&signal, ScanId::new(), metadata);
         station_world.insert(station);
 
-        let audio_world = EntityWorld::new();
+        let mut audio_world = EntityWorld::new();
+        let audio = AudioEntity::new(signal, 88.9e6, None);
+        assert!(audio.is_playing());
+        audio_world.insert(audio);
 
         let station_entities = Arc::new(RwLock::new(station_world));
         let audio_entities = Arc::new(RwLock::new(audio_world));
 
         let mut context = SystemContext::new()
             .with_station_entities(station_entities.clone())
-            .with_audio_entities(audio_entities);
+            .with_audio_entities(audio_entities.clone());
 
         let result = system.run(&mut context);
         assert!(result.is_ok());
 
-        let stations = station_entities.read().unwrap();
-        for station in stations.iter() {
+        let audios = audio_entities.read().unwrap();
+        for audio in audios.iter() {
             assert!(
-                !station.has_tune_request(),
-                "Tune request should be cleared"
+                !audio.is_playing(),
+                "Audio should be stopped when station playback state is Idle"
             );
         }
     }
