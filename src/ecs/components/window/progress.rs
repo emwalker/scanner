@@ -53,6 +53,10 @@ impl WindowProgressComponent {
     pub fn mark_failed(&mut self) {
         self.state = WindowProgressState::Failed;
     }
+
+    pub fn reset_to_pending(&mut self) {
+        self.state = WindowProgressState::Pending;
+    }
 }
 
 impl Default for WindowProgressComponent {

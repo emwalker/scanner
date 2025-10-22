@@ -37,6 +37,7 @@ pub struct Coordinator {
     audio_segments: Resource<HashMap<AudioId, Segment>>,
     tuner_request_queue: Resource<TunerRequestQueue>,
     pause_request_queue: Resource<PauseRequestQueue>,
+    global_pause_resource: crate::ecs::GlobalPauseResource,
 
     pool: Arc<Pool>,
     config: Arc<ScanningConfig>,
@@ -64,6 +65,7 @@ impl Coordinator {
             audio_segments: Arc::new(Mutex::new(HashMap::new())),
             tuner_request_queue: Arc::new(Mutex::new(VecDeque::new())),
             pause_request_queue: Arc::new(Mutex::new(VecDeque::new())),
+            global_pause_resource: Arc::new(Mutex::new(crate::ecs::GlobalPauseState::Active)),
             pool: Arc::clone(pool),
             config: Arc::clone(config),
             shutdown_coordinator: Arc::clone(shutdown_coordinator),
@@ -106,6 +108,17 @@ impl Coordinator {
         self
     }
 
+    /// Set the global pause resource (replaces the default Active state)
+    pub fn with_global_pause_resource(mut self, resource: crate::ecs::GlobalPauseResource) -> Self {
+        self.global_pause_resource = resource;
+        self
+    }
+
+    /// Get a clone of the global pause resource for external access (e.g., TUI)
+    pub fn global_pause_resource(&self) -> crate::ecs::GlobalPauseResource {
+        Arc::clone(&self.global_pause_resource)
+    }
+
     /// Add a system to the execution schedule
     pub fn add_system(&mut self, system: Box<dyn crate::ecs::system::System>) {
         self.scheduler.add_system(system);
@@ -127,6 +140,7 @@ impl Coordinator {
             .with_audio_segments(Arc::clone(&self.audio_segments))
             .with_tuner_request_queue(Arc::clone(&self.tuner_request_queue))
             .with_pause_request_queue(Arc::clone(&self.pause_request_queue))
+            .with_global_pause_resource(Arc::clone(&self.global_pause_resource))
             .with_pool(Arc::clone(&self.pool))
             .with_config(Arc::clone(&self.config))
             .with_shutdown_coordinator(Arc::clone(&self.shutdown_coordinator));
@@ -240,6 +254,21 @@ mod tests {
 
         let result = coordinator.tick();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_coordinator_with_global_pause_resource() {
+        let pool = Arc::new(Pool::new(PoolFilter::allow_all(), None));
+        let config = Arc::new(ScanningConfig::default());
+        let shutdown = Arc::new(ShutdownCoordinator::new());
+
+        let global_pause = Arc::new(Mutex::new(crate::ecs::GlobalPauseState::Active));
+        let coordinator =
+            Coordinator::new(&pool, &config, &shutdown).with_global_pause_resource(global_pause);
+
+        let retrieved = coordinator.global_pause_resource();
+        let state = retrieved.lock().unwrap();
+        assert!(matches!(*state, crate::ecs::GlobalPauseState::Active));
     }
 
     #[test]

@@ -14,6 +14,7 @@
 pub mod components;
 pub mod entities;
 pub mod queue;
+pub mod resources;
 pub mod systems;
 
 mod coordinator;
@@ -25,6 +26,7 @@ mod world;
 pub use coordinator::Coordinator;
 pub use entity::Entity;
 pub use queue::{PauseRequest, PauseRequestQueue};
+pub use resources::{GlobalPauseResource, GlobalPauseState};
 pub use schedule::Scheduler;
 pub use system::{Resource, System, SystemContext};
 pub use world::EntityWorld;

@@ -12,6 +12,27 @@ use ratatui::{
     widgets::Paragraph,
 };
 
+fn build_left_instructions_text(model: &Model) -> String {
+    let pause_prefix = if model.is_globally_paused() {
+        "[PAUSED] "
+    } else {
+        ""
+    };
+
+    let instructions = match &model.ui_mode {
+        UiMode::Listening { .. } if !model.all_complete() => {
+            "  ⌃C Exit  ↑↓ Browse  ↵ Continue scan"
+        }
+        UiMode::AwaitingTune { .. } if !model.all_complete() => {
+            "  ⌃C Exit  ↑↓ Browse  ↵ Continue scan"
+        }
+        UiMode::NavigatingScanner { .. } => "  ⌃C Exit  ↑↓ Navigate  ↵ Listen",
+        _ => "  ⌃C Exit  ↑↓ Navigate",
+    };
+
+    format!("{}{}", pause_prefix, instructions)
+}
+
 pub fn render_instructions(
     f: &mut Frame,
     area: ratatui::layout::Rect,
@@ -23,19 +44,24 @@ pub fn render_instructions(
     if model.theme_selector_open {
         render_theme_selector(f, area, theme, model, all_themes);
     } else {
-        let left_instructions = match &model.ui_mode {
-            UiMode::Listening { .. } if !model.all_complete() => {
-                "  ⌃C Exit  ↑↓ Browse  ↵ Continue scan"
-            }
-            UiMode::AwaitingTune { .. } if !model.all_complete() => {
-                "  ⌃C Exit  ↑↓ Browse  ↵ Continue scan"
-            }
-            UiMode::NavigatingScanner { .. } => "  ⌃C Exit  ↑↓ Navigate  ↵ Listen",
-            _ => "  ⌃C Exit  ↑↓ Navigate",
-        };
+        let left_text = build_left_instructions_text(model);
 
-        let instruction =
-            Paragraph::new(left_instructions).style(Style::default().fg(theme.instructions_dim()));
+        let mut spans = vec![];
+        if model.is_globally_paused() {
+            spans.push(Span::styled(
+                "[PAUSED] ",
+                Style::default()
+                    .fg(theme.active_highlight_fg())
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        spans.push(Span::styled(
+            &left_text[if model.is_globally_paused() { 9 } else { 0 }..],
+            Style::default().fg(theme.instructions_dim()),
+        ));
+
+        let instruction = Paragraph::new(Line::from(spans));
         f.render_widget(instruction, area);
 
         let right_text = match &model.ui_mode {
@@ -112,6 +138,9 @@ fn render_theme_selector(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::ui::tui::model::Model;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_instructions_format_unchanged() {
@@ -120,5 +149,28 @@ mod tests {
 
         assert!(instruction_text.contains("⌃C"));
         assert!(instruction_text.starts_with("  "));
+    }
+
+    #[test]
+    fn test_pause_indicator_not_shown_when_active() {
+        let mut model = Model::new();
+        let resource = Arc::new(Mutex::new(crate::ecs::GlobalPauseState::Active));
+        model.set_global_pause_resource(resource);
+
+        let left_text = build_left_instructions_text(&model);
+        assert!(!left_text.contains("[PAUSED]"));
+    }
+
+    #[test]
+    fn test_pause_indicator_shown_when_paused() {
+        let mut model = Model::new();
+        let resource = Arc::new(Mutex::new(crate::ecs::GlobalPauseState::Paused {
+            had_active_scans: true,
+            had_active_audio: false,
+        }));
+        model.set_global_pause_resource(resource);
+
+        let left_text = build_left_instructions_text(&model);
+        assert!(left_text.contains("[PAUSED]"));
     }
 }

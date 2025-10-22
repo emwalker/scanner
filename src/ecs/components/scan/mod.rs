@@ -47,7 +47,7 @@ mod window_task;
 pub use config::ScanConfigComponent;
 pub use lifecycle::ScanLifecycleComponent;
 pub use pause_request::PauseRequestComponent;
-pub use progress::{ScanPauseState, ScanProgressComponent};
+pub use progress::{PreviousPauseState, ScanPauseState, ScanProgressComponent};
 pub use results::ScanResultsComponent;
 pub use resume_request::ResumeRequestComponent;
 pub use window_allocation::WindowAllocationRequest;

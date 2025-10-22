@@ -32,6 +32,7 @@ pub fn start_tui(
         std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::CandidateEntity>>,
     >,
     pause_request_queue: crate::ecs::Resource<crate::ecs::PauseRequestQueue>,
+    global_pause_resource: crate::ecs::GlobalPauseResource,
 ) -> thread::JoinHandle<std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>> {
     let theme = create_theme(&theme_name);
 
@@ -48,7 +49,8 @@ pub fn start_tui(
             audio_entities,
             candidate_entities,
         )
-        .with_pause_request_queue(pause_request_queue);
+        .with_pause_request_queue(pause_request_queue)
+        .with_global_pause_resource(global_pause_resource);
         tui_display.run()
     })
 }
@@ -66,6 +68,7 @@ pub struct TuiRunContext {
     pub candidate_entities:
         Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::CandidateEntity>>>,
     pub pause_request_queue: crate::ecs::Resource<crate::ecs::PauseRequestQueue>,
+    pub global_pause_resource: crate::ecs::GlobalPauseResource,
 }
 
 pub fn run_with_tui(
@@ -92,6 +95,7 @@ pub fn run_with_tui(
         context.audio_entities,
         context.candidate_entities,
         context.pause_request_queue,
+        context.global_pause_resource,
     )?
     .with_tui_event_sender(tui_context.tui_event_sender)
     .start();

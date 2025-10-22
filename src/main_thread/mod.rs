@@ -34,6 +34,7 @@ pub struct MainThread {
     coordinator_shutdown: Arc<AtomicBool>,
     coordinator_thread: Arc<Mutex<Option<Thread>>>,
     pause_request_queue: Option<crate::ecs::Resource<crate::ecs::PauseRequestQueue>>,
+    global_pause_resource: Option<crate::ecs::GlobalPauseResource>,
 }
 
 impl MainThread {
@@ -61,6 +62,9 @@ impl MainThread {
             crate::ecs::PauseRequest,
         >::new()));
 
+        let global_pause_resource =
+            Arc::new(std::sync::Mutex::new(crate::ecs::GlobalPauseState::Active));
+
         let main_thread = MainThread {
             config,
             _backend: backend,
@@ -78,6 +82,7 @@ impl MainThread {
             coordinator_shutdown: Arc::new(AtomicBool::new(false)),
             coordinator_thread: Arc::new(Mutex::new(None)),
             pause_request_queue: Some(pause_request_queue),
+            global_pause_resource: Some(global_pause_resource),
         };
 
         Ok(main_thread)
@@ -97,6 +102,7 @@ impl MainThread {
         audio_entities: Entities<AudioEntity>,
         candidate_entities: Entities<CandidateEntity>,
         pause_request_queue: crate::ecs::Resource<crate::ecs::PauseRequestQueue>,
+        global_pause_resource: crate::ecs::GlobalPauseResource,
     ) -> Result<Self> {
         let main_thread = MainThread {
             config,
@@ -115,6 +121,7 @@ impl MainThread {
             coordinator_shutdown: Arc::new(AtomicBool::new(false)),
             coordinator_thread: Arc::new(Mutex::new(None)),
             pause_request_queue: Some(pause_request_queue),
+            global_pause_resource: Some(global_pause_resource),
         };
 
         Ok(main_thread)
@@ -155,6 +162,11 @@ impl MainThread {
             .clone()
             .expect("Pause request queue should be set");
 
+        let global_pause_resource = self
+            .global_pause_resource
+            .clone()
+            .expect("Global pause resource should be set");
+
         let handle = std::thread::spawn(move || {
             if let Ok(mut guard) = thread_handle.lock() {
                 *guard = Some(std::thread::current());
@@ -166,7 +178,8 @@ impl MainThread {
                 .with_station_entities(station_entities)
                 .with_audio_entities(audio_entities)
                 .with_candidate_entities(candidate_entities)
-                .with_pause_request_queue(pause_request_queue);
+                .with_pause_request_queue(pause_request_queue)
+                .with_global_pause_resource(global_pause_resource);
 
             coordinator.add_system(Box::new(crate::ecs::systems::DiscoverySystem::new()));
             coordinator.add_system(Box::new(crate::ecs::systems::AllocationSystem::new()));

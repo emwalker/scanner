@@ -145,6 +145,9 @@ fn run_tui_mode(
         crate::ecs::PauseRequest,
     >::new()));
 
+    let global_pause_resource =
+        Arc::new(std::sync::Mutex::new(crate::ecs::GlobalPauseState::Active));
+
     let tui_handle = start_tui(
         tui_event_receiver,
         shutdown_coordinator.clone(),
@@ -154,6 +157,7 @@ fn run_tui_mode(
         entity_worlds.audio_entities.clone(),
         entity_worlds.candidate_entities.clone(),
         pause_request_queue.clone(),
+        global_pause_resource.clone(),
     );
 
     let format = super::config::determine_format(args);
@@ -171,6 +175,7 @@ fn run_tui_mode(
         audio_entities: entity_worlds.audio_entities,
         candidate_entities: entity_worlds.candidate_entities,
         pause_request_queue,
+        global_pause_resource,
     };
 
     let result = run_with_tui(run_context, tui_context, tui_handle);

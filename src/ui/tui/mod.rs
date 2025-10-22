@@ -29,6 +29,10 @@ use model::Model;
 use renderers::{console::ConsoleRenderer, header, instructions, scan, spectrum, tuners};
 use themes::{Theme, ThemeName, create_theme};
 
+struct StationInfo {
+    frequency: f64,
+}
+
 /// TUI-based progress display for multiple candidates using The Elm Architecture
 pub struct TuiProgressDisplay {
     receiver: mpsc::Receiver<TuiEvent>,
@@ -119,6 +123,12 @@ impl TuiProgressDisplay {
         queue: crate::ecs::Resource<crate::ecs::PauseRequestQueue>,
     ) -> Self {
         self.pause_request_queue = Some(queue);
+        self
+    }
+
+    pub fn with_global_pause_resource(mut self, resource: crate::ecs::GlobalPauseResource) -> Self {
+        self.model
+            .set_global_pause_resource(std::sync::Arc::clone(&resource));
         self
     }
 
@@ -544,6 +554,174 @@ impl TuiProgressDisplay {
         true
     }
 
+    /// Handle spacebar key for global pause/resume
+    fn handle_spacebar_pause(&mut self) {
+        if let Some(ref resource) = self.model.global_pause_resource {
+            let resource = std::sync::Arc::clone(resource);
+            if let Ok(mut state) = resource.lock() {
+                match *state {
+                    crate::ecs::GlobalPauseState::Active => {
+                        debug!("TUI: Spacebar pressed - pausing globally");
+
+                        let had_active_scans = self.has_active_scans();
+                        let had_active_audio = self.has_active_audio();
+
+                        *state = crate::ecs::GlobalPauseState::Paused {
+                            had_active_scans,
+                            had_active_audio,
+                        };
+
+                        drop(state);
+
+                        self.pause_all_scans();
+                        self.pause_all_audio();
+                    }
+                    crate::ecs::GlobalPauseState::Paused { .. } => {
+                        debug!("TUI: Spacebar pressed - resuming from global pause");
+
+                        *state = crate::ecs::GlobalPauseState::Active;
+
+                        drop(state);
+
+                        self.resume_all_scans();
+                        self.resume_all_audio();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check if there are any active scans
+    fn has_active_scans(&self) -> bool {
+        if let Some(ref scan_entities) = self.scan_entities
+            && let Ok(entities) = scan_entities.try_read()
+        {
+            return entities.iter().any(|scan| scan.is_scanning());
+        }
+        false
+    }
+
+    /// Check if there is any active audio
+    fn has_active_audio(&self) -> bool {
+        if let Some(ref audio_entities) = self.audio_entities
+            && let Ok(entities) = audio_entities.try_read()
+        {
+            return entities.iter().any(|audio| audio.is_playing());
+        }
+        false
+    }
+
+    /// Pause all active scans globally
+    fn pause_all_scans(&mut self) {
+        if let Some(ref scan_entities) = self.scan_entities
+            && let Ok(mut entities) = scan_entities.try_write()
+        {
+            for scan in entities.iter_mut() {
+                let current_window = scan.current_window();
+
+                let previous_state = if scan.is_scanning() {
+                    crate::ecs::components::scan::PreviousPauseState::WasScanning
+                } else if scan.is_listening() {
+                    if let Some(station) = self.get_listening_station(scan.id()) {
+                        crate::ecs::components::scan::PreviousPauseState::WasListening {
+                            window_num: current_window,
+                            station_frequency_hz: station.frequency,
+                        }
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                };
+
+                scan.progress.pause_globally(current_window, previous_state);
+                debug!(
+                    scan_id = ?scan.id(),
+                    window = current_window,
+                    "TUI: Paused scan globally"
+                );
+            }
+        }
+    }
+
+    /// Pause all active audio
+    fn pause_all_audio(&mut self) {
+        if let Some(ref audio_entities) = self.audio_entities
+            && let Ok(mut entities) = audio_entities.try_write()
+        {
+            for audio in entities.iter_mut() {
+                if audio.is_playing() {
+                    audio.request_stop_listening();
+                    debug!(
+                        audio_id = ?audio.id(),
+                        frequency_hz = audio.frequency(),
+                        "TUI: Requested stop for audio entity"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Resume all globally paused scans
+    fn resume_all_scans(&mut self) {
+        if let Some(ref scan_entities) = self.scan_entities
+            && let Ok(mut entities) = scan_entities.try_write()
+        {
+            for scan in entities.iter_mut() {
+                if scan.progress.is_globally_paused() {
+                    scan.progress.resume_from_global_pause();
+                    debug!(
+                        scan_id = ?scan.id(),
+                        "TUI: Resumed scan from global pause"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Resume all audio that was playing before global pause
+    fn resume_all_audio(&mut self) {
+        if let Some(ref scan_entities) = self.scan_entities
+            && let Ok(entities) = scan_entities.try_read()
+        {
+            for scan in entities.iter() {
+                if let crate::ecs::components::scan::ScanPauseState::Listening {
+                    paused_at_window,
+                } = scan.progress.state
+                    && let Some(station) = self.get_listening_station(scan.id())
+                    && let Some(ref pause_request_queue) = self.pause_request_queue
+                {
+                    debug!(
+                        scan_id = ?scan.id(),
+                        frequency_hz = station.frequency,
+                        "TUI: Resuming audio playback"
+                    );
+
+                    let request = crate::ecs::queue::PauseRequest::with_station(
+                        *scan.id(),
+                        paused_at_window,
+                        station.frequency,
+                        station.frequency,
+                    );
+
+                    if let Ok(mut queue) = pause_request_queue.lock() {
+                        queue.push_back(request);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Get the station being listened to for a scan
+    fn get_listening_station(&self, _scan_id: &crate::ecs::ScanId) -> Option<StationInfo> {
+        if let Some(info) = self.model.selected_candidate_info() {
+            return Some(StationInfo {
+                frequency: info.candidate_frequency,
+            });
+        }
+        None
+    }
+
     /// Handle tuning/playback actions (Enter key in various contexts)
     fn handle_tuning_actions(&mut self, key: &event::KeyEvent) -> bool {
         if key.code != KeyCode::Enter || self.model.theme_selector_open {
@@ -632,6 +810,12 @@ impl TuiProgressDisplay {
                             .unwrap_or(0);
                         self.model.theme_selector_index = current_idx;
                         self.model.toggle_theme_selector();
+                        return Ok(false);
+                    }
+
+                    // Handle spacebar for global pause/resume
+                    if matches!(key.code, KeyCode::Char(' ')) {
+                        self.handle_spacebar_pause();
                         return Ok(false);
                     }
 

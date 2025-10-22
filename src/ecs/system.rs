@@ -56,6 +56,9 @@ pub struct SystemContext {
     /// FIFO queue for pause requests
     pub pause_request_queue: Option<Resource<PauseRequestQueue>>,
 
+    /// Global pause resource
+    pub global_pause_resource: Option<crate::ecs::GlobalPauseResource>,
+
     pub pool: Option<Arc<Pool>>,
     pub config: Option<Arc<ScanningConfig>>,
     pub shutdown_coordinator: Option<Arc<ShutdownCoordinator>>,
@@ -80,6 +83,7 @@ impl SystemContext {
             audio_segments: None,
             tuner_request_queue: None,
             pause_request_queue: None,
+            global_pause_resource: None,
             pool: None,
             config: None,
             shutdown_coordinator: None,
@@ -133,6 +137,11 @@ impl SystemContext {
 
     pub fn with_pause_request_queue(mut self, queue: Resource<PauseRequestQueue>) -> Self {
         self.pause_request_queue = Some(queue);
+        self
+    }
+
+    pub fn with_global_pause_resource(mut self, resource: crate::ecs::GlobalPauseResource) -> Self {
+        self.global_pause_resource = Some(resource);
         self
     }
 

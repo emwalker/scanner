@@ -344,6 +344,9 @@ fn test_interactive_mode_keeps_coordinator_alive_after_scan_completion() {
     // Create TUI event channel to simulate interactive mode
     let (tui_sender, _tui_receiver) = mpsc::channel();
 
+    let global_pause_resource =
+        Arc::new(std::sync::Mutex::new(crate::ecs::GlobalPauseState::Active));
+
     let main_thread = MainThread::new_with_entities(
         Arc::new(config),
         backend,
@@ -357,6 +360,7 @@ fn test_interactive_mode_keeps_coordinator_alive_after_scan_completion() {
         audio_entities,
         candidate_entities,
         pause_request_queue,
+        global_pause_resource,
     )
     .unwrap()
     .with_tui_event_sender(tui_sender)

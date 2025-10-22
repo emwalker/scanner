@@ -355,8 +355,15 @@ impl WindowProcessingSystem {
                         debug!(
                             scan_id = ?scan.id(),
                             window_index = task.window_index,
-                            "WindowProcessingSystem: Task was cancelled, skipping result processing"
+                            "WindowProcessingSystem: Task was cancelled, resetting window to pending"
                         );
+
+                        if let Some(window_entities) = &context.window_entities {
+                            let mut windows = window_entities.write().unwrap();
+                            if let Some(window) = windows.get_mut(&window_id) {
+                                window.progress.reset_to_pending();
+                            }
+                        }
                     }
 
                     self.deallocate_window_tuner(&window_id, context);
@@ -538,6 +545,9 @@ impl System for WindowProcessingSystem {
                 ScanPauseState::Scanning => self.handle_scanning_state(scan, context)?,
                 ScanPauseState::PausedAtWindow { .. } => {
                     self.handle_paused_or_listening_state(scan, "paused", &window_entities)
+                }
+                ScanPauseState::PausedGlobally { .. } => {
+                    self.handle_paused_or_listening_state(scan, "globally paused", &window_entities)
                 }
                 ScanPauseState::Listening { .. } => {
                     self.handle_paused_or_listening_state(scan, "listening", &window_entities)

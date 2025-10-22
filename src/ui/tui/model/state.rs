@@ -43,6 +43,7 @@ pub struct Model {
     pub devices: HashMap<crate::hardware::DeviceId, crate::hardware::DeviceInfo>,
     pub spectrum_stations: Vec<SpectrumStation>,
     pub active_audio_frequency: Option<f64>,
+    pub global_pause_resource: Option<crate::ecs::GlobalPauseResource>,
     dirty: bool,
 }
 
@@ -71,6 +72,7 @@ impl Model {
             devices: HashMap::new(),
             spectrum_stations: Vec::new(),
             active_audio_frequency: None,
+            global_pause_resource: None,
             dirty: true,
         }
     }
@@ -85,5 +87,18 @@ impl Model {
 
     pub fn clear_dirty(&mut self) {
         self.dirty = false;
+    }
+
+    pub fn set_global_pause_resource(&mut self, resource: crate::ecs::GlobalPauseResource) {
+        self.global_pause_resource = Some(resource);
+    }
+
+    pub fn is_globally_paused(&self) -> bool {
+        if let Some(ref resource) = self.global_pause_resource
+            && let Ok(state) = resource.lock()
+        {
+            return matches!(*state, crate::ecs::GlobalPauseState::Paused { .. });
+        }
+        false
     }
 }

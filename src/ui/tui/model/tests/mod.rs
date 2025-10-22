@@ -14,3 +14,6 @@ mod tuner_state;
 
 #[cfg(test)]
 mod tuner_state_proptest;
+
+#[cfg(test)]
+mod global_pause;

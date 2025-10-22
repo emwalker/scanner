@@ -29,6 +29,9 @@ pub fn run_with_logs(context: LogRunContext) -> Result<()> {
         crate::ecs::PauseRequest,
     >::new()));
 
+    let global_pause_resource =
+        Arc::new(std::sync::Mutex::new(crate::ecs::GlobalPauseState::Active));
+
     let main_thread = MainThread::new_with_entities(
         Arc::new(context.config),
         backend,
@@ -42,6 +45,7 @@ pub fn run_with_logs(context: LogRunContext) -> Result<()> {
         context.audio_entities,
         context.candidate_entities,
         pause_request_queue,
+        global_pause_resource,
     )?
     .start();
 
