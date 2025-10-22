@@ -1,14 +1,20 @@
-# Process Debugging Skill
+---
+name: process-debugging
+description: This skill should be used when investigating performance issues in running Linux processes, including high CPU usage, busy-wait loops, deadlocks, or thread contention. The skill provides systematic workflows using gdb, top, ps, and other Linux debugging tools to identify and diagnose CPU-intensive threads, thread leaks, and synchronization problems.
+---
 
-Use this skill when investigating performance issues like high CPU usage, busy waits, deadlocks, or thread contention in running processes.
+# Process Debugging
 
-## When to Use
+This skill provides systematic workflows for diagnosing performance issues in running Linux processes using standard debugging tools like gdb, top, ps, strace, and perf.
 
-- CPU fan spinning / high CPU usage
+## When to Apply This Skill
+
+- CPU fan spinning or high CPU usage detected
 - Process consuming excessive CPU (e.g., 500%+)
 - Suspected busy-wait loops
 - Thread contention or deadlocks
 - Unresponsive processes
+- Thread leaks
 
 ## Tools and Techniques
 
@@ -64,6 +70,8 @@ Tips for reading backtraces:
 - Threads in `recv()` or `poll()` → properly blocked (good)
 - Look for patterns across multiple busy threads
 
+For extensive examples of backtrace patterns and how to interpret them, refer to `references/backtrace_patterns.md`.
+
 ### 5. Syscall Tracing (if strace available)
 
 ```bash
@@ -83,12 +91,30 @@ Shows hotspot functions consuming CPU time.
 
 ## Investigation Workflow
 
-1. **Identify high CPU process** with `ps aux`
-2. **Find busy threads** with `top -H` or `ps -L`
-3. **Get backtraces** with `gdb` - this is the key step!
-4. **Analyze patterns** in the backtraces to find the busy loop
-5. **Examine source code** at the identified locations
-6. **Look for missing sleep/yield** or lock contention
+### Automated Diagnostic Script
+
+For quick initial diagnosis, run the bundled diagnostic script:
+
+```bash
+scripts/diagnose_cpu.sh <PID>
+```
+
+This script runs all basic diagnostic commands and produces a report showing:
+- Process CPU usage
+- Thread-level CPU breakdown
+- Thread states and wait channels
+- GDB backtraces for all threads
+
+### Manual Investigation Steps
+
+To systematically diagnose process performance issues:
+
+1. **Identify high CPU process** - Run `ps aux` to find processes with high CPU percentages
+2. **Find busy threads** - Use `top -H` or `ps -L` to identify which specific threads are consuming CPU
+3. **Get backtraces** - Use `gdb` to capture stack traces (this is the key diagnostic step)
+4. **Analyze patterns** - Look for repeated patterns in backtraces across busy threads
+5. **Examine source code** - Navigate to the identified code locations to understand the logic
+6. **Identify root cause** - Look for missing sleep/yield calls, lock contention, or missing cleanup
 
 ## Common Busy-Wait Patterns
 

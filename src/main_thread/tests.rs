@@ -289,3 +289,108 @@ fn test_tui_event_sender_wired_to_ui_update_system() {
         "UIUpdateSystem should send ActiveTunersUpdated events with Scanning activity when TUI event sender is configured"
     );
 }
+
+#[test]
+fn test_interactive_mode_keeps_coordinator_alive_after_scan_completion() {
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
+
+    let mut config = create_test_config();
+    config.audio.buffer_size = 8192;
+    config.audio.analyzer = crate::audio::quality::AudioAnalyzer::mock();
+    config.scanning_windows = Some(1);
+    config.duration = 1;
+
+    let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
+
+    let filter = crate::hardware::pool::PoolFilter::new()
+        .with_driver("mock")
+        .with_mode(crate::hardware::pool::TuningMode::SingleTuner);
+    let pool = Arc::new(crate::hardware::pool::Pool::new(filter, None));
+    let scheduler = Arc::new(crate::task::TaskScheduler::new(
+        pool.clone(),
+        shutdown_coordinator.clone(),
+    ));
+
+    let scan_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
+    let window_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
+    let station_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
+    let audio_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
+    let candidate_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
+
+    let pause_request_queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
+        crate::ecs::PauseRequest,
+    >::new()));
+
+    // Create a scan entity that starts completed
+    let scan_config = crate::ecs::components::scan::ScanConfigComponent::new(
+        crate::ecs::components::scan::ScanType::Stations,
+        88.9e6,
+        88.9e6,
+        2_000_000.0,
+        2_000_000.0,
+        24.0,
+        1.0,
+        1,
+    )
+    .with_stations(vec![88.9e6]);
+
+    let mut scan_entity = crate::ecs::ScanEntity::new(scan_config);
+    scan_entity.lifecycle.complete();
+    scan_entities.write().unwrap().insert(scan_entity);
+
+    let backend = create_test_backend();
+
+    // Create TUI event channel to simulate interactive mode
+    let (tui_sender, _tui_receiver) = mpsc::channel();
+
+    let main_thread = MainThread::new_with_entities(
+        Arc::new(config),
+        backend,
+        shutdown_coordinator.clone(),
+        pool.clone(),
+        scheduler,
+        Vec::new(),
+        scan_entities.clone(),
+        window_entities,
+        station_entities,
+        audio_entities,
+        candidate_entities,
+        pause_request_queue,
+    )
+    .unwrap()
+    .with_tui_event_sender(tui_sender)
+    .start();
+
+    let coordinator_shutdown = Arc::clone(&main_thread.coordinator_shutdown);
+    let shutdown_for_runner = shutdown_coordinator.clone();
+
+    // Spawn the main thread run loop
+    let run_handle = std::thread::spawn(move || main_thread.run(Some("88.9e6".to_string())));
+
+    // Give it time to process the completed scan
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // Verify coordinator is still running despite scan being complete
+    assert!(
+        !coordinator_shutdown.load(Ordering::SeqCst),
+        "Coordinator should remain running in interactive mode after scan completion"
+    );
+
+    // Trigger shutdown
+    shutdown_for_runner.shutdown();
+
+    // Wait for run to complete
+    let result = run_handle.join();
+    assert!(
+        result.is_ok(),
+        "MainThread run should complete successfully"
+    );
+
+    // Verify coordinator shut down after explicit shutdown signal
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        coordinator_shutdown.load(Ordering::SeqCst),
+        "Coordinator should shut down after explicit shutdown signal"
+    );
+}

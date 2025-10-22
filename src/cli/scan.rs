@@ -27,6 +27,67 @@ fn parse_stations(stations_str: &str) -> Result<Vec<f64>> {
         .collect()
 }
 
+struct EntityWorlds {
+    scan_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::ScanEntity>>>,
+    station_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::StationEntity>>>,
+    audio_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::AudioEntity>>>,
+    candidate_entities:
+        Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::CandidateEntity>>>,
+}
+
+fn create_entity_worlds() -> EntityWorlds {
+    use crate::ecs::{AudioEntity, CandidateEntity, EntityWorld, ScanEntity, StationEntity};
+    use std::sync::RwLock;
+
+    EntityWorlds {
+        scan_entities: Arc::new(RwLock::new(EntityWorld::<ScanEntity>::new())),
+        station_entities: Arc::new(RwLock::new(EntityWorld::<StationEntity>::new())),
+        audio_entities: Arc::new(RwLock::new(EntityWorld::<AudioEntity>::new())),
+        candidate_entities: Arc::new(RwLock::new(EntityWorld::<CandidateEntity>::new())),
+    }
+}
+
+fn create_scan_entity(
+    args: &ScanArgs,
+    config: &crate::core::types::ScanningConfig,
+) -> Result<crate::ecs::ScanEntity> {
+    use crate::ecs::components::scan::{ScanConfigComponent, ScanType};
+
+    if let Some(ref stations_str) = args.stations {
+        let stations = parse_stations(stations_str)?;
+        let freq_min = stations.iter().cloned().fold(f64::INFINITY, f64::min);
+        let freq_max = stations.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+        let scan_config = ScanConfigComponent::new(
+            ScanType::Stations,
+            freq_min,
+            freq_max,
+            config.samp_rate,
+            config.samp_rate,
+            config.sdr_gain,
+            config.duration as f64,
+            1,
+        )
+        .with_stations(stations);
+
+        Ok(crate::ecs::ScanEntity::new(scan_config))
+    } else {
+        let (freq_min, freq_max) = config.band.frequency_range();
+        let scan_config = ScanConfigComponent::new(
+            ScanType::Band,
+            freq_min,
+            freq_max,
+            config.samp_rate,
+            config.samp_rate,
+            config.sdr_gain,
+            config.duration as f64,
+            config.scanning_windows.unwrap_or(1),
+        );
+
+        Ok(crate::ecs::ScanEntity::new(scan_config))
+    }
+}
+
 pub fn handle_scan_command(args: ScanArgs) -> Result<()> {
     let config = build_scanning_config(&args)?;
 
@@ -72,63 +133,26 @@ fn run_tui_mode(
         shared_pool.clone(),
     )?;
 
-    use crate::ecs::components::scan::{ScanConfigComponent, ScanType};
-    use crate::ecs::{AudioEntity, CandidateEntity, EntityWorld, ScanEntity, StationEntity};
-    use std::sync::RwLock;
-
-    let scan_entities = Arc::new(RwLock::new(EntityWorld::<ScanEntity>::new()));
-    let station_entities = Arc::new(RwLock::new(EntityWorld::<StationEntity>::new()));
-    let audio_entities = Arc::new(RwLock::new(EntityWorld::<AudioEntity>::new()));
-    let candidate_entities = Arc::new(RwLock::new(EntityWorld::<CandidateEntity>::new()));
+    let entity_worlds = create_entity_worlds();
+    let scan_entity = create_scan_entity(args, &config)?;
+    entity_worlds
+        .scan_entities
+        .write()
+        .unwrap()
+        .insert(scan_entity);
 
     let pause_request_queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
         crate::ecs::PauseRequest,
     >::new()));
 
-    if let Some(ref stations_str) = args.stations {
-        let stations = parse_stations(stations_str)?;
-        let freq_min = stations.iter().cloned().fold(f64::INFINITY, f64::min);
-        let freq_max = stations.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-
-        let scan_config = ScanConfigComponent::new(
-            ScanType::Stations,
-            freq_min,
-            freq_max,
-            config.samp_rate,
-            config.samp_rate,
-            config.sdr_gain,
-            config.duration as f64,
-            1,
-        )
-        .with_stations(stations);
-
-        let scan_entity = ScanEntity::new(scan_config);
-        scan_entities.write().unwrap().insert(scan_entity);
-    } else {
-        let (freq_min, freq_max) = config.band.frequency_range();
-        let scan_config = ScanConfigComponent::new(
-            ScanType::Band,
-            freq_min,
-            freq_max,
-            config.samp_rate,
-            config.samp_rate,
-            config.sdr_gain,
-            config.duration as f64,
-            config.scanning_windows.unwrap_or(1),
-        );
-
-        let scan_entity = ScanEntity::new(scan_config);
-        scan_entities.write().unwrap().insert(scan_entity);
-    }
-
     let tui_handle = start_tui(
         tui_event_receiver,
         shutdown_coordinator.clone(),
         theme_name,
-        scan_entities.clone(),
-        station_entities.clone(),
-        audio_entities.clone(),
-        candidate_entities.clone(),
+        entity_worlds.scan_entities.clone(),
+        entity_worlds.station_entities.clone(),
+        entity_worlds.audio_entities.clone(),
+        entity_worlds.candidate_entities.clone(),
         pause_request_queue.clone(),
     );
 
@@ -142,10 +166,10 @@ fn run_tui_mode(
         shutdown_coordinator: shutdown_coordinator.clone(),
         pool: shared_pool.clone(),
         scheduler: scheduler.clone(),
-        scan_entities,
-        station_entities,
-        audio_entities,
-        candidate_entities,
+        scan_entities: entity_worlds.scan_entities,
+        station_entities: entity_worlds.station_entities,
+        audio_entities: entity_worlds.audio_entities,
+        candidate_entities: entity_worlds.candidate_entities,
         pause_request_queue,
     };
 
@@ -194,54 +218,13 @@ fn run_log_mode(
         }
     });
 
-    use crate::ecs::components::scan::{ScanConfigComponent, ScanType};
-    use crate::ecs::{AudioEntity, CandidateEntity, EntityWorld, ScanEntity, StationEntity};
-    use std::sync::RwLock;
-
-    let scan_entities = Arc::new(RwLock::new(EntityWorld::<ScanEntity>::new()));
-    let station_entities = Arc::new(RwLock::new(EntityWorld::<StationEntity>::new()));
-    let audio_entities = Arc::new(RwLock::new(EntityWorld::<AudioEntity>::new()));
-    let candidate_entities = Arc::new(RwLock::new(EntityWorld::<CandidateEntity>::new()));
-
-    let _pause_request_queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
-        crate::ecs::PauseRequest,
-    >::new()));
-
-    if let Some(ref stations_str) = args.stations {
-        let stations = parse_stations(stations_str)?;
-        let freq_min = stations.iter().cloned().fold(f64::INFINITY, f64::min);
-        let freq_max = stations.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-
-        let scan_config = ScanConfigComponent::new(
-            ScanType::Stations,
-            freq_min,
-            freq_max,
-            config.samp_rate,
-            config.samp_rate,
-            config.sdr_gain,
-            config.duration as f64,
-            1,
-        )
-        .with_stations(stations);
-
-        let scan_entity = ScanEntity::new(scan_config);
-        scan_entities.write().unwrap().insert(scan_entity);
-    } else {
-        let (freq_min, freq_max) = config.band.frequency_range();
-        let scan_config = ScanConfigComponent::new(
-            ScanType::Band,
-            freq_min,
-            freq_max,
-            config.samp_rate,
-            config.samp_rate,
-            config.sdr_gain,
-            config.duration as f64,
-            config.scanning_windows.unwrap_or(1),
-        );
-
-        let scan_entity = ScanEntity::new(scan_config);
-        scan_entities.write().unwrap().insert(scan_entity);
-    }
+    let entity_worlds = create_entity_worlds();
+    let scan_entity = create_scan_entity(args, &config)?;
+    entity_worlds
+        .scan_entities
+        .write()
+        .unwrap()
+        .insert(scan_entity);
 
     let format = super::config::determine_format(args);
     let level = crate::logging::level_from_flags(args.verbose, args.quiet);
@@ -253,10 +236,10 @@ fn run_log_mode(
         shutdown_coordinator: shutdown_coordinator.clone(),
         pool: shared_pool.clone(),
         scheduler: scheduler.clone(),
-        scan_entities,
-        station_entities,
-        audio_entities,
-        candidate_entities,
+        scan_entities: entity_worlds.scan_entities,
+        station_entities: entity_worlds.station_entities,
+        audio_entities: entity_worlds.audio_entities,
+        candidate_entities: entity_worlds.candidate_entities,
     };
 
     let result = log_mode::run_with_logs(run_context);

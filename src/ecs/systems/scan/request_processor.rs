@@ -111,9 +111,17 @@ impl System for RequestProcessorSystem {
 
         // Process pause request queue: pop requests and set component on ScanEntity
         if let Some(ref pause_request_queue) = context.pause_request_queue {
-            let mut queue = pause_request_queue.lock().unwrap();
+            let mut queue = match pause_request_queue.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    debug!("Pause request queue lock poisoned, recovering");
+                    poisoned.into_inner()
+                }
+            };
             while let Some(request) = queue.pop_front() {
-                let mut scans = scan_entities.write().unwrap();
+                let mut scans = scan_entities.write().map_err(|e| {
+                    crate::core::types::ScannerError::LockPoisoned(format!("scan_entities: {}", e))
+                })?;
                 if let Some(scan) = scans.iter_mut().find(|s| s.id() == &request.scan_id) {
                     if let Some(station_freq) = request.station_frequency_hz {
                         let window_center_freq = request.window_center_frequency_hz.unwrap();
@@ -140,7 +148,9 @@ impl System for RequestProcessorSystem {
             }
         }
 
-        let mut scans = scan_entities.write().unwrap();
+        let mut scans = scan_entities.write().map_err(|e| {
+            crate::core::types::ScannerError::LockPoisoned(format!("scan_entities: {}", e))
+        })?;
 
         for scan in scans.iter_mut() {
             // Process pause request component

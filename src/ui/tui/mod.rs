@@ -445,7 +445,13 @@ impl TuiProgressDisplay {
                 crate::ecs::PauseRequest::new(scan_id, window_num)
             };
 
-            pause_request_queue.lock().unwrap().push_back(request);
+            match pause_request_queue.lock() {
+                Ok(mut queue) => queue.push_back(request),
+                Err(poisoned) => {
+                    debug!("Pause request queue lock poisoned, recovering");
+                    poisoned.into_inner().push_back(request);
+                }
+            }
         }
 
         true
@@ -491,7 +497,13 @@ impl TuiProgressDisplay {
                 "TUI: Queuing pause request with new station"
             );
 
-            pause_request_queue.lock().unwrap().push_back(request);
+            match pause_request_queue.lock() {
+                Ok(mut queue) => queue.push_back(request),
+                Err(poisoned) => {
+                    debug!("Pause request queue lock poisoned, recovering");
+                    poisoned.into_inner().push_back(request);
+                }
+            }
         }
 
         self.model.playback_active = true;

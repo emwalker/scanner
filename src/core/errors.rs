@@ -66,6 +66,8 @@ pub enum ScannerError {
     },
     #[error("Mutex poisoned: {context}")]
     MutexPoisoned { context: String },
+    #[error("Lock poisoned: {0}")]
+    LockPoisoned(String),
     #[error("Invalid device arguments")]
     InvalidDeviceArgs,
     #[error(transparent)]

@@ -1,17 +1,31 @@
 ---
-name: ECS component and entity design
-description: Design ECS components, entities, and systems for the scanner's entity-component-system architecture. Use when creating tuner/scan/station/audio entities, adding new components, implementing dual-write migrations, or when user mentions "ECS", "components", "entities", or stateful interactive features.
+name: ecs-design
+description: This skill should be used when designing or implementing Entity-Component-System (ECS) architecture in Rust for the scanner application. Apply this skill when creating or modifying entities, adding new components, implementing systems, performing dual-write migrations, or when the user mentions "ECS", "components", "entities", "systems", or discusses stateful interactive features. The skill provides patterns for EntityWorld storage, Arc<Mutex<>> thread-safety, component composition, and system design.
 ---
 
 # ECS Architecture for Scanner
 
-## Our Implementation
+This skill provides guidance for designing and implementing Entity-Component-System architecture in the scanner application. Use the bundled template generator script and reference materials for extended patterns.
+
+## Implementation Overview
 
 - **Storage**: HashMap-based EntityWorld (dozens of entities, not thousands)
 - **Entities**: TunerEntity, ScanEntity, StationEntity, AudioEntity
 - **Thread-safety**: Arc<Mutex<EntityWorld<T>>>
 - **Systems**: System trait + Scheduler for sequential execution
 - **Components**: Priority, Constraint, Device, Allocation, Status, Tuning, Playback, etc.
+
+## Quick Start: Creating New ECS Elements
+
+Use the bundled template generator to create new components, entities, or systems:
+
+```bash
+scripts/generate_ecs_template.sh component MyComponent
+scripts/generate_ecs_template.sh entity MyEntity
+scripts/generate_ecs_template.sh system MySystem
+```
+
+The generator creates properly structured templates with TODOs, test scaffolding, and common patterns already in place.
 
 ## Component Design Rules
 
@@ -22,6 +36,8 @@ description: Design ECS components, entities, and systems for the scanner's enti
 3. **No data duplication**: Reference other components, don't copy their data
 
 ### Critical Anti-Patterns
+
+For extended anti-patterns and advanced patterns (God components, cross-component dependencies, event components, query builders, etc.), refer to `references/advanced_patterns.md`.
 
 ❌ **Business logic in components**
 ```rust

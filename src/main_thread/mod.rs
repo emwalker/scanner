@@ -10,8 +10,8 @@ use crate::task::TaskScheduler;
 use crate::ui::TuiEvent;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, RwLock};
-use std::thread::JoinHandle;
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread::{JoinHandle, Thread};
 use tracing::{debug, info};
 
 pub struct MainThread {
@@ -32,6 +32,7 @@ pub struct MainThread {
 
     coordinator_handle: Option<JoinHandle<()>>,
     coordinator_shutdown: Arc<AtomicBool>,
+    coordinator_thread: Arc<Mutex<Option<Thread>>>,
     pause_request_queue: Option<crate::ecs::Resource<crate::ecs::PauseRequestQueue>>,
 }
 
@@ -75,6 +76,7 @@ impl MainThread {
             candidate_entities,
             coordinator_handle: None,
             coordinator_shutdown: Arc::new(AtomicBool::new(false)),
+            coordinator_thread: Arc::new(Mutex::new(None)),
             pause_request_queue: Some(pause_request_queue),
         };
 
@@ -111,6 +113,7 @@ impl MainThread {
             candidate_entities,
             coordinator_handle: None,
             coordinator_shutdown: Arc::new(AtomicBool::new(false)),
+            coordinator_thread: Arc::new(Mutex::new(None)),
             pause_request_queue: Some(pause_request_queue),
         };
 
@@ -145,6 +148,7 @@ impl MainThread {
         let shutdown = Arc::clone(&self.coordinator_shutdown);
         let shutdown_coordinator = Arc::clone(&self.shutdown_coordinator);
         let tui_event_sender = self.tui_event_sender.clone();
+        let thread_handle = Arc::clone(&self.coordinator_thread);
 
         let pause_request_queue = self
             .pause_request_queue
@@ -152,6 +156,10 @@ impl MainThread {
             .expect("Pause request queue should be set");
 
         let handle = std::thread::spawn(move || {
+            if let Ok(mut guard) = thread_handle.lock() {
+                *guard = Some(std::thread::current());
+            }
+
             let mut coordinator = Coordinator::new(&pool, &config, &shutdown_coordinator)
                 .with_scan_entities(scan_entities)
                 .with_window_entities(window_entities)
@@ -197,7 +205,7 @@ impl MainThread {
                     debug!(error = ?e, "Coordinator tick failed");
                 }
 
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                std::thread::park_timeout(std::time::Duration::from_millis(100));
             }
 
             info!("Coordinator thread shutting down");
@@ -216,6 +224,8 @@ impl MainThread {
 
         info!("Scanning for stations ...");
 
+        let is_interactive = self.tui_event_sender.is_some();
+
         while !self.shutdown_coordinator.is_shutdown() {
             if let Ok(entities) = self.scan_entities.read()
                 && entities.iter().all(|s| s.is_completed())
@@ -223,10 +233,21 @@ impl MainThread {
             {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
-        info!("Scan complete.");
+        if is_interactive {
+            // In interactive mode, scan completion is just a milestone
+            // Keep coordinator running to handle user interactions
+            info!("Scan complete. Coordinator remains active for user interactions.");
+            while !self.shutdown_coordinator.is_shutdown() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        } else {
+            // In non-interactive mode, exit when scan completes
+            info!("Scan complete.");
+        }
+
         Ok(())
     }
 }
@@ -239,12 +260,18 @@ impl Drop for MainThread {
 
         self.coordinator_shutdown.store(true, Ordering::SeqCst);
 
+        if let Ok(guard) = self.coordinator_thread.lock()
+            && let Some(thread) = guard.as_ref() {
+                thread.unpark();
+            }
+
         if let Some(handle) = self.coordinator_handle.take()
             && let Err(e) = handle.join()
         {
             tracing::error!(error = ?e, "Coordinator thread panicked");
         }
 
+        self.shutdown_coordinator.shutdown();
         self.pool.shutdown();
     }
 }
