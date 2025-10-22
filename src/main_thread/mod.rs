@@ -261,9 +261,10 @@ impl Drop for MainThread {
         self.coordinator_shutdown.store(true, Ordering::SeqCst);
 
         if let Ok(guard) = self.coordinator_thread.lock()
-            && let Some(thread) = guard.as_ref() {
-                thread.unpark();
-            }
+            && let Some(thread) = guard.as_ref()
+        {
+            thread.unpark();
+        }
 
         if let Some(handle) = self.coordinator_handle.take()
             && let Err(e) = handle.join()

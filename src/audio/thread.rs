@@ -21,6 +21,7 @@ impl AudioThread {
         audio_sample_rate: u32,
         audio_buffer_size: u32,
         audio_rx: mpsc::Receiver<crate::mpsc::AudioPacket>,
+        volume: f32,
     ) -> Result<Self> {
         let (command_tx, command_rx) = mpsc::channel();
 
@@ -41,7 +42,7 @@ impl AudioThread {
 
             let stream = match sample_format {
                 SampleFormat::F32 => {
-                    match create_audio_stream(&audio_device, &stream_config, audio_rx) {
+                    match create_audio_stream(&audio_device, &stream_config, audio_rx, volume) {
                         Ok(stream) => stream,
                         Err(e) => {
                             debug!(error = ?e, "AudioThread: Failed to create audio stream");

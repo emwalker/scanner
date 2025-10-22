@@ -1,5 +1,5 @@
 use super::MockTheme;
-use crate::ui::tui::renderers::spectrum_caladan::wave_animation::render_full_spectrum_row;
+use crate::ui::tui::renderers::spectrum::wave_animation::render_full_spectrum_row;
 
 #[test]
 fn test_full_spectrum_row_exact_character_count() {

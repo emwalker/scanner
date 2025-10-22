@@ -106,6 +106,10 @@ pub struct ScanArgs {
     #[arg(long, default_value_t = 1.0)]
     pub learning_duration: f32,
 
+    /// Audio playback volume (0.0 to 1.0, default 0.2)
+    #[arg(long, default_value_t = 0.2)]
+    pub volume: f32,
+
     /// Write debug logs to file (useful with TUI to capture diagnostics)
     #[arg(long, default_value = "/tmp/scanner.log")]
     pub log_file: Option<String>,

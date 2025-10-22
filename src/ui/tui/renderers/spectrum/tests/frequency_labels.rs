@@ -1,5 +1,5 @@
 use super::MockTheme;
-use crate::ui::tui::renderers::spectrum_caladan::frequency_labels::{
+use crate::ui::tui::renderers::spectrum::frequency_labels::{
     render_frequency_labels, render_window_frequency_labels,
 };
 

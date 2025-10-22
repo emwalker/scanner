@@ -10,11 +10,11 @@ pub struct SharedText;
 
 impl SharedText {
     pub fn title() -> &'static str {
-        "SPECTRUM MONITOR"
+        "SPECTRUM SCANNER"
     }
 
     pub fn subtitle() -> &'static str {
-        "FM Receiver • 88–108 MHz"
+        "FM • 88–108 MHz"
     }
 
     pub fn candidates_label() -> &'static str {
@@ -26,27 +26,27 @@ impl SharedText {
     }
 
     pub fn status_detected() -> &'static str {
-        "Found"
+        "Detected"
     }
 
     pub fn status_analyzing() -> &'static str {
-        "Testing"
+        "Analyzing"
     }
 
     pub fn status_rejected() -> &'static str {
-        "Filtered"
+        "Skipped"
     }
 
     pub fn status_signal() -> &'static str {
-        "Active"
+        "Queued"
     }
 
     pub fn status_playing() -> &'static str {
-        "Playing"
+        "Listening"
     }
 
     pub fn status_completed() -> &'static str {
-        "Done"
+        "Signal"
     }
 
     pub fn quality_good() -> &'static str {
@@ -107,6 +107,12 @@ pub trait ColorScheme {
 
     // Selection highlight color
     fn selection_highlight(&self) -> Color;
+
+    // Active playing/tuning highlight colors
+    fn active_highlight_bg(&self) -> Color;
+    fn active_highlight_fg(&self) -> Color;
+    fn active_highlight_status(&self) -> Color;
+    fn active_highlight_quality(&self) -> Color;
 }
 
 /// Symbol set trait defining all Unicode symbols used in the UI
@@ -188,20 +194,10 @@ pub trait TextStyle {
     }
 }
 
-/// UI variant enum for themes that use different rendering approaches
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UiVariant {
-    Standard,
-    Caladan,
-}
-
 /// Combined theme trait that provides all theming aspects
 pub trait Theme: ColorScheme + SymbolSet + TextStyle + Send + Sync {
     fn name(&self) -> &str;
     fn is_dark(&self) -> bool;
-    fn ui_variant(&self) -> UiVariant {
-        UiVariant::Standard
-    }
 }
 
 /// Theme name enumeration for CLI argument parsing

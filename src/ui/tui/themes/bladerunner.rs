@@ -97,6 +97,22 @@ impl ColorScheme for BladerunnerDarkTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0)
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(20, 0, 40) // Deep purple-black
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(0, 255, 255) // Cyan neon
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(255, 20, 147) // Deep pink
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(255, 255, 0) // Yellow
+    }
 }
 
 impl SymbolSet for BladerunnerDarkTheme {
@@ -158,40 +174,7 @@ impl SymbolSet for BladerunnerDarkTheme {
     }
 }
 
-impl TextStyle for BladerunnerDarkTheme {
-    fn title(&self) -> &'static str {
-        "RADIO SCANNER"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "Monitoring broadcast spectrum • FM • 88–108 MHz"
-    }
-
-    // Status text - cyberpunk terminology
-    fn status_detected_text(&self) -> &'static str {
-        "DETECTED"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "ANALYZING"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "REJECTED"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "SIGNAL"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "PLAYING"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "COMPLETE"
-    }
-}
+impl TextStyle for BladerunnerDarkTheme {}
 
 impl Theme for BladerunnerDarkTheme {
     fn name(&self) -> &str {
@@ -297,6 +280,22 @@ impl ColorScheme for BladerunnerLightTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0)
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(0, 139, 139) // Dark cyan
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(245, 245, 245) // Light gray
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(139, 0, 139) // Dark magenta
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(218, 165, 32) // Golden rod
+    }
 }
 
 impl SymbolSet for BladerunnerLightTheme {
@@ -354,39 +353,7 @@ impl SymbolSet for BladerunnerLightTheme {
     }
 }
 
-impl TextStyle for BladerunnerLightTheme {
-    fn title(&self) -> &'static str {
-        "RADIO SCANNER"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "Monitoring broadcast spectrum • FM • 88–108 MHz"
-    }
-
-    fn status_detected_text(&self) -> &'static str {
-        "DETECTED"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "ANALYZING"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "REJECTED"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "SIGNAL"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "PLAYING"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "COMPLETE"
-    }
-}
+impl TextStyle for BladerunnerLightTheme {}
 
 impl Theme for BladerunnerLightTheme {
     fn name(&self) -> &str {

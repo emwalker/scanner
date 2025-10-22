@@ -157,6 +157,22 @@ impl ColorScheme for TransportDarkTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0)
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(50, 35, 20) // Dark oxidized metal
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(220, 180, 100) // Amber phosphor
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(200, 150, 90) // Copper glow
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(160, 170, 140) // Verdigris
+    }
 }
 
 impl SymbolSet for TransportDarkTheme {
@@ -218,40 +234,7 @@ impl SymbolSet for TransportDarkTheme {
     }
 }
 
-impl TextStyle for TransportDarkTheme {
-    fn title(&self) -> &'static str {
-        "SIGNAL ANALYSIS STATION"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "Precision RF Monitor • FM Spectrum • 88–108 MHz"
-    }
-
-    // Status text - analog instrumentation terminology
-    fn status_detected_text(&self) -> &'static str {
-        "Sampled"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "Measuring"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "Discarded"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "Confirmed"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "Reading"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "Logged"
-    }
-}
+impl TextStyle for TransportDarkTheme {}
 
 impl Theme for TransportDarkTheme {
     fn name(&self) -> &str {
@@ -357,6 +340,22 @@ impl ColorScheme for TransportLightTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0)
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(120, 90, 50) // Deep bronze
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(240, 235, 220) // Warm cream
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(140, 100, 60) // Warm copper
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(80, 100, 70) // Forest verdigris
+    }
 }
 
 impl SymbolSet for TransportLightTheme {
@@ -414,39 +413,7 @@ impl SymbolSet for TransportLightTheme {
     }
 }
 
-impl TextStyle for TransportLightTheme {
-    fn title(&self) -> &'static str {
-        "SIGNAL ANALYSIS STATION"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "Precision RF Monitor • FM Spectrum • 88–108 MHz"
-    }
-
-    fn status_detected_text(&self) -> &'static str {
-        "Sampled"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "Measuring"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "Discarded"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "Confirmed"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "Reading"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "Logged"
-    }
-}
+impl TextStyle for TransportLightTheme {}
 
 impl Theme for TransportLightTheme {
     fn name(&self) -> &str {

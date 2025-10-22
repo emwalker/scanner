@@ -97,6 +97,22 @@ impl ColorScheme for InterstellarDarkTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0)
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(100, 60, 0) // Deep amber-brown
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(255, 191, 0) // Bright amber
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(255, 165, 0) // Warm amber
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(255, 140, 0) // Deep amber
+    }
 }
 
 impl SymbolSet for InterstellarDarkTheme {
@@ -158,40 +174,7 @@ impl SymbolSet for InterstellarDarkTheme {
     }
 }
 
-impl TextStyle for InterstellarDarkTheme {
-    fn title(&self) -> &'static str {
-        "RADIO SCANNER"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "Monitoring broadcast spectrum • FM • 88–108 MHz"
-    }
-
-    // Status text - atmospheric terminology
-    fn status_detected_text(&self) -> &'static str {
-        "Located"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "Evaluating"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "Filtered"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "Acquired"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "Playing"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "Complete"
-    }
-}
+impl TextStyle for InterstellarDarkTheme {}
 
 impl Theme for InterstellarDarkTheme {
     fn name(&self) -> &str {
@@ -297,6 +280,22 @@ impl ColorScheme for InterstellarLightTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0)
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(184, 134, 11) // Dark gold
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(254, 252, 232) // Cream
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(146, 64, 14) // Bronze
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(202, 138, 4) // Medium gold
+    }
 }
 
 impl SymbolSet for InterstellarLightTheme {
@@ -354,39 +353,7 @@ impl SymbolSet for InterstellarLightTheme {
     }
 }
 
-impl TextStyle for InterstellarLightTheme {
-    fn title(&self) -> &'static str {
-        "RADIO SCANNER"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "Monitoring broadcast spectrum • FM • 88–108 MHz"
-    }
-
-    fn status_detected_text(&self) -> &'static str {
-        "Located"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "Evaluating"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "Filtered"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "Acquired"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "Playing"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "Complete"
-    }
-}
+impl TextStyle for InterstellarLightTheme {}
 
 impl Theme for InterstellarLightTheme {
     fn name(&self) -> &str {

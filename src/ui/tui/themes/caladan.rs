@@ -1,6 +1,6 @@
 //! Caladan theme - Philosophical water world aesthetic
 
-use super::{ColorScheme, SymbolSet, TextStyle, Theme, UiVariant};
+use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 use ratatui::style::Color;
 
 pub struct DarkTheme;
@@ -93,6 +93,22 @@ impl ColorScheme for DarkTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(180, 220, 240) // Brighter blue for selection
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(0, 60, 90) // Deep teal background for active playing
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(150, 255, 150) // Bright green for active playing
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(200, 220, 255) // Light blue for status when active
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(150, 255, 150) // Bright green for quality when active
+    }
 }
 
 impl SymbolSet for DarkTheme {
@@ -158,10 +174,6 @@ impl Theme for DarkTheme {
 
     fn is_dark(&self) -> bool {
         true
-    }
-
-    fn ui_variant(&self) -> UiVariant {
-        UiVariant::Caladan
     }
 }
 
@@ -255,6 +267,22 @@ impl ColorScheme for LightTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(0, 120, 180) // Bright blue for selection
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(0, 100, 150) // Deep blue background for active playing
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::White // White text for active playing
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(220, 240, 255) // Very light blue for status when active
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(0, 180, 0) // Bright green for quality when active
+    }
 }
 
 impl SymbolSet for LightTheme {
@@ -320,9 +348,5 @@ impl Theme for LightTheme {
 
     fn is_dark(&self) -> bool {
         false
-    }
-
-    fn ui_variant(&self) -> UiVariant {
-        UiVariant::Caladan
     }
 }

@@ -1,9 +1,9 @@
 use super::MockTheme;
 use crate::audio::quality::AudioQuality;
 use crate::ui::tui::{
-    colors::ACTIVE_STATE_GREEN,
     model::{Model, types::SpectrumStation},
-    renderers::spectrum_caladan::window_detail::render_window_detail_row,
+    renderers::spectrum::window_detail::render_window_detail_row,
+    themes::ColorScheme,
 };
 
 #[test]
@@ -142,16 +142,17 @@ fn test_active_station_uses_active_state_green() {
 
     let line = render_window_detail_row(width, window_start, window_width, &model, &theme);
 
+    let expected_color = theme.active_highlight_fg();
     let active_spans: Vec<_> = line
         .spans
         .iter()
         .filter(|span| span.content.trim() != "")
-        .filter(|span| span.style.fg == Some(ACTIVE_STATE_GREEN))
+        .filter(|span| span.style.fg == Some(expected_color))
         .collect();
 
     assert!(
         !active_spans.is_empty(),
-        "Active station should use ACTIVE_STATE_GREEN color (RGB 150, 255, 150)"
+        "Active station should use theme's active highlight color"
     );
 }
 
@@ -173,16 +174,17 @@ fn test_inactive_station_does_not_use_active_state_green() {
 
     let line = render_window_detail_row(width, window_start, window_width, &model, &theme);
 
-    let green_spans: Vec<_> = line
+    let active_color = theme.active_highlight_fg();
+    let active_colored_spans: Vec<_> = line
         .spans
         .iter()
         .filter(|span| span.content.trim() != "")
-        .filter(|span| span.style.fg == Some(ACTIVE_STATE_GREEN))
+        .filter(|span| span.style.fg == Some(active_color))
         .collect();
 
     assert!(
-        green_spans.is_empty(),
-        "Inactive station should not use ACTIVE_STATE_GREEN color"
+        active_colored_spans.is_empty(),
+        "Inactive station should not use active highlight color"
     );
 }
 
@@ -219,25 +221,15 @@ fn test_active_and_inactive_stations_different_colors() {
         .filter_map(|span| span.style.fg)
         .collect();
 
+    let active_color = theme.active_highlight_fg();
     assert!(
-        all_colors.contains(&ACTIVE_STATE_GREEN),
-        "Should contain ACTIVE_STATE_GREEN for active station"
+        all_colors.contains(&active_color),
+        "Should contain active highlight color for active station"
     );
 
     let unique_colors: std::collections::HashSet<_> = all_colors.iter().collect();
     assert!(
         unique_colors.len() > 1,
         "Active and inactive stations should use different colors"
-    );
-}
-
-#[test]
-fn test_active_state_green_constant_value() {
-    use ratatui::style::Color;
-
-    assert_eq!(
-        ACTIVE_STATE_GREEN,
-        Color::Rgb(150, 255, 150),
-        "ACTIVE_STATE_GREEN must be RGB(150, 255, 150) to match tuner Scanning/Listening color"
     );
 }

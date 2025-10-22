@@ -24,13 +24,10 @@ pub mod model;
 pub mod renderers;
 pub mod themes;
 
-use layout::{CaladanLayout, TuiLayout};
+use layout::Layout;
 use model::Model;
-use renderers::{
-    console::ConsoleRenderer, header, instructions, scan, scan_caladan, spectrum, spectrum_caladan,
-    tuners_caladan,
-};
-use themes::{Theme, ThemeName, UiVariant, create_theme};
+use renderers::{console::ConsoleRenderer, header, instructions, scan, spectrum, tuners};
+use themes::{Theme, ThemeName, create_theme};
 
 /// TUI-based progress display for multiple candidates using The Elm Architecture
 pub struct TuiProgressDisplay {
@@ -707,51 +704,25 @@ impl TuiProgressDisplay {
     fn ui(&self, f: &mut Frame) {
         let theme = self.theme.as_ref();
         let theme_name = self.current_theme.to_string();
-        let ui_variant = theme.ui_variant();
+        let layout = Layout::new(f.area());
 
-        match ui_variant {
-            UiVariant::Caladan => {
-                let layout = CaladanLayout::new(f.area());
+        header::render_header(f, layout.header, &self.model, theme);
+        spectrum::render_spectrum(f, layout.spectrum, &self.model, theme);
+        scan::render_scan(f, layout.progress, &self.model, theme);
+        tuners::render_tuners(f, layout.tuners, &self.model, theme);
 
-                header::render_header(f, layout.header, &self.model, theme);
-                spectrum_caladan::render_spectrum(f, layout.spectrum, &self.model, theme);
-                scan_caladan::render_scan(f, layout.progress, &self.model, theme);
-                tuners_caladan::render_tuners(f, layout.tuners, &self.model, theme);
-
-                let all_themes: Vec<String> = themes::ThemeName::all()
-                    .iter()
-                    .map(|t| t.display_name().to_string())
-                    .collect();
-                instructions::render_instructions(
-                    f,
-                    layout.instructions,
-                    theme,
-                    &theme_name,
-                    &self.model,
-                    &all_themes,
-                );
-            }
-            UiVariant::Standard => {
-                let layout = TuiLayout::new(f.area());
-
-                header::render_header(f, layout.header, &self.model, theme);
-                spectrum::render_spectrum(f, layout.spectrum, &self.model, theme);
-                scan::render_scan(f, layout.progress, &self.model, theme);
-
-                let all_themes: Vec<String> = themes::ThemeName::all()
-                    .iter()
-                    .map(|t| t.display_name().to_string())
-                    .collect();
-                instructions::render_instructions(
-                    f,
-                    layout.instructions,
-                    theme,
-                    &theme_name,
-                    &self.model,
-                    &all_themes,
-                );
-            }
-        }
+        let all_themes: Vec<String> = themes::ThemeName::all()
+            .iter()
+            .map(|t| t.display_name().to_string())
+            .collect();
+        instructions::render_instructions(
+            f,
+            layout.instructions,
+            theme,
+            &theme_name,
+            &self.model,
+            &all_themes,
+        );
     }
 
     /// Check if we're running in an interactive terminal

@@ -26,8 +26,12 @@ impl AudioSession {
         let (audio_tx, audio_rx) =
             std::sync::mpsc::sync_channel::<crate::mpsc::AudioPacket>(audio_buffer_packets);
 
-        let audio_thread =
-            AudioThread::new(config.audio.sample_rate, config.audio.buffer_size, audio_rx)?;
+        let audio_thread = AudioThread::new(
+            config.audio.sample_rate,
+            config.audio.buffer_size,
+            audio_rx,
+            config.audio.volume,
+        )?;
         debug!("AudioSession created: AudioThread started");
 
         Ok(Self {

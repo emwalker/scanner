@@ -70,6 +70,18 @@ impl crate::ui::tui::themes::ColorScheme for MockTheme {
     fn selection_highlight(&self) -> Color {
         Color::Cyan
     }
+    fn active_highlight_bg(&self) -> Color {
+        Color::DarkGray
+    }
+    fn active_highlight_fg(&self) -> Color {
+        Color::White
+    }
+    fn active_highlight_status(&self) -> Color {
+        Color::LightBlue
+    }
+    fn active_highlight_quality(&self) -> Color {
+        Color::LightGreen
+    }
 }
 
 impl crate::ui::tui::themes::SymbolSet for MockTheme {

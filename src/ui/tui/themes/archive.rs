@@ -94,6 +94,22 @@ impl ColorScheme for ArchiveDarkTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0)
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(60, 50, 40) // Dark archive brown
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(220, 200, 180) // Light parchment
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(190, 170, 145) // Medium parchment
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(200, 180, 150) // Warm parchment
+    }
 }
 
 impl SymbolSet for ArchiveDarkTheme {
@@ -150,39 +166,7 @@ impl SymbolSet for ArchiveDarkTheme {
     }
 }
 
-impl TextStyle for ArchiveDarkTheme {
-    fn title(&self) -> &'static str {
-        "ARCHIVE COMMUNICATIONS MONITOR"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "Diplomatic Intelligence Catalog • Broadcast Spectrum FM • 88–108 MHz"
-    }
-
-    fn status_detected_text(&self) -> &'static str {
-        "Intercepted"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "Classifying"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "Excluded"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "Cataloged"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "Reviewing"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "Filed"
-    }
-}
+impl TextStyle for ArchiveDarkTheme {}
 
 impl Theme for ArchiveDarkTheme {
     fn name(&self) -> &str {
@@ -285,6 +269,22 @@ impl ColorScheme for ArchiveLightTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0)
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(139, 115, 85) // Medium brown background
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(30, 25, 20) // Very dark brown text
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(60, 50, 40) // Dark brown
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(80, 70, 55) // Darker brown
+    }
 }
 
 impl SymbolSet for ArchiveLightTheme {
@@ -341,39 +341,7 @@ impl SymbolSet for ArchiveLightTheme {
     }
 }
 
-impl TextStyle for ArchiveLightTheme {
-    fn title(&self) -> &'static str {
-        "ARCHIVE COMMUNICATIONS MONITOR"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "Diplomatic Intelligence Catalog • Broadcast Spectrum FM • 88–108 MHz"
-    }
-
-    fn status_detected_text(&self) -> &'static str {
-        "Intercepted"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "Classifying"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "Excluded"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "Cataloged"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "Reviewing"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "Filed"
-    }
-}
+impl TextStyle for ArchiveLightTheme {}
 
 impl Theme for ArchiveLightTheme {
     fn name(&self) -> &str {

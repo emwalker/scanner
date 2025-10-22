@@ -97,6 +97,22 @@ impl ColorScheme for BasicDarkTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0) // Bright yellow-orange for selection
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(80, 40, 0) // Dark orange-brown background
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(255, 255, 255) // White text
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(255, 200, 128) // Light orange
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(255, 220, 100) // Bright yellow-orange (matches theme)
+    }
 }
 
 impl SymbolSet for BasicDarkTheme {
@@ -159,40 +175,7 @@ impl SymbolSet for BasicDarkTheme {
     }
 }
 
-impl TextStyle for BasicDarkTheme {
-    fn title(&self) -> &'static str {
-        "Radio Scanner"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "Monitoring broadcast spectrum • FM • 88–108 MHz"
-    }
-
-    // Status text - exact original from main branch
-    fn status_detected_text(&self) -> &'static str {
-        "Located"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "Evaluating"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "Filtered"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "Acquired"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "Playing"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "Complete"
-    }
-}
+impl TextStyle for BasicDarkTheme {}
 
 impl Theme for BasicDarkTheme {
     fn name(&self) -> &str {
@@ -298,6 +281,22 @@ impl ColorScheme for BasicLightTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 140, 0) // Bright orange for selection
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(255, 165, 0) // Bright orange background
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(0, 0, 0) // Black text for light theme
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(139, 69, 19) // Dark brown
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(184, 134, 11) // Dark gold (matches theme)
+    }
 }
 
 impl SymbolSet for BasicLightTheme {
@@ -355,39 +354,7 @@ impl SymbolSet for BasicLightTheme {
     }
 }
 
-impl TextStyle for BasicLightTheme {
-    fn title(&self) -> &'static str {
-        "Radio Scanner"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "Monitoring broadcast spectrum • FM • 88–108 MHz"
-    }
-
-    fn status_detected_text(&self) -> &'static str {
-        "Located"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "Evaluating"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "Filtered"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "Acquired"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "Playing"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "Complete"
-    }
-}
+impl TextStyle for BasicLightTheme {}
 
 impl Theme for BasicLightTheme {
     fn name(&self) -> &str {

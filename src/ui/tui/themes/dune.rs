@@ -97,6 +97,22 @@ impl ColorScheme for DuneDarkTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0)
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(40, 60, 80) // Deep blue-gray
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(200, 180, 150) // Muted sand
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(160, 180, 200) // Light blue-gray
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(180, 170, 140) // Sandy quality
+    }
 }
 
 impl SymbolSet for DuneDarkTheme {
@@ -158,40 +174,7 @@ impl SymbolSet for DuneDarkTheme {
     }
 }
 
-impl TextStyle for DuneDarkTheme {
-    fn title(&self) -> &'static str {
-        "RADIO SCANNER"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "Monitoring broadcast spectrum • FM • 88–108 MHz"
-    }
-
-    // Status text - practical monitoring terminology
-    fn status_detected_text(&self) -> &'static str {
-        "Located"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "Testing"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "Filtered"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "Captured"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "Active"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "Complete"
-    }
-}
+impl TextStyle for DuneDarkTheme {}
 
 impl Theme for DuneDarkTheme {
     fn name(&self) -> &str {
@@ -297,6 +280,22 @@ impl ColorScheme for DuneLightTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0)
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(40, 80, 120) // Deep spice blue
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(250, 240, 220) // Light sand
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(30, 90, 150) // Deeper spice
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(180, 80, 40) // Deep orange
+    }
 }
 
 impl SymbolSet for DuneLightTheme {
@@ -354,39 +353,7 @@ impl SymbolSet for DuneLightTheme {
     }
 }
 
-impl TextStyle for DuneLightTheme {
-    fn title(&self) -> &'static str {
-        "RADIO SCANNER"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "Monitoring broadcast spectrum • FM • 88–108 MHz"
-    }
-
-    fn status_detected_text(&self) -> &'static str {
-        "Located"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "Testing"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "Filtered"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "Captured"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "Active"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "Complete"
-    }
-}
+impl TextStyle for DuneLightTheme {}
 
 impl Theme for DuneLightTheme {
     fn name(&self) -> &str {

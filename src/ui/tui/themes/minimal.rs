@@ -94,6 +94,22 @@ impl ColorScheme for DarkTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0)
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(40, 40, 40) // Very dark gray background
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(240, 240, 240) // Almost white text
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(180, 180, 180) // Medium gray
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(200, 200, 200) // Light gray
+    }
 }
 
 impl SymbolSet for DarkTheme {
@@ -150,39 +166,7 @@ impl SymbolSet for DarkTheme {
     }
 }
 
-impl TextStyle for DarkTheme {
-    fn title(&self) -> &'static str {
-        "SPECTRUM MONITOR"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "FM Receiver • 88–108 MHz"
-    }
-
-    fn status_detected_text(&self) -> &'static str {
-        "Found"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "Testing"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "Filtered"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "Active"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "Playing"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "Done"
-    }
-}
+impl TextStyle for DarkTheme {}
 
 impl Theme for DarkTheme {
     fn name(&self) -> &str {
@@ -285,6 +269,22 @@ impl ColorScheme for LightTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0)
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(60, 60, 60) // Dark gray background
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(255, 255, 255) // White text
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(200, 200, 200) // Light gray
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(220, 220, 220) // Very light gray
+    }
 }
 
 impl SymbolSet for LightTheme {
@@ -341,39 +341,7 @@ impl SymbolSet for LightTheme {
     }
 }
 
-impl TextStyle for LightTheme {
-    fn title(&self) -> &'static str {
-        "SPECTRUM MONITOR"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "FM Receiver • 88–108 MHz"
-    }
-
-    fn status_detected_text(&self) -> &'static str {
-        "Found"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "Testing"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "Filtered"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "Active"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "Playing"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "Done"
-    }
-}
+impl TextStyle for LightTheme {}
 
 impl Theme for LightTheme {
     fn name(&self) -> &str {

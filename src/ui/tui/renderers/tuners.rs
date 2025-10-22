@@ -1,7 +1,6 @@
 //! Tuner enumeration display for Caladan theme
 
 use crate::ui::tui::{
-    colors::ACTIVE_STATE_GREEN,
     model::{FocusState, Model},
     themes::Theme,
 };
@@ -145,7 +144,7 @@ fn render_tuner_block(
     let status_style = match tuner.state {
         crate::ui::tui::model::TunerState::Listening
         | crate::ui::tui::model::TunerState::Scanning => Style::default()
-            .fg(ACTIVE_STATE_GREEN)
+            .fg(theme.active_highlight_fg())
             .add_modifier(Modifier::BOLD),
         crate::ui::tui::model::TunerState::Available => Style::default()
             .fg(theme.foreground())
@@ -170,19 +169,4 @@ fn render_tuner_block(
 
     f.render_widget(block, area);
     f.render_widget(paragraph, inner);
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::ui::tui::colors::ACTIVE_STATE_GREEN;
-    use ratatui::style::Color;
-
-    #[test]
-    fn test_active_state_green_matches_scanning_listening_color() {
-        assert_eq!(
-            ACTIVE_STATE_GREEN,
-            Color::Rgb(150, 255, 150),
-            "ACTIVE_STATE_GREEN must match the color used for Scanning/Listening tuner states"
-        );
-    }
 }

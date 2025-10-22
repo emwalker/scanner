@@ -94,6 +94,22 @@ impl ColorScheme for DarkTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0)
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(40, 0, 60) // Deep purple background
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(220, 180, 255) // Light purple text
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(200, 160, 240) // Medium purple
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(255, 200, 255) // Bright magenta
+    }
 }
 
 impl SymbolSet for DarkTheme {
@@ -150,39 +166,7 @@ impl SymbolSet for DarkTheme {
     }
 }
 
-impl TextStyle for DarkTheme {
-    fn title(&self) -> &'static str {
-        "S P E C T R U M   M O N I T O R"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "Frequency Analysis  ·  88–108 MHz  ·  FM"
-    }
-
-    fn status_detected_text(&self) -> &'static str {
-        "Detected"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "Analyzing"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "Dismissed"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "Confirmed"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "Monitoring"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "Complete"
-    }
-}
+impl TextStyle for DarkTheme {}
 
 impl Theme for DarkTheme {
     fn name(&self) -> &str {
@@ -285,6 +269,22 @@ impl ColorScheme for LightTheme {
     fn selection_highlight(&self) -> Color {
         Color::Rgb(255, 200, 0)
     }
+
+    fn active_highlight_bg(&self) -> Color {
+        Color::Rgb(139, 69, 19) // Deep brown background
+    }
+
+    fn active_highlight_fg(&self) -> Color {
+        Color::Rgb(255, 215, 0) // Gold text
+    }
+
+    fn active_highlight_status(&self) -> Color {
+        Color::Rgb(218, 165, 32) // Golden rod
+    }
+
+    fn active_highlight_quality(&self) -> Color {
+        Color::Rgb(255, 200, 100) // Light gold
+    }
 }
 
 impl SymbolSet for LightTheme {
@@ -341,39 +341,7 @@ impl SymbolSet for LightTheme {
     }
 }
 
-impl TextStyle for LightTheme {
-    fn title(&self) -> &'static str {
-        "S P E C T R U M   M O N I T O R"
-    }
-
-    fn subtitle(&self) -> &'static str {
-        "Frequency Analysis  ·  88–108 MHz  ·  FM"
-    }
-
-    fn status_detected_text(&self) -> &'static str {
-        "Detected"
-    }
-
-    fn status_analyzing_text(&self) -> &'static str {
-        "Analyzing"
-    }
-
-    fn status_rejected_text(&self) -> &'static str {
-        "Dismissed"
-    }
-
-    fn status_signal_text(&self) -> &'static str {
-        "Confirmed"
-    }
-
-    fn status_playing_text(&self) -> &'static str {
-        "Monitoring"
-    }
-
-    fn status_completed_text(&self) -> &'static str {
-        "Complete"
-    }
-}
+impl TextStyle for LightTheme {}
 
 impl Theme for LightTheme {
     fn name(&self) -> &str {

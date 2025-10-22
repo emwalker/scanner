@@ -123,6 +123,7 @@ pub fn build_scanning_config(args: &ScanArgs) -> Result<ScanningConfig> {
                 threshold: squelch_threshold,
                 learning_duration: args.learning_duration,
             },
+            volume: args.volume,
         },
         peak_detection: PeakDetectionConfig {
             fft_size: 1024,

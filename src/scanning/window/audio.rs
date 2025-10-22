@@ -38,6 +38,7 @@ pub fn create_audio_stream(
     device: &cpal::Device,
     stream_config: &StreamConfig,
     audio_rx: std::sync::mpsc::Receiver<crate::mpsc::AudioPacket>,
+    volume: f32,
 ) -> Result<cpal::Stream> {
     let err_fn = |err| debug!("Audio error: {}", err);
 
@@ -59,7 +60,7 @@ pub fn create_audio_stream(
                 let remaining = &packet.as_slice()[*offset..];
                 let to_copy = remaining.len().min(data.len());
                 for i in 0..to_copy {
-                    data[filled + i] = remaining[i].clamp(-1.0, 1.0);
+                    data[filled + i] = (remaining[i] * volume).clamp(-1.0, 1.0);
                 }
                 filled += to_copy;
 
@@ -77,7 +78,7 @@ pub fn create_audio_stream(
                         let samples = packet.as_slice();
                         let to_copy = samples.len().min(data.len() - filled);
                         for i in 0..to_copy {
-                            data[filled + i] = samples[i].clamp(-1.0, 1.0);
+                            data[filled + i] = (samples[i] * volume).clamp(-1.0, 1.0);
                         }
                         filled += to_copy;
 
@@ -383,7 +384,9 @@ pub fn spawn_audio_entity(
     stream_config.buffer_size = BufferSize::Fixed(config.audio.buffer_size);
 
     let stream = match sample_format {
-        SampleFormat::F32 => create_audio_stream(&audio_device, &stream_config, audio_rx)?,
+        SampleFormat::F32 => {
+            create_audio_stream(&audio_device, &stream_config, audio_rx, config.audio.volume)?
+        }
         _ => {
             return Err(ScannerError::UnsupportedAudioFormat(
                 "WAV format required".to_string(),
@@ -483,7 +486,9 @@ pub(super) fn play_signals(
     stream_config.buffer_size = BufferSize::Fixed(config.audio.buffer_size);
 
     let stream = match sample_format {
-        SampleFormat::F32 => create_audio_stream(&audio_device, &stream_config, audio_rx)?,
+        SampleFormat::F32 => {
+            create_audio_stream(&audio_device, &stream_config, audio_rx, config.audio.volume)?
+        }
         _ => {
             return Err(ScannerError::UnsupportedAudioFormat(
                 "WAV format required".to_string(),

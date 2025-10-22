@@ -7,6 +7,7 @@ pub struct AudioConfig {
     pub sample_rate: u32,
     pub analyzer: AudioAnalyzer,
     pub squelch: SquelchConfig,
+    pub volume: f32,
 }
 
 impl Default for AudioConfig {
@@ -16,6 +17,7 @@ impl Default for AudioConfig {
             sample_rate: 48000,
             analyzer: AudioAnalyzer::pass_through(),
             squelch: SquelchConfig::default(),
+            volume: 0.2,
         }
     }
 }
