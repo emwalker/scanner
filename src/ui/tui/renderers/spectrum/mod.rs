@@ -19,12 +19,40 @@ use wave_animation::render_full_spectrum_row;
 use window_detail::render_window_detail_row;
 
 pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) {
+    use std::sync::Mutex;
     use std::sync::OnceLock;
     use std::time::Instant;
 
-    static ANIMATION_START: OnceLock<Instant> = OnceLock::new();
-    let start = ANIMATION_START.get_or_init(Instant::now);
-    let animation_time = start.elapsed().as_secs_f32();
+    struct AnimationState {
+        last_update: Instant,
+        accumulated_time: f32,
+        was_paused: bool,
+    }
+
+    static ANIMATION_STATE: OnceLock<Mutex<AnimationState>> = OnceLock::new();
+    let state = ANIMATION_STATE.get_or_init(|| {
+        Mutex::new(AnimationState {
+            last_update: Instant::now(),
+            accumulated_time: 0.0,
+            was_paused: false,
+        })
+    });
+
+    let animation_time = if let Ok(mut state) = state.try_lock() {
+        let now = Instant::now();
+        let is_paused = model.is_globally_paused();
+
+        if !is_paused {
+            let delta = now.duration_since(state.last_update).as_secs_f32();
+            state.accumulated_time += delta;
+        }
+
+        state.last_update = now;
+        state.was_paused = is_paused;
+        state.accumulated_time
+    } else {
+        0.0
+    };
 
     if area.height < 4 {
         return;

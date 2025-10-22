@@ -9,6 +9,7 @@ pub struct SdrStreamSource {
     center_frequency: f64,
     peak_scan_duration: f64,
     timeout_us: u64,
+    pause_signal: Option<crate::pause_signal::PauseSignal>,
 }
 
 impl SdrStreamSource {
@@ -17,6 +18,7 @@ impl SdrStreamSource {
         sample_rate: f64,
         center_frequency: f64,
         peak_scan_duration: f64,
+        pause_signal: Option<crate::pause_signal::PauseSignal>,
     ) -> Self {
         Self {
             sdr_rx,
@@ -24,6 +26,7 @@ impl SdrStreamSource {
             center_frequency,
             peak_scan_duration,
             timeout_us: 100, // 100μs timeout between read attempts
+            pause_signal,
         }
     }
 }
@@ -37,6 +40,9 @@ impl SampleSource for SdrStreamSource {
         use std::time::Duration;
 
         let mut samples_read = 0;
+        let mut empty_count = 0;
+        const MAX_EMPTY_RETRIES: usize = 10000; // 1 second at 100μs per retry
+
         while samples_read < buffer.len() {
             match self.sdr_rx.try_recv() {
                 Ok(packet) => {
@@ -45,10 +51,27 @@ impl SampleSource for SdrStreamSource {
                     buffer[samples_read..samples_read + to_copy]
                         .copy_from_slice(&samples[..to_copy]);
                     samples_read += to_copy;
+                    empty_count = 0;
                 }
                 Err(TryRecvError::Empty) => {
                     if samples_read > 0 {
                         break;
+                    }
+
+                    // Check pause state before blocking (ECS Resource pattern)
+                    if let Some(ref pause_signal) = self.pause_signal
+                        && pause_signal.is_paused()
+                    {
+                        return Err(crate::core::types::ScannerError::Custom(
+                            "Operation cancelled due to pause".to_string(),
+                        ));
+                    }
+
+                    empty_count += 1;
+                    if empty_count >= MAX_EMPTY_RETRIES {
+                        return Err(crate::core::types::ScannerError::Custom(
+                            "Timeout waiting for samples (possible pause or shutdown)".to_string(),
+                        ));
                     }
                     thread::sleep(Duration::from_micros(self.timeout_us));
                     continue;

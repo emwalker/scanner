@@ -138,7 +138,13 @@ impl Window {
             self.center_freq / 1e6
         );
 
-        let peaks = processing::peaks(self.station_mode, self.center_freq, &self.config, segment)?;
+        let peaks = processing::peaks(
+            self.station_mode,
+            self.center_freq,
+            &self.config,
+            segment,
+            self.pause_signal.clone(),
+        )?;
 
         if !peaks.is_empty() {
             debug!("Found {} peaks in this window", peaks.len());

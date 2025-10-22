@@ -685,9 +685,8 @@ impl TuiProgressDisplay {
             && let Ok(entities) = scan_entities.try_read()
         {
             for scan in entities.iter() {
-                if let crate::ecs::components::scan::ScanPauseState::Listening {
-                    paused_at_window,
-                } = scan.progress.state
+                if let crate::ecs::components::scan::ScanPauseState::Listening { paused_at_window } =
+                    scan.progress.state
                     && let Some(station) = self.get_listening_station(scan.id())
                     && let Some(ref pause_request_queue) = self.pause_request_queue
                 {

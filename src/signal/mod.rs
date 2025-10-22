@@ -45,6 +45,7 @@ pub fn collect_peaks(
     config: &ScanningConfig,
     sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
     center_freq: f64,
+    pause_signal: Option<crate::pause_signal::PauseSignal>,
 ) -> Result<Vec<Peak>> {
     use tracing::debug;
 
@@ -59,6 +60,7 @@ pub fn collect_peaks(
         config.samp_rate,
         center_freq,
         config.peak_detection.scan_duration,
+        pause_signal,
     );
 
     crate::signal::peaks::collect_peaks_from_source(config, &mut sdr_source)

@@ -494,10 +494,10 @@ fn main_loop(
                 }
             }
 
-            // If we didn't send any data (timeouts or no active streams), sleep briefly
-            // to avoid busy-looping while waiting for commands or parent to resume reading
-            if !did_work && !active_streams.is_empty() {
-                std::thread::sleep(std::time::Duration::from_millis(100));
+            // If we didn't send any data, sleep briefly to avoid busy-looping
+            // This applies when: no active streams, stream timeouts, or backpressure from parent
+            if !did_work {
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
 
@@ -567,5 +567,74 @@ mod tests {
             .expect("Worker should not return error");
 
         let _ = std::fs::remove_file(socket_path);
+    }
+
+    #[test]
+    fn test_worker_does_not_busy_wait_when_idle() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let running = Arc::new(AtomicBool::new(true));
+        let running_clone = running.clone();
+
+        let worker_thread = thread::spawn(move || {
+            let (_cmd_tx, cmd_rx) = mpsc::channel::<InternalCommand>();
+            let (_resp_tx, _resp_rx) = mpsc::channel::<ControlMessage>();
+            let mut sample_buffer = vec![Complex::new(0.0, 0.0); 2048];
+            let mut device: Option<Box<dyn StreamingDevice>> = None;
+            let mut active_streams: HashMap<usize, StreamState> = HashMap::new();
+            let mut pending_command: Option<InternalCommand> = None;
+
+            let iterations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let iterations_clone = iterations.clone();
+
+            while running_clone.load(Ordering::SeqCst) {
+                let cmd_result = if let Some(cmd) = pending_command.take() {
+                    Ok(cmd)
+                } else {
+                    cmd_rx.try_recv()
+                };
+
+                let mut did_work = false;
+                match cmd_result {
+                    Ok(InternalCommand::Shutdown) => break,
+                    Err(mpsc::TryRecvError::Empty) => {}
+                    Err(mpsc::TryRecvError::Disconnected) => break,
+                    _ => did_work = true,
+                }
+
+                if let Some(ref mut dev) = device {
+                    for (channel, _state) in active_streams.iter_mut() {
+                        match dev.read_samples(*channel, &mut sample_buffer, 100_000) {
+                            Ok(n) if n > 0 => {
+                                did_work = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // This is the fix being tested - should sleep when idle
+                if !did_work {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+
+                iterations_clone.fetch_add(1, Ordering::SeqCst);
+            }
+
+            iterations.load(Ordering::SeqCst)
+        });
+
+        thread::sleep(Duration::from_millis(100));
+        running.store(false, Ordering::SeqCst);
+
+        let iterations = worker_thread.join().expect("Worker thread panicked");
+
+        assert!(
+            iterations < 20,
+            "Worker should iterate ~10 times in 100ms (one per 10ms sleep), but got {} iterations. \
+             This indicates a busy-wait without proper sleep.",
+            iterations
+        );
     }
 }

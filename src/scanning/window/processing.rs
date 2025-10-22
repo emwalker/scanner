@@ -25,6 +25,7 @@ pub(super) fn peaks(
     center_freq: f64,
     config: &ScanningConfig,
     device: &dyn SegmentTrait,
+    pause_signal: Option<PauseSignal>,
 ) -> Result<Vec<crate::core::types::Peak>> {
     if station_mode {
         debug!(
@@ -37,7 +38,7 @@ pub(super) fn peaks(
         }])
     } else {
         let sdr_rx_for_peaks = device.audio_subscriber();
-        crate::signal::collect_peaks(config, sdr_rx_for_peaks, center_freq)
+        crate::signal::collect_peaks(config, sdr_rx_for_peaks, center_freq, pause_signal)
     }
 }
 
