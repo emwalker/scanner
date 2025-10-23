@@ -124,10 +124,10 @@ mod tests {
         let total_candidates = 5;
         let stations_found = 2;
         let stats_text = format!(
-            "Candidates: {} | Stations: {}",
+            "Candidates: {} | Signals: {}",
             total_candidates, stations_found
         );
-        assert_eq!(stats_text, "Candidates: 5 | Stations: 2");
+        assert_eq!(stats_text, "Candidates: 5 | Signals: 2");
 
         let header_width: usize = 50;
         let top_border = format!("╭{}╮", "─".repeat(header_width.saturating_sub(2)));

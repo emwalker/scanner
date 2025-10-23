@@ -2,7 +2,6 @@
 
 mod frequency_labels;
 mod wave_animation;
-mod window_detail;
 
 use crate::ui::tui::{
     model::{FocusState, Model},
@@ -16,7 +15,6 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph},
 };
 use wave_animation::render_full_spectrum_row;
-use window_detail::render_window_detail_row;
 
 pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) {
     use std::sync::Mutex;
@@ -112,20 +110,8 @@ pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
     let inner = block.inner(area);
     let content_width = inner.width as usize;
 
-    // Split the inner area to separate the bottom row for the window detail box
-    let layout = ratatui::layout::Layout::default()
-        .direction(ratatui::layout::Direction::Vertical)
-        .constraints([
-            ratatui::layout::Constraint::Length(3), // Top 3 rows (freq labels, spectrum, window freq labels)
-            ratatui::layout::Constraint::Length(3), // Bottom box (1 content + 2 borders)
-        ])
-        .split(inner);
-
-    let top_area = layout[0];
-    let window_detail_area = layout[1];
-
-    // Render top 3 rows
-    let top_lines = vec![
+    // Render the 3 rows (freq labels, spectrum, window freq labels)
+    let lines = vec![
         render_frequency_labels(content_width, fm_start, fm_range, theme),
         render_full_spectrum_row(
             content_width,
@@ -139,46 +125,9 @@ pub fn render_spectrum(f: &mut Frame, area: Rect, model: &Model, theme: &dyn The
         render_window_frequency_labels(content_width, window_start, window_width, theme),
     ];
 
-    let top_paragraph = Paragraph::new(top_lines);
+    let paragraph = Paragraph::new(lines);
     f.render_widget(block, area);
-    f.render_widget(top_paragraph, top_area);
-
-    // Create a subtle box for the window detail row with dim bracket color
-    let window_detail_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(
-            Style::default()
-                .fg(bracket_color)
-                .add_modifier(Modifier::DIM),
-        )
-        .border_set(ratatui::symbols::border::Set {
-            top_left: "╭",
-            top_right: "╮",
-            bottom_left: "╰",
-            bottom_right: "╯",
-            vertical_left: " ",
-            vertical_right: " ",
-            horizontal_top: "─",
-            horizontal_bottom: "─",
-        })
-        .padding(ratatui::widgets::Padding::horizontal(1));
-
-    let window_detail_inner = window_detail_block.inner(window_detail_area);
-    let window_detail_width = window_detail_inner.width as usize;
-
-    let window_detail_line = render_window_detail_row(
-        window_detail_width,
-        window_start,
-        window_width,
-        model,
-        theme,
-    );
-
-    let window_detail_paragraph = Paragraph::new(vec![window_detail_line]);
-
-    f.render_widget(window_detail_block, window_detail_area);
-    f.render_widget(window_detail_paragraph, window_detail_inner);
+    f.render_widget(paragraph, inner);
 }
 
 #[cfg(test)]

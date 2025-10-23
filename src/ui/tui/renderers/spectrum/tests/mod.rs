@@ -165,4 +165,3 @@ impl Theme for MockTheme {
 mod frequency_labels;
 mod pause_animation;
 mod wave_animation;
-mod window_detail;

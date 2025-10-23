@@ -28,7 +28,7 @@ pub fn render_tuners(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme
     let mut y_offset = 0;
 
     for (tuner_idx, tuner_info) in tuners.iter().enumerate() {
-        if y_offset + 5 > area.height {
+        if y_offset + 4 > area.height {
             return;
         }
 
@@ -36,12 +36,12 @@ pub fn render_tuners(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme
             x: area.x,
             y: area.y + y_offset,
             width: area.width,
-            height: 5,
+            height: 4,
         };
 
         let has_focus = matches!(model.focus_state, FocusState::Tuner(i) if i == tuner_idx);
         render_tuner_block(f, tuner_area, tuner_info, theme, bracket_color, has_focus);
-        y_offset += 5;
+        y_offset += 4;
     }
 }
 
@@ -158,11 +158,11 @@ fn render_tuner_block(
                 .fg(theme.primary())
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from(vec![Span::styled(
-            &tuner_id_str,
-            Style::default().fg(theme.secondary()),
-        )]),
-        Line::from(vec![Span::styled(tuner.state.display(), status_style)]),
+        Line::from(vec![
+            Span::styled(&tuner_id_str, Style::default().fg(theme.secondary())),
+            Span::raw("  "),
+            Span::styled(tuner.state.display(), status_style),
+        ]),
     ];
 
     let paragraph = Paragraph::new(lines);

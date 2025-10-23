@@ -18,7 +18,7 @@ impl Layout {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3), // Header
-                Constraint::Length(8), // Spectrum (full width)
+                Constraint::Length(5), // Spectrum (full width)
                 Constraint::Min(0),    // Content area (split horizontally for progress + tuners)
                 Constraint::Length(1), // Instructions
             ])

@@ -22,7 +22,7 @@ impl SharedText {
     }
 
     pub fn stations_label() -> &'static str {
-        "Stations"
+        "Signals"
     }
 
     pub fn status_detected() -> &'static str {
