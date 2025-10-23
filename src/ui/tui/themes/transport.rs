@@ -60,8 +60,9 @@
 //! primitive technology; it's the opposite: so advanced it has returned to
 //! analog precision as the ultimate expression of reliability and human control.
 
-use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 use ratatui::style::Color;
+
+use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 
 /// Transport dark theme - analog precision instruments with warm phosphor displays
 pub struct TransportDarkTheme;
@@ -172,6 +173,14 @@ impl ColorScheme for TransportDarkTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(160, 170, 140) // Verdigris
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(65, 90, 110)
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(230, 235, 240)
     }
 }
 
@@ -355,6 +364,14 @@ impl ColorScheme for TransportLightTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(80, 100, 70) // Forest verdigris
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(50, 75, 95)
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(255, 255, 255)
     }
 }
 

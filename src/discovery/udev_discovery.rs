@@ -1,19 +1,23 @@
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, mpsc},
+    time::{Duration, Instant},
+};
+
+use nix::poll::{PollFd, PollFlags, poll};
+use tokio_util::sync::CancellationToken;
+use tracing::debug;
+use udev::{EventType, MonitorBuilder};
+
 use super::{
     polling::Polling,
     service::{Event, Service},
     tracker::DeviceTracker,
 };
-use crate::hardware::pool::Pool;
-use crate::hardware::types::Backend;
-use crate::task::{DeviceEnumerationTask, Task, TaskScheduler};
-use nix::poll::{PollFd, PollFlags, poll};
-use std::collections::HashMap;
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-use tokio_util::sync::CancellationToken;
-use tracing::debug;
-use udev::{EventType, MonitorBuilder};
+use crate::{
+    hardware::{pool::Pool, types::Backend},
+    task::{DeviceEnumerationTask, Task, TaskScheduler},
+};
 
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(150);
 
@@ -23,10 +27,18 @@ pub struct Udev {
     backends: Vec<Backend>,
     pending_rescan: bool,
     trackers: HashMap<Backend, Arc<Mutex<DeviceTracker>>>,
+    tuner_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>>,
+    device_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::DeviceEntity>>>,
 }
 
 impl Udev {
-    pub fn new(scheduler: Arc<TaskScheduler>, pool: Arc<Pool>, backends: Vec<Backend>) -> Self {
+    pub fn new(
+        scheduler: Arc<TaskScheduler>,
+        pool: Arc<Pool>,
+        backends: Vec<Backend>,
+        tuner_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>>,
+        device_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::DeviceEntity>>>,
+    ) -> Self {
         let trackers = backends
             .iter()
             .map(|backend| (backend.clone(), Arc::new(Mutex::new(DeviceTracker::new()))))
@@ -38,6 +50,8 @@ impl Udev {
             backends,
             pending_rescan: false,
             trackers,
+            tuner_entities,
+            device_entities,
         }
     }
 
@@ -51,11 +65,13 @@ impl Udev {
                 .cloned()
                 .expect("Tracker should exist for backend");
 
-            let task = DeviceEnumerationTask::with_tracker(
+            let task = DeviceEnumerationTask::with_shared_entities(
                 backend.clone(),
                 self.pool.clone(),
                 event_tx.clone(),
-                tracker,
+                Some(tracker),
+                self.tuner_entities.clone(),
+                self.device_entities.clone(),
             );
 
             self.scheduler
@@ -83,6 +99,8 @@ impl Service for Udev {
                     self.pool.clone(),
                     self.backends.clone(),
                     Duration::from_secs(3),
+                    self.tuner_entities.clone(),
+                    self.device_entities.clone(),
                 );
                 return polling.run(event_tx, cancel);
             }

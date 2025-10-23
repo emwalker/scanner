@@ -1,12 +1,16 @@
-use crate::file::iq::IqFileMetadata;
+use std::{
+    fs::File,
+    io::{BufWriter, Write},
+};
+
 use rustradio::{
     Complex, Result,
     block::{Block, BlockEOF, BlockName, BlockRet},
     stream::{ReadStream, WriteStream},
 };
-use std::fs::File;
-use std::io::{BufWriter, Write};
 use tracing::debug;
+
+use crate::file::iq::IqFileMetadata;
 
 /// I/Q capture block that saves samples to file while passing them through unchanged
 pub struct IqCaptureBlock {

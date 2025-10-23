@@ -11,7 +11,7 @@ use crate::core::types::Result;
 /// # Examples
 ///
 /// ```no_run
-/// use scanner::hardware::{Backend, Soapy, pool::TunerId, DeviceId};
+/// use scanner::hardware::{Backend, DeviceId, Soapy, pool::TunerId};
 ///
 /// let backend = Soapy;
 /// let devices = backend.enumerate_devices()?;

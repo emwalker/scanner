@@ -1,8 +1,10 @@
 //! Device tracking for hotplug detection
 
-use crate::hardware::{DeviceId, DeviceInfo};
 use std::collections::HashMap;
+
 use tracing::debug;
+
+use crate::hardware::{DeviceId, DeviceInfo};
 
 /// Tracks discovered devices and detects additions/removals
 pub struct DeviceTracker {
@@ -66,8 +68,10 @@ impl Default for DeviceTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hardware::pool::TunerId;
-    use crate::hardware::types::{Backend, TunerInfo};
+    use crate::hardware::{
+        pool::TunerId,
+        types::{Backend, TunerInfo},
+    };
 
     fn create_test_device(driver: &str, serial: &str) -> DeviceInfo {
         let device_id = DeviceId::Driver {
@@ -83,6 +87,7 @@ mod tests {
                 id: TunerId::new(device_id, 0),
                 label: format!("Test {} {}", driver, serial),
                 mode: String::new(),
+                antenna: None,
             }],
         }
     }

@@ -1,8 +1,10 @@
-use super::traits;
-use super::{ControlMessage, IQPacket};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
+
+use super::{ControlMessage, IQPacket, traits};
 use crate::core::types::Result;
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
 
 /// Mock control channel for testing
 ///
@@ -122,9 +124,10 @@ impl traits::DataSender for MockDataSender {
 
 #[cfg(test)]
 mod tests {
+    use num::Complex;
+
     use super::*;
     use crate::ipc::traits::{ControlChannel, DataReceiver, DataSender};
-    use num::Complex;
 
     #[test]
     fn test_mock_control_channel_send_recv() {

@@ -1,11 +1,17 @@
-use scanner::hardware::DeviceId;
-use scanner::ipc::{
-    ControlChannel, ControlMessage, DataReceiver, IQPacket, UnixControlChannel, UnixDataReceiver,
+use std::{
+    os::unix::net::UnixStream,
+    path::PathBuf,
+    process::{Child, Command, Stdio},
+    time::Duration,
 };
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+
+use scanner::{
+    hardware::DeviceId,
+    ipc::{
+        ControlChannel, ControlMessage, DataReceiver, IQPacket, UnixControlChannel,
+        UnixDataReceiver,
+    },
+};
 use tempfile::TempDir;
 
 /// Test fixture for manual subprocess testing with explicit control

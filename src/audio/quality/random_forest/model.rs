@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
-use smartcore::ensemble::random_forest_classifier::RandomForestClassifier;
-use smartcore::linalg::basic::matrix::DenseMatrix;
+use smartcore::{
+    ensemble::random_forest_classifier::RandomForestClassifier, linalg::basic::matrix::DenseMatrix,
+};
 use tracing::debug;
 
 /// Serializable model data for Random Forest classifier
@@ -28,8 +29,7 @@ impl Classifier {
 
     /// Load a pre-trained model from file
     pub fn load_pretrained(model_path: &str) -> crate::core::types::Result<Self> {
-        use std::fs::File;
-        use std::io::BufReader;
+        use std::{fs::File, io::BufReader};
 
         debug!(model_path = %model_path, "Loading pre-trained Random Forest model");
 
@@ -93,8 +93,7 @@ impl Classifier {
         model_path: &str,
         model_version: &str,
     ) -> crate::core::types::Result<()> {
-        use std::fs::File;
-        use std::io::BufWriter;
+        use std::{fs::File, io::BufWriter};
 
         if self.serializable_data.is_none() {
             return Err(crate::core::types::ScannerError::ModelSaveFailed {

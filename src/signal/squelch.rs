@@ -1,14 +1,20 @@
-use crate::audio::quality::{AudioAnalyzer, AudioQuality};
-use crate::core::types::Signal;
-use rustradio::block::{Block, BlockEOF, BlockName, BlockRet};
-use rustradio::stream::ReadStream;
-use rustradio::{Float, Result};
 use std::sync::{
     Arc,
     atomic::{AtomicU8, Ordering},
-    mpsc::SyncSender,
+};
+
+use rustradio::{
+    Float, Result,
+    block::{Block, BlockEOF, BlockName, BlockRet},
+    stream::ReadStream,
 };
 use tracing::debug;
+
+use crate::{
+    audio::quality::{AudioAnalyzer, AudioQuality},
+    core::types::Signal,
+    ecs::WindowId,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Decision {
@@ -50,7 +56,7 @@ pub struct SquelchBlock {
     analysis_completed: bool,
 
     // Signal detection
-    signal_tx: Option<SyncSender<Signal>>,
+    signal_tx: Option<std::sync::mpsc::Sender<Signal>>,
     frequency_hz: f64,
     detection_center_freq: f64,
 
@@ -66,7 +72,7 @@ pub struct SquelchBlock {
     audio_capturer: Option<crate::file::AudioCaptureSinkState>,
 
     #[allow(dead_code)]
-    metadata: crate::scanning::window::WindowMetadata,
+    window_id: WindowId,
     #[allow(dead_code)]
     tuner_id: Option<crate::hardware::DeviceId>,
 }
@@ -75,7 +81,7 @@ pub struct SquelchBlock {
 pub struct SquelchConfig {
     pub sample_rate: f32,
     pub learning_duration: f32,
-    pub signal_tx: Option<SyncSender<Signal>>,
+    pub signal_tx: Option<std::sync::mpsc::Sender<Signal>>,
     pub frequency_hz: f64,
     pub center_freq: f64,
     pub squelch_disabled: bool,
@@ -83,7 +89,7 @@ pub struct SquelchConfig {
     pub fft_size: usize,
     pub audio_analyzer: AudioAnalyzer,
     pub audio_capturer: Option<crate::file::AudioCaptureSink<crate::file::Buffering>>,
-    pub window_id: usize,
+    pub window_id: WindowId,
     #[allow(dead_code)]
     pub tuner_id: Option<crate::hardware::DeviceId>,
 }
@@ -118,10 +124,7 @@ impl SquelchBlock {
             audio_capturer: config
                 .audio_capturer
                 .map(crate::file::AudioCaptureSinkState::Buffering),
-            metadata: crate::scanning::window::WindowMetadata {
-                center_frequency_hz: config.center_freq,
-                window_id: config.window_id,
-            },
+            window_id: config.window_id.clone(),
             tuner_id: config.tuner_id,
         };
 
@@ -256,7 +259,7 @@ impl SquelchBlock {
                 audio_quality,
             );
 
-            match tx.try_send(signal) {
+            match tx.send(signal) {
                 Ok(()) => debug!(
                     "Signal queued for frequency {:.1} MHz",
                     self.frequency_hz / 1e6
@@ -392,8 +395,10 @@ impl Block for SquelchBlock {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rustradio::stream::WriteStream;
+
+    use super::*;
+    use crate::ecs::{TaskId, WindowId};
 
     fn load_audio_samples(fixture_path: &str) -> (Vec<f32>, crate::testing::AudioFileMetadata) {
         let (mut audio_source, metadata) =
@@ -420,8 +425,9 @@ mod tests {
         let (_input_stream, input_read_stream) = WriteStream::new();
         let squelch_config = SquelchConfig {
             sample_rate: metadata.sample_rate,
-            learning_duration: metadata.squelch_learning_duration, // Use the actual learning duration from metadata
-            signal_tx: None,                                       // no signal channel for tests
+            learning_duration: metadata.squelch_learning_duration, /* Use the actual learning
+                                                                    * duration from metadata */
+            signal_tx: None, // no signal channel for tests
             frequency_hz: metadata.frequency_hz,
             center_freq: metadata.center_freq,
             squelch_disabled: false, // don't disable squelch for tests
@@ -429,7 +435,7 @@ mod tests {
             fft_size: 1024,          // default FFT size for tests
             audio_analyzer: AudioAnalyzer::mock(), // use mock analyzer for tests
             audio_capturer: None,    // no audio capture for tests
-            window_id: 0,            // default window for tests
+            window_id: WindowId::new(TaskId::new("test"), 0), // default window for tests
             tuner_id: None,
         };
         let (mut squelch, _decision_state) = SquelchBlock::new(input_read_stream, squelch_config);
@@ -524,6 +530,7 @@ mod tests {
     #[test]
     fn test_squelch_file_coordination() -> crate::core::types::Result<()> {
         use std::fs;
+
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -551,7 +558,7 @@ mod tests {
             fft_size: 1024,
             audio_analyzer: AudioAnalyzer::mock(),
             audio_capturer: Some(capturer),
-            window_id: 0, // default window for tests
+            window_id: WindowId::new(TaskId::new("test"), 0),
             tuner_id: None,
         };
         let (mut squelch, _decision_state) = SquelchBlock::new(input_read_stream, squelch_config);
@@ -581,6 +588,7 @@ mod tests {
     #[test]
     fn test_squelch_file_discard() -> crate::core::types::Result<()> {
         use std::fs;
+
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -608,7 +616,7 @@ mod tests {
             fft_size: 1024,
             audio_analyzer: AudioAnalyzer::mock(),
             audio_capturer: Some(capturer),
-            window_id: 0, // default window for tests
+            window_id: WindowId::new(TaskId::new("test"), 0),
             tuner_id: None,
         };
         let (mut squelch, _decision_state) = SquelchBlock::new(input_read_stream, squelch_config);

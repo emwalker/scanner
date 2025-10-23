@@ -1,9 +1,9 @@
 //! Event processing and state update methods
 
-use crate::ui::TuiEvent;
 use tracing::debug;
 
 use super::state::Model;
+use crate::ui::TuiEvent;
 
 impl Model {
     /// Update the model based on a TUI event

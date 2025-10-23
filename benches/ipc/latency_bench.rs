@@ -1,7 +1,17 @@
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use scanner::hardware::mock::MockDevice;
-use scanner::hardware::pool::{Pool, TaskPriority, TaskRequirements, TunerActivity};
 use std::time::Instant;
+
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use scanner::{
+    hardware,
+    hardware::{
+        DeviceTrait,
+        mock::MockDevice,
+        pool::{
+            Pool, TaskPriority, TaskRequirements, TunerActivity,
+            test_utils::add_test_device_to_pool,
+        },
+    },
+};
 
 fn bench_control_message_roundtrip(c: &mut Criterion) {
     let mut group = c.benchmark_group("ipc_control_roundtrip");
@@ -11,7 +21,9 @@ fn bench_control_message_roundtrip(c: &mut Criterion) {
     group.bench_function("configure_and_start_roundtrip", |b| {
         let pool = Pool::new_unfiltered();
         let device = Box::new(MockDevice::new("mock", "bench001", false));
-        pool.add_device(device, scanner::hardware::types::Backend::Mock);
+        let device_id = device.id().clone();
+        let caps = device.capabilities().clone();
+        add_test_device_to_pool(&pool, device_id, caps, hardware::types::Backend::Mock, None);
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -54,7 +66,9 @@ fn bench_stop_stream_roundtrip(c: &mut Criterion) {
     group.bench_function("stop_stream_roundtrip", |b| {
         let pool = Pool::new_unfiltered();
         let device = Box::new(MockDevice::new("mock", "bench002", false));
-        pool.add_device(device, scanner::hardware::types::Backend::Mock);
+        let device_id = device.id().clone();
+        let caps = device.capabilities().clone();
+        add_test_device_to_pool(&pool, device_id, caps, hardware::types::Backend::Mock, None);
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -96,7 +110,9 @@ fn bench_multiple_roundtrips(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, &count| {
             let pool = Pool::new_unfiltered();
             let device = Box::new(MockDevice::new("mock", "bench003", false));
-            pool.add_device(device, scanner::hardware::types::Backend::Mock);
+            let device_id = device.id().clone();
+            let caps = device.capabilities().clone();
+            add_test_device_to_pool(&pool, device_id, caps, hardware::types::Backend::Mock, None);
 
             let requirements = TaskRequirements {
                 frequency_hz: 88.9e6,

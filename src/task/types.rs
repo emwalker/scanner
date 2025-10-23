@@ -1,10 +1,16 @@
 //! Core types for task abstraction
 
-use crate::core::types::{Result, ScannerError};
-use crate::hardware::{pool, types::Backend};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
+};
+
 use tokio_util::sync::CancellationToken;
+
+use crate::{
+    core::types::{Result, ScannerError},
+    hardware::{pool, types::Backend},
+};
 
 /// Controls task execution flow
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,7 +30,6 @@ pub enum TaskContinuation {
 /// Task wrapper using enum dispatch (faster than dyn trait)
 #[allow(dead_code)]
 pub enum Task {
-    Audio(Box<super::AudioTask>),
     DeviceEnumeration(super::DeviceEnumerationTask),
     #[cfg(test)]
     Mock(Box<dyn MockTaskTrait>),
@@ -48,7 +53,6 @@ impl Task {
     #[allow(dead_code)]
     pub fn run(&mut self, shutdown: CancellationToken) -> Result<TaskContinuation> {
         match self {
-            Task::Audio(t) => t.run(shutdown),
             Task::DeviceEnumeration(t) => t.run(shutdown),
             #[cfg(test)]
             Task::Mock(t) => t.run(shutdown),
@@ -59,7 +63,6 @@ impl Task {
     #[allow(dead_code)]
     pub fn backend(&self) -> Backend {
         match self {
-            Task::Audio(t) => t.backend(),
             Task::DeviceEnumeration(t) => t.backend().clone(),
             #[cfg(test)]
             Task::Mock(t) => t.backend(),
@@ -70,7 +73,6 @@ impl Task {
     #[allow(dead_code)]
     pub fn task_type(&self) -> TaskType {
         match self {
-            Task::Audio(_) => TaskType::Audio,
             Task::DeviceEnumeration(_) => TaskType::DeviceEnumeration,
             #[cfg(test)]
             Task::Mock(_) => TaskType::Mock,
@@ -81,7 +83,6 @@ impl Task {
     #[allow(dead_code)]
     pub fn description(&self) -> String {
         match self {
-            Task::Audio(t) => t.description(),
             Task::DeviceEnumeration(t) => t.description(),
             #[cfg(test)]
             Task::Mock(t) => t.description(),
@@ -92,7 +93,6 @@ impl Task {
     #[allow(dead_code)]
     pub fn on_start(&mut self) {
         match self {
-            Task::Audio(t) => t.on_start(),
             Task::DeviceEnumeration(t) => t.on_start(),
             #[cfg(test)]
             Task::Mock(t) => t.on_start(),
@@ -103,7 +103,6 @@ impl Task {
     #[allow(dead_code)]
     pub fn on_complete(&mut self) {
         match self {
-            Task::Audio(t) => t.on_complete(),
             Task::DeviceEnumeration(t) => t.on_complete(),
             #[cfg(test)]
             Task::Mock(t) => t.on_complete(),
@@ -114,7 +113,6 @@ impl Task {
     #[allow(dead_code)]
     pub fn on_error(&mut self, error: &ScannerError) {
         match self {
-            Task::Audio(t) => t.on_error(error),
             Task::DeviceEnumeration(t) => t.on_error(error),
             #[cfg(test)]
             Task::Mock(t) => t.on_error(error),
@@ -126,7 +124,6 @@ impl Task {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum TaskType {
-    Audio,
     DeviceEnumeration,
     #[cfg(test)]
     Mock,

@@ -1,13 +1,17 @@
 //! RAII wrapper for tuners acquired from the pool
 
-use crate::core::types::{Result, ScannerError};
-use crate::hardware::pool::SubprocessHandle;
-use crate::hardware::pool::types::TunerId;
-use rustradio::Complex;
-use rustradio::graph::GraphRunner;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+
+use rustradio::{Complex, graph::GraphRunner};
 use tracing::error;
+
+use crate::{
+    core::types::{Result, ScannerError},
+    hardware::pool::{SubprocessHandle, types::TunerId},
+};
 
 /// Backend implementation for tuner operations
 pub enum TunerBackend {

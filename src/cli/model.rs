@@ -1,5 +1,4 @@
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
 pub fn generate_versioned_filename(model_version: &str) -> String {
     let date = chrono::Utc::now().format("%Y%m%d").to_string();

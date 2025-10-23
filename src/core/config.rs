@@ -7,6 +7,7 @@ mod signal_processing;
 pub use audio::{AudioConfig, SquelchConfig};
 pub use capture::CaptureConfig;
 pub use debug::DebugConfig;
+use num::integer::gcd;
 pub use peak_detection::{
     AveragingConfig, CfarConfig, ExponentialSmoothingConfig, MovingAverageConfig,
     MultiFrameAveragingConfig, MultiFrameConfig, NoiseFloorConfig, PeakDetectionConfig, WindowType,
@@ -15,7 +16,6 @@ pub use peak_detection::{
 pub use signal_processing::{FrequencyTrackingConfig, SignalProcessingConfig};
 
 use crate::core::bands::Band;
-use num::integer::gcd;
 
 /// Configuration for scanning operations
 #[derive(Clone)]
@@ -53,8 +53,8 @@ impl Default for ScanningConfig {
 }
 
 impl ScanningConfig {
-    /// Calculate optimal rational resampler ratios for converting from input_rate to audio_sample_rate
-    /// Returns (interpolation, decimation) factors for the rational resampler
+    /// Calculate optimal rational resampler ratios for converting from input_rate to
+    /// audio_sample_rate Returns (interpolation, decimation) factors for the rational resampler
     pub fn calculate_resampler_ratios(&self, input_rate: f32) -> (usize, usize) {
         let target_rate = self.audio.sample_rate as f32;
 

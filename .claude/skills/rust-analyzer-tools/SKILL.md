@@ -1,6 +1,6 @@
 ---
 name: rust-analyzer-tools
-description: Use when working with Rust code to leverage rust-analyzer's semantic understanding for navigation, error analysis, refactoring, and code generation. Apply this skill when investigating compiler errors, navigating Rust code structure, performing safe refactoring, or generating Rust code. Prefer rust-analyzer tools over Grep/Read when Rust-specific semantics matter (types, traits, lifetimes, scope).
+description: REQUIRED for ALL Rust symbol operations and refactoring. Use BEFORE Grep/Read for any Rust code work. Provides semantic understanding via rust-analyzer for navigation, error analysis, safe refactoring, and code generation. MANDATORY checklist inside shows when to use find_references (not Grep), rename_symbol (not find/replace), get_diagnostics (not cargo build), and organize_imports (not manual). Check the Pre-Flight Checklist before using standard tools.
 ---
 
 # rust-analyzer Tools
@@ -25,6 +25,27 @@ Do NOT use this skill for:
 - Reading file contents (use Read)
 - Quick string matching (use Grep)
 - Non-Rust files
+
+## MANDATORY: Pre-Flight Checklist
+
+**Before using Grep, Read, or manual editing for Rust code, check this list:**
+
+- [ ] Am I looking for all usages of a symbol? → **Use find_references** (not Grep)
+- [ ] Am I renaming something? → **Use rename_symbol** (not find/replace, NEVER manual editing)
+- [ ] Am I looking for where something is defined? → **Use find_definition** (not Grep)
+- [ ] Am I searching for types/traits/functions by name? → **Use workspace_symbols** (not Grep)
+- [ ] Did I just make changes? → **Use get_diagnostics** (not cargo build) + **organize_imports** (not manual)
+- [ ] Am I refactoring? → **Use extract_function, inline_function, move_items** (not manual editing)
+- [ ] Do I have compiler errors? → **Use get_diagnostics** (not reading terminal output)
+- [ ] Am I checking if code compiles? → **Use run_cargo_check** (faster than cargo build)
+
+**Only use Grep/Read if NONE of the above apply.**
+
+Examples of when to use standard tools:
+- Searching for a string literal across multiple file types
+- Reading a markdown file
+- Finding TODO comments
+- Searching log files
 
 ## Core Capabilities
 

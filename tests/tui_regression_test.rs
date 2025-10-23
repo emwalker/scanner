@@ -1,18 +1,30 @@
-use scanner::core::types::{Band, ScanningConfig};
-use scanner::ecs::components::scan::{ScanConfigComponent, ScanType};
-use scanner::ecs::{Coordinator, Entity, EntityWorld, ScanEntity, WindowEntity};
-use scanner::hardware::DeviceId;
-use scanner::hardware::mock::MockDevice;
-use scanner::hardware::pool::{Pool, PoolFilter, PoolStatus, TunerActivity, TunerId, TunerState};
-use scanner::hardware::types::Backend;
-use scanner::shutdown::ShutdownCoordinator;
-use scanner::task::TaskScheduler;
-use scanner::ui::TuiEvent;
-use scanner::ui::tui::model::Model;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
-use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
+    time::Duration,
+};
+
+use scanner::{
+    core::types::{Band, ScanningConfig},
+    ecs::{
+        Coordinator, EntityWorld, ScanTaskData, TaskEntity, TaskId, WindowEntity,
+        components::scan::{ScanConfigComponent, ScanType},
+    },
+    hardware::{
+        DeviceId,
+        pool::{
+            Pool, PoolStatus, TunerActivity, TunerId, TunerState,
+            test_utils::add_test_device_to_pool,
+        },
+        types::Backend,
+    },
+    shutdown::ShutdownCoordinator,
+    task::TaskScheduler,
+    ui::{TuiEvent, tui::model::Model},
+};
 
 #[test]
 fn test_active_tuners_updated_skips_redundant_processing() {
@@ -54,10 +66,10 @@ fn test_active_tuners_updated_skips_redundant_processing() {
 
     assert_eq!(
         initial_tuner_state.state, after_redundant_update.state,
-        "Regression test: Pool info should not be rebuilt when status is identical.\n\
-         Bug: During listening mode, redundant ActiveTunersUpdated events caused \n\
-         expensive HashMap rebuilds every time, spiking CPU to 50%.\n\
-         Fix: Added change detection to skip processing when status unchanged."
+        "Regression test: Pool info should not be rebuilt when status is identical.\nBug: During \
+         listening mode, redundant ActiveTunersUpdated events caused \nexpensive HashMap rebuilds \
+         every time, spiking CPU to 50%.\nFix: Added change detection to skip processing when \
+         status unchanged."
     );
     assert_eq!(
         initial_tuner_state.activity, after_redundant_update.activity,
@@ -87,8 +99,7 @@ fn test_active_tuners_updated_skips_redundant_processing() {
 
 #[test]
 fn test_spectrum_renders_continuously_at_10fps() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, backend::TestBackend};
     use tokio_util::sync::CancellationToken;
 
     let (_tx, rx) = mpsc::channel();
@@ -121,11 +132,11 @@ fn test_spectrum_renders_continuously_at_10fps() {
 
     assert!(
         draw_count >= 3,
-        "Regression test: Terminal should render at ~10 FPS (100ms intervals) for smooth spectrum animation.\n\
-         Bug: Conditional rendering based on model.is_dirty() caused jumpy spectrum wave \n\
-         because it only updated when entities changed, not continuously.\n\
-         Fix: Always call mark_dirty() in main loop to ensure 10 FPS rendering.\n\
-         Expected at least 3 draws in 350ms, got {}",
+        "Regression test: Terminal should render at ~10 FPS (100ms intervals) for smooth spectrum \
+         animation.\nBug: Conditional rendering based on model.is_dirty() caused jumpy spectrum \
+         wave \nbecause it only updated when entities changed, not continuously.\nFix: Always \
+         call mark_dirty() in main loop to ensure 10 FPS rendering.\nExpected at least 3 draws in \
+         350ms, got {}",
         draw_count
     );
 }
@@ -143,10 +154,11 @@ fn test_band_scan_initiates_automatically_on_startup() {
         ..Default::default()
     };
 
-    let pool = Arc::new(Pool::new(PoolFilter::allow_all(), None));
+    let pool = Arc::new(Pool::new_unfiltered());
 
-    let device = Box::new(MockDevice::new("mock", "test001", false));
-    pool.add_device(device, Backend::Mock);
+    let device_id = scanner::hardware::DeviceId::from_serial("mock", "test001");
+    let caps = scanner::hardware::Capabilities::for_mock("mock", "test001");
+    add_test_device_to_pool(&pool, device_id, caps, Backend::Mock, None);
 
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
     let _scheduler = Arc::new(TaskScheduler::new(
@@ -154,37 +166,33 @@ fn test_band_scan_initiates_automatically_on_startup() {
         shutdown_coordinator.clone(),
     ));
 
-    let scan_entities = Arc::new(RwLock::new(EntityWorld::<ScanEntity>::new()));
+    let task_entities = Arc::new(RwLock::new(EntityWorld::<TaskEntity>::new()));
     let window_entities = Arc::new(RwLock::new(EntityWorld::<WindowEntity>::new()));
 
     let (freq_min, freq_max) = config.band.frequency_range();
-    let scan_config = ScanConfigComponent::new(
-        ScanType::Band,
-        freq_min,
-        freq_max,
-        config.samp_rate,
-        config.samp_rate,
-        config.sdr_gain,
-        config.duration as f64,
-        config.scanning_windows.unwrap_or(1),
+    let total_windows = ((freq_max - freq_min) / config.samp_rate).ceil() as usize;
+    let task_id = TaskId::new("scan_1");
+    let task_entity = TaskEntity::new_scan_with_defaults(
+        task_id.clone(),
+        ScanTaskData::Placeholder,
+        total_windows,
     );
-
-    let scan_entity = ScanEntity::new(scan_config);
-    let scan_id = *scan_entity.id();
-    scan_entities.write().unwrap().insert(scan_entity);
+    task_entities.write().unwrap().insert(task_entity);
 
     {
-        let entities = scan_entities.read().unwrap();
-        let scan = entities.get(&scan_id).expect("Scan entity should exist");
+        let entities = task_entities.read().unwrap();
+        let task = entities.get(&task_id).expect("Task entity should exist");
+
+        let scanner::ecs::TaskComponents::Scan { progress, .. } = &task.components;
         assert!(
-            scan.is_pending(),
-            "Scan should start in Pending state before WindowProcessingSystem runs"
+            matches!(progress.state, scanner::ecs::ScanPauseState::Pending),
+            "Task should start in Pending state before WindowProcessingSystem runs"
         );
     }
 
     let config_arc = Arc::new(config);
     let mut coordinator = Coordinator::new(&pool, &config_arc, &shutdown_coordinator)
-        .with_scan_entities(scan_entities.clone())
+        .with_task_entities(task_entities.clone())
         .with_window_entities(window_entities.clone());
 
     let allocation_system = scanner::ecs::systems::AllocationSystem::new();
@@ -202,23 +210,29 @@ fn test_band_scan_initiates_automatically_on_startup() {
     coordinator.tick().expect("Second tick should succeed");
     coordinator.tick().expect("Third tick should succeed");
 
-    let entities = scan_entities.read().unwrap();
-    let scan = entities
-        .get(&scan_id)
-        .expect("Scan entity should still exist");
+    let entities = task_entities.read().unwrap();
+    let task = entities
+        .get(&task_id)
+        .expect("Task entity should still exist");
 
+    let scanner::ecs::TaskComponents::Scan {
+        progress,
+        lifecycle,
+        ..
+    } = &task.components;
     assert!(
-        !scan.is_pending(),
-        "Regression test: Band scan should automatically transition from Pending to Scanning.\n\
-         Bug: After removing ScannerCommand during ECS migration, band scans no longer \n\
-         initiated automatically on startup. The app would launch but scanning never began.\n\
-         Root cause: No ECS system was detecting pending scans and processing windows.\n\
-         Fix: Added WindowProcessingSystem that detects pending ScanEntity and spawns window tasks.\n\
-         Scan remained in Pending state, indicating WindowProcessingSystem did not run or failed."
+        !matches!(progress.state, scanner::ecs::ScanPauseState::Pending),
+        "Regression test: Band scan should automatically transition from Pending to \
+         Scanning.\nBug: After removing ScannerCommand during ECS migration, band scans no longer \
+         \ninitiated automatically on startup. The app would launch but scanning never \
+         began.\nRoot cause: No ECS system was detecting pending scans and processing \
+         windows.\nFix: Added WindowProcessingSystem that detects pending TaskEntity and spawns \
+         window tasks.\nTask remained in Pending state, indicating WindowProcessingSystem did not \
+         run or failed."
     );
 
     assert!(
-        scan.lifecycle.is_started(),
+        lifecycle.is_started(),
         "Scan lifecycle should be marked as started after initiation"
     );
 }
@@ -234,18 +248,19 @@ fn test_window_processing_system_spawns_exactly_one_task_at_a_time() {
         ..Default::default()
     };
 
-    let pool = Arc::new(Pool::new(PoolFilter::allow_all(), None));
+    let pool = Arc::new(Pool::new_unfiltered());
 
-    let device = Box::new(MockDevice::new("mock", "test002", false));
-    pool.add_device(device, Backend::Mock);
+    let device_id = scanner::hardware::DeviceId::from_serial("mock", "test002");
+    let caps = scanner::hardware::Capabilities::for_mock("mock", "test002");
+    add_test_device_to_pool(&pool, device_id, caps, Backend::Mock, None);
 
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
 
-    let scan_entities = Arc::new(RwLock::new(EntityWorld::<ScanEntity>::new()));
+    let task_entities = Arc::new(RwLock::new(EntityWorld::<TaskEntity>::new()));
     let window_entities = Arc::new(RwLock::new(EntityWorld::<WindowEntity>::new()));
 
     let (freq_min, freq_max) = config.band.frequency_range();
-    let scan_config = ScanConfigComponent::new(
+    let _scan_config = ScanConfigComponent::new(
         ScanType::Band,
         freq_min,
         freq_max,
@@ -256,13 +271,18 @@ fn test_window_processing_system_spawns_exactly_one_task_at_a_time() {
         config.scanning_windows.unwrap_or(1),
     );
 
-    let scan_entity = ScanEntity::new(scan_config);
-    let scan_id = *scan_entity.id();
-    scan_entities.write().unwrap().insert(scan_entity);
+    let total_windows = ((freq_max - freq_min) / config.samp_rate).ceil() as usize;
+    let task_id = TaskId::new("scan_1");
+    let task_entity = TaskEntity::new_scan_with_defaults(
+        task_id.clone(),
+        ScanTaskData::Placeholder,
+        total_windows,
+    );
+    task_entities.write().unwrap().insert(task_entity);
 
     let config_arc = Arc::new(config);
     let mut coordinator = Coordinator::new(&pool, &config_arc, &shutdown_coordinator)
-        .with_scan_entities(scan_entities.clone())
+        .with_task_entities(task_entities.clone())
         .with_window_entities(window_entities.clone());
 
     let allocation_system = scanner::ecs::systems::AllocationSystem::new();
@@ -281,24 +301,24 @@ fn test_window_processing_system_spawns_exactly_one_task_at_a_time() {
     coordinator.tick().expect("Third tick should succeed");
 
     {
-        let entities = scan_entities.read().unwrap();
-        let scan = entities.get(&scan_id).expect("Scan entity should exist");
+        let entities = task_entities.read().unwrap();
+        let task = entities.get(&task_id).expect("Task entity should exist");
+
+        let scanner::ecs::TaskComponents::Scan { progress, .. } = &task.components;
         assert!(
-            scan.is_scanning(),
-            "Regression test: Exactly one window task should be spawned.\n\
-             Bug: Multiple coordinator threads or duplicate calls caused\n\
-             multiple window tasks to be spawned for the same scan,\n\
-             leading to race conditions.\n\
-             Root cause: MainThread spawned coordinator twice.\n\
-             WindowProcessingSystem should spawn exactly one task at a time."
+            matches!(progress.state, scanner::ecs::ScanPauseState::Scanning),
+            "Regression test: Exactly one window task should be spawned.\nBug: Multiple \
+             coordinator threads or duplicate calls caused\nmultiple window tasks to be spawned \
+             for the same scan,\nleading to race conditions.\nRoot cause: MainThread spawned \
+             coordinator twice.\nWindowProcessingSystem should spawn exactly one task at a time."
         );
     }
 
     coordinator.tick().expect("Fourth tick should succeed");
 
     {
-        let entities = scan_entities.read().unwrap();
-        let _scan = entities.get(&scan_id).expect("Scan entity should exist");
+        let entities = task_entities.read().unwrap();
+        let _task = entities.get(&task_id).expect("Task entity should exist");
     }
 }
 
@@ -324,7 +344,7 @@ fn test_coordinator_spawned_only_once() {
 
     CoordinatorSpawnTracker::reset();
 
-    let pool = Arc::new(Pool::new(PoolFilter::allow_all(), None));
+    let pool = Arc::new(Pool::new_unfiltered());
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
     let config = Arc::new(ScanningConfig::default());
 
@@ -338,12 +358,11 @@ fn test_coordinator_spawned_only_once() {
     assert_eq!(
         after_creation,
         initial_count + 1,
-        "Regression test: Coordinator should be created exactly once.\n\
-         Bug: MainThread::new_with_progress() spawned a coordinator, then\n\
-         MainThread::run() spawned another one, creating duplicate threads\n\
-         and losing the handle to the first coordinator.\n\
-         This caused race conditions with dual task submission and orphaned threads.\n\
-         Expected {} coordinator(s), found {}",
+        "Regression test: Coordinator should be created exactly once.\nBug: \
+         MainThread::new_with_progress() spawned a coordinator, then\nMainThread::run() spawned \
+         another one, creating duplicate threads\nand losing the handle to the first \
+         coordinator.\nThis caused race conditions with dual task submission and orphaned \
+         threads.\nExpected {} coordinator(s), found {}",
         initial_count + 1,
         after_creation
     );

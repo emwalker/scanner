@@ -1,7 +1,7 @@
-use crate::core::types::{Result, ScanningConfig};
 use tracing::warn;
 
 use super::frequency_tracking::run_frequency_tracking;
+use crate::core::types::{Result, ScanningConfig};
 
 pub(crate) fn refine_frequency(
     frequency_hz: f64,

@@ -1,9 +1,11 @@
 //! Detection Regression Tests
 //! Tests to prevent regressions in station detection capabilities
 
-use crate::audio::quality::AudioAnalyzer;
-use crate::core::types::ScanningConfig;
-use crate::testing::signal_generation::{PeakTestSignalGenerator, TestSignal};
+use crate::{
+    audio::quality::AudioAnalyzer,
+    core::types::ScanningConfig,
+    testing::signal_generation::{PeakTestSignalGenerator, TestSignal},
+};
 
 /// Regression test: Signal averaging should not reduce detection count
 #[test]
@@ -94,7 +96,8 @@ fn test_signal_averaging_does_not_reduce_detection_count() {
 
     assert!(
         detection_ratio >= 0.8, // Allow up to 20% reduction, but we expect improvement
-        "Signal averaging should not reduce detection count by more than 20%. Got {:.1}% reduction (ratio: {:.2})",
+        "Signal averaging should not reduce detection count by more than 20%. Got {:.1}% \
+         reduction (ratio: {:.2})",
         (1.0 - detection_ratio) * 100.0,
         detection_ratio
     );
@@ -197,7 +200,8 @@ fn test_cfar_does_not_reduce_detection_count() {
 
     assert!(
         detection_ratio >= 0.8, // Allow up to 20% reduction
-        "CFAR should not reduce detection count by more than 20%. Got {:.1}% reduction (ratio: {:.2})",
+        "CFAR should not reduce detection count by more than 20%. Got {:.1}% reduction (ratio: \
+         {:.2})",
         (1.0 - detection_ratio) * 100.0,
         detection_ratio
     );
@@ -291,10 +295,12 @@ fn test_combined_phases_do_not_drastically_reduce_detection() {
         detection_ratio
     );
 
-    // This is the critical regression test - combined phases should not cause massive detection loss
+    // This is the critical regression test - combined phases should not cause massive detection
+    // loss
     assert!(
         detection_ratio >= 0.5, // Allow up to 50% reduction, but this indicates a serious problem
-        "Combined signal averaging + CFAR should not reduce detection count by more than 50%. Got {:.1}% reduction (ratio: {:.2})",
+        "Combined signal averaging + CFAR should not reduce detection count by more than 50%. Got \
+         {:.1}% reduction (ratio: {:.2})",
         (1.0 - detection_ratio) * 100.0,
         detection_ratio
     );
@@ -302,7 +308,8 @@ fn test_combined_phases_do_not_drastically_reduce_detection() {
     // Warn if we see significant reduction
     if detection_ratio < 0.8 {
         println!(
-            "🚨 WARNING: Combined features reduced detection by {:.1}% - investigate signal averaging/CFAR interaction",
+            "🚨 WARNING: Combined features reduced detection by {:.1}% - investigate signal \
+             averaging/CFAR interaction",
             (1.0 - detection_ratio) * 100.0
         );
     }

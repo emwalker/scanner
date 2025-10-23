@@ -1,7 +1,5 @@
-use super::file_sources_iq::FileSampleSource;
-use super::metadata::IqFileMetadataExt;
-use crate::core::types::Result;
-use crate::file::IqFileMetadata;
+use super::{file_sources_iq::FileSampleSource, metadata::IqFileMetadataExt};
+use crate::{core::types::Result, file::IqFileMetadata};
 
 /// Test helper to load both I/Q file and metadata in one call
 pub fn load_iq_fixture(iq_file_path: &str) -> Result<(FileSampleSource, IqFileMetadata)> {
@@ -26,8 +24,7 @@ pub fn load_audio_fixture(
     super::file_sources_audio::AudioFileSource,
     super::metadata::AudioFileMetadata,
 )> {
-    use super::file_sources_audio::AudioFileSource;
-    use super::metadata::AudioFileMetadata;
+    use super::{file_sources_audio::AudioFileSource, metadata::AudioFileMetadata};
 
     // Derive metadata file path by replacing .audio extension with .json
     let metadata_path = audio_file_path.replace(".audio", ".json");

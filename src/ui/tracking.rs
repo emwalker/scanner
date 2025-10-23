@@ -66,8 +66,9 @@ impl WindowProgress {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::thread;
+
+    use super::*;
 
     #[test]
     fn test_progress_percentage_calculation() {

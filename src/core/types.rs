@@ -2,9 +2,11 @@ use clap::ValueEnum;
 
 // Re-export types from other modules for backward compatibility
 pub use crate::core::bands::Band;
-pub use crate::core::config::{ScanningConfig, WindowType};
-pub use crate::core::errors::{Result, ScannerError, TEST_FREQUENCY_HZ};
-pub use crate::core::signals::{Candidate, ModulationType, Peak, Signal};
+pub use crate::core::{
+    config::{ScanningConfig, WindowType},
+    errors::{Result, ScannerError, TEST_FREQUENCY_HZ},
+    signals::{Candidate, ModulationType, Peak, Signal},
+};
 
 #[derive(ValueEnum, Copy, Clone, Debug)]
 pub enum Format {

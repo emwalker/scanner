@@ -1,11 +1,18 @@
-use scanner::discovery::{self, DiscoveryMode, Event};
-use scanner::hardware::pool::{Pool, PoolFilter, TuningMode};
-use scanner::hardware::types::Backend;
-use scanner::shutdown::ShutdownCoordinator;
-use scanner::task::TaskScheduler;
-use std::sync::Arc;
-use std::sync::mpsc;
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex, mpsc},
+    time::Duration,
+};
+
+use scanner::{
+    discovery::{self, DiscoveryMode, Event},
+    ecs::{DeviceEntity, EntityWorld, TunerEntity},
+    hardware::{
+        pool::{Pool, PoolFilter, TuningMode},
+        types::Backend,
+    },
+    shutdown::ShutdownCoordinator,
+    task::TaskScheduler,
+};
 
 #[test]
 fn test_polling_discovery_integration() {
@@ -16,7 +23,14 @@ fn test_polling_discovery_integration() {
     let filter = PoolFilter::new()
         .with_driver("mock")
         .with_mode(TuningMode::SingleTuner);
-    let pool = Arc::new(Pool::new(filter, None));
+    let tuner_entities = Arc::new(Mutex::new(EntityWorld::<TunerEntity>::new()));
+    let device_entities = Arc::new(Mutex::new(EntityWorld::<DeviceEntity>::new()));
+    let pool = Arc::new(Pool::with_entity_worlds(
+        filter,
+        None,
+        tuner_entities.clone(),
+        device_entities.clone(),
+    ));
     let scheduler = Arc::new(TaskScheduler::new(pool.clone(), coordinator.clone()));
 
     let mut service = discovery::create_for_testing(
@@ -24,6 +38,8 @@ fn test_polling_discovery_integration() {
         DiscoveryMode::ForcePolling(Duration::from_millis(100)),
         scheduler,
         pool.clone(),
+        tuner_entities,
+        device_entities,
     );
     let (event_tx, event_rx) = mpsc::channel();
 
@@ -65,7 +81,14 @@ fn test_udev_discovery_integration() {
     let filter = PoolFilter::new()
         .with_driver("mock")
         .with_mode(TuningMode::SingleTuner);
-    let pool = Arc::new(Pool::new(filter, None));
+    let tuner_entities = Arc::new(Mutex::new(EntityWorld::<TunerEntity>::new()));
+    let device_entities = Arc::new(Mutex::new(EntityWorld::<DeviceEntity>::new()));
+    let pool = Arc::new(Pool::with_entity_worlds(
+        filter,
+        None,
+        tuner_entities.clone(),
+        device_entities.clone(),
+    ));
     let scheduler = Arc::new(TaskScheduler::new(pool.clone(), coordinator.clone()));
 
     let mut service = discovery::create_for_testing(
@@ -73,6 +96,8 @@ fn test_udev_discovery_integration() {
         DiscoveryMode::Auto,
         scheduler,
         pool.clone(),
+        tuner_entities,
+        device_entities,
     );
     let (event_tx, event_rx) = mpsc::channel();
 
@@ -110,7 +135,14 @@ fn test_discovery_shutdown_responsiveness() {
     let filter = PoolFilter::new()
         .with_driver("mock")
         .with_mode(TuningMode::SingleTuner);
-    let pool = Arc::new(Pool::new(filter, None));
+    let tuner_entities = Arc::new(Mutex::new(EntityWorld::<TunerEntity>::new()));
+    let device_entities = Arc::new(Mutex::new(EntityWorld::<DeviceEntity>::new()));
+    let pool = Arc::new(Pool::with_entity_worlds(
+        filter,
+        None,
+        tuner_entities.clone(),
+        device_entities.clone(),
+    ));
     let scheduler = Arc::new(TaskScheduler::new(pool.clone(), coordinator.clone()));
 
     let mut service = discovery::create_for_testing(
@@ -118,6 +150,8 @@ fn test_discovery_shutdown_responsiveness() {
         DiscoveryMode::ForcePolling(Duration::from_secs(10)),
         scheduler,
         pool.clone(),
+        tuner_entities,
+        device_entities,
     );
     let (event_tx, _event_rx) = mpsc::channel();
 

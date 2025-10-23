@@ -1,9 +1,13 @@
-use crate::core::types::{ModulationType, Result, ScannerError};
+use std::{
+    fs::{self, File},
+    io::Write,
+    path::Path,
+};
+
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::Path;
 use tracing::debug;
+
+use crate::core::types::{ModulationType, Result, ScannerError};
 
 /// Metadata for I/Q files
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -12,8 +16,8 @@ pub struct IqFileMetadata {
     pub center_frequency: f64,
     pub capture_duration: f64,
     pub total_samples: usize,
-    pub format: String,                // e.g., "f32_le_complex"
-    pub expected_candidates: Vec<f64>, // Expected station frequencies in Hz
+    pub format: String,             // e.g., "f32_le_complex"
+    pub expected_signals: Vec<f64>, // Expected station frequencies in Hz
 
     // Peak detection parameters used during scanning
     pub fft_size: usize,
@@ -40,7 +44,7 @@ impl IqFileMetadata {
             capture_duration,
             total_samples,
             format: "f32_le_complex".to_string(),
-            expected_candidates: Vec::new(),
+            expected_signals: Vec::new(),
             fft_size,
             peak_detection_threshold,
             peak_scan_duration,
@@ -80,7 +84,8 @@ pub struct Recording {
 /// State: Recording completed and file finalized
 pub struct Completed;
 
-/// Capturing wrapper for audio samples - buffers samples and creates WAV file only after squelch passes
+/// Capturing wrapper for audio samples - buffers samples and creates WAV file only after squelch
+/// passes
 ///
 /// Uses typestate pattern to enforce capture workflow at compile time:
 /// - Buffering: Collect samples in memory
@@ -375,10 +380,12 @@ impl rustradio::block::Block for AudioCaptureBlock {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
     use super::*;
     use crate::core::types::ModulationType;
-    use std::fs;
-    use tempfile::TempDir;
 
     fn create_test_config(output_dir: &str) -> AudioCaptureConfig {
         AudioCaptureConfig {

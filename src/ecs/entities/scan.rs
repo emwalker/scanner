@@ -1,9 +1,12 @@
 //! Scan entity - represents an active scan operation
 
-use crate::ecs::Entity;
-use crate::ecs::components::scan::{
-    PauseRequestComponent, ResumeRequestComponent, ScanConfigComponent, ScanId,
-    ScanLifecycleComponent, ScanProgressComponent, ScanResultsComponent, ScanType,
+use crate::ecs::{
+    Entity,
+    components::scan::{
+        PauseRequestComponent, ResumeRequestComponent, ScanConfigComponent, ScanId,
+        ScanLifecycleComponent, ScanProgressComponent, ScanResultsComponent, ScanTunerComponent,
+        ScanType,
+    },
 };
 
 /// Entity representing an active scan operation
@@ -16,17 +19,23 @@ pub struct ScanEntity {
     /// Unique identifier for this scan
     id: ScanId,
 
+    /// Human-readable scan number (e.g., 1, 2, 3)
+    scan_number: u64,
+
     /// Scan configuration (frequencies, window size, etc.)
     pub config: ScanConfigComponent,
 
     /// Progress tracking (current window, pause state)
     pub progress: ScanProgressComponent,
 
-    /// Results (candidates, stations discovered)
+    /// Results
     pub results: ScanResultsComponent,
 
     /// Lifecycle timestamps
     pub lifecycle: ScanLifecycleComponent,
+
+    /// Tuner assignment
+    pub tuner: ScanTunerComponent,
 
     /// Coordinator guidance: worker should pause (advisory)
     pub should_pause: bool,
@@ -43,20 +52,27 @@ pub struct ScanEntity {
 
 impl ScanEntity {
     /// Create a new scan entity from configuration
-    pub fn new(config: ScanConfigComponent) -> Self {
+    pub fn new(config: ScanConfigComponent, scan_number: u64) -> Self {
         let total_windows = config.total_windows();
 
         Self {
             id: ScanId::new(),
+            scan_number,
             config,
             progress: ScanProgressComponent::new(total_windows),
             results: ScanResultsComponent::new(),
             lifecycle: ScanLifecycleComponent::new(),
+            tuner: ScanTunerComponent::new(),
             should_pause: false,
             should_complete: false,
             pause_request: None,
             resume_request: None,
         }
+    }
+
+    /// Get scan number
+    pub fn scan_number(&self) -> u64 {
+        self.scan_number
     }
 
     /// Check if scan is pending
@@ -85,8 +101,11 @@ impl ScanEntity {
     }
 
     /// Get current window index
-    pub fn current_window(&self) -> usize {
-        self.progress.current_window
+    pub fn current_window_index(&self) -> Option<usize> {
+        self.progress
+            .current_window
+            .as_ref()
+            .map(|w| w.window_index)
     }
 
     /// Get progress percentage (0.0 to 1.0)
@@ -97,6 +116,12 @@ impl ScanEntity {
     /// Get scan type
     pub fn scan_type(&self) -> ScanType {
         self.config.scan_type
+    }
+
+    /// Get the frequency currently being listened to, if any
+    pub fn listening_frequency(&self) -> Option<f64> {
+        // For now, return None - will be populated from results in future
+        None
     }
 
     /// Request pause at current window
@@ -138,10 +163,12 @@ impl Clone for ScanEntity {
     fn clone(&self) -> Self {
         Self {
             id: self.id,
+            scan_number: self.scan_number,
             config: self.config.clone(),
             progress: self.progress.clone(),
             results: self.results.clone(),
             lifecycle: self.lifecycle.clone(),
+            tuner: self.tuner.clone(),
             should_pause: self.should_pause,
             should_complete: self.should_complete,
             pause_request: self.pause_request.clone(),
@@ -160,9 +187,10 @@ impl Entity for ScanEntity {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ecs::EntityWorld;
     use proptest::prelude::*;
+
+    use super::*;
+    use crate::ecs::{EntityWorld, TaskId, WindowId};
 
     fn create_test_scan(freq_min: f64, freq_max: f64) -> ScanEntity {
         let config = ScanConfigComponent::new(
@@ -175,7 +203,7 @@ mod tests {
             1.0,   // 1 second per window
             3,     // 3 scanning windows
         );
-        ScanEntity::new(config)
+        ScanEntity::new(config, 1)
     }
 
     fn arb_scan_type() -> impl Strategy<Value = ScanType> {
@@ -220,20 +248,21 @@ mod tests {
     fn arb_scan_entity() -> impl Strategy<Value = ScanEntity> {
         (arb_scan_config(), 0..100usize, any::<bool>(), any::<bool>()).prop_map(
             |(config, windows_completed, paused, completed)| {
-                let mut entity = ScanEntity::new(config);
+                let mut entity = ScanEntity::new(config, 1);
+                let task_id = TaskId::new("arb_test".to_string());
                 let target_windows = if completed {
                     entity.progress.total_windows
                 } else {
                     windows_completed.min(entity.progress.total_windows)
                 };
                 for _ in 0..target_windows {
-                    entity
-                        .progress
-                        .start_window(entity.progress.windows_completed);
+                    let window_id =
+                        WindowId::new(task_id.clone(), entity.progress.windows_completed);
+                    entity.progress.start_window(window_id.clone());
                     entity.progress.complete_window();
-                }
-                if paused && !completed {
-                    entity.progress.pause(entity.progress.windows_completed);
+                    if paused && !completed {
+                        entity.progress.pause(window_id);
+                    }
                 }
                 if completed {
                     entity.progress.mark_complete();
@@ -250,7 +279,8 @@ mod tests {
         assert_eq!(scan.config.freq_min, 88.0e6);
         assert_eq!(scan.config.freq_max, 98.0e6);
         assert_eq!(scan.config.scan_type, ScanType::Band);
-        assert_eq!(scan.progress.total_windows, 10);
+        // Range 88-98 MHz with 1 MHz steps: 11 windows (88, 89, ..., 98)
+        assert_eq!(scan.progress.total_windows, 11);
         assert!(scan.is_pending());
         assert!(!scan.is_scanning());
         assert!(!scan.is_paused());
@@ -267,19 +297,22 @@ mod tests {
     #[test]
     fn test_scan_convenience_methods() {
         let mut scan = create_test_scan(88.0e6, 98.0e6);
+        let task_id = TaskId::new("test_scan".to_string());
 
         assert!(scan.is_pending());
-        scan.progress.start_window(0);
+        let window_id = WindowId::new(task_id.clone(), 0);
+        scan.progress.start_window(window_id);
         assert!(scan.is_scanning());
-        assert_eq!(scan.current_window(), 0);
+        assert_eq!(scan.current_window_index(), Some(0));
         assert_eq!(scan.progress_percentage(), 0.0);
         assert_eq!(scan.scan_type(), ScanType::Band);
 
-        scan.progress.pause(5);
+        let window_id_5 = WindowId::new(task_id.clone(), 5);
+        scan.progress.pause(window_id_5.clone());
         assert!(scan.is_paused());
         assert!(!scan.is_scanning());
 
-        scan.progress.start_listening(5);
+        scan.progress.start_listening(window_id_5);
         assert!(scan.is_listening());
 
         scan.progress.mark_complete();
@@ -289,18 +322,23 @@ mod tests {
     #[test]
     fn test_scan_progress_tracking() {
         let mut scan = create_test_scan(88.0e6, 98.0e6);
+        let task_id = TaskId::new("test_scan".to_string());
 
-        scan.progress.start_window(0);
-        assert_eq!(scan.current_window(), 0);
+        let window_id = WindowId::new(task_id.clone(), 0);
+        scan.progress.start_window(window_id);
+        assert_eq!(scan.current_window_index(), Some(0));
 
         scan.progress.complete_window();
         assert_eq!(scan.progress.windows_completed, 1);
-        assert_eq!(scan.progress_percentage(), 0.1);
+        // 1 out of 11 windows = ~0.09
+        assert!((scan.progress_percentage() - 0.0909).abs() < 0.01);
 
-        scan.progress.start_window(1);
+        let window_id_1 = WindowId::new(task_id.clone(), 1);
+        scan.progress.start_window(window_id_1);
         scan.progress.complete_window();
         assert_eq!(scan.progress.windows_completed, 2);
-        assert_eq!(scan.progress_percentage(), 0.2);
+        // 2 out of 11 windows = ~0.18
+        assert!((scan.progress_percentage() - 0.1818).abs() < 0.01);
     }
 
     #[test]
@@ -346,7 +384,9 @@ mod tests {
 
         {
             let scan_mut = world.get_mut(&id).unwrap();
-            scan_mut.progress.pause(5);
+            let task_id = TaskId::new("test_scan".to_string());
+            let window_id = WindowId::new(task_id, 5);
+            scan_mut.progress.pause(window_id);
             scan_mut.results.add_station();
         }
 
@@ -364,8 +404,13 @@ mod tests {
         let mut scan3 = create_test_scan(108.0e6, 118.0e6);
 
         scan1.progress.mark_complete();
-        scan2.progress.start_window(0);
-        scan3.progress.pause(5);
+
+        let task_id = TaskId::new("test_scan".to_string());
+        let window_id2 = WindowId::new(task_id.clone(), 0);
+        scan2.progress.start_window(window_id2);
+
+        let window_id3 = WindowId::new(task_id, 5);
+        scan3.progress.pause(window_id3);
 
         world.insert(scan1);
         world.insert(scan2);
@@ -402,19 +447,21 @@ mod tests {
     fn test_scan_results_tracking() {
         let mut scan = create_test_scan(88.0e6, 98.0e6);
 
-        scan.results.add_candidate();
-        scan.results.add_candidate();
-        scan.results.reject_candidate();
+        scan.results.add_signal();
+        scan.results.add_signal();
+        scan.results.reject_signal();
         scan.results.add_station();
 
-        assert_eq!(scan.results.total_candidates(), 3);
+        assert_eq!(scan.results.total_signals(), 3);
         assert_eq!(scan.results.stations_discovered, 1);
     }
 
     proptest! {
         #[test]
         fn prop_progress_bounds(scan in arb_scan_entity()) {
-            prop_assert!(scan.progress.current_window <= scan.progress.total_windows);
+            if let Some(window_id) = &scan.progress.current_window {
+                prop_assert!(window_id.window_index <= scan.progress.total_windows);
+            }
             prop_assert!(scan.progress.windows_completed <= scan.progress.total_windows);
         }
 

@@ -68,8 +68,9 @@ impl Default for StationHistoryComponent {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::thread;
+
+    use super::*;
 
     #[test]
     fn test_create_history() {

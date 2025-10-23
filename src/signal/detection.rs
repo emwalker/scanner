@@ -1,5 +1,15 @@
+use std::sync::{Arc, atomic::AtomicU8};
+
+use rustradio::{
+    blockchain,
+    blocks::QuadratureDemod,
+    graph::{Graph, GraphRunner},
+};
+use tracing::debug;
+
 use crate::{
     core::config::ScanningConfig,
+    ecs::WindowId,
     file::AudioCaptureBlock,
     signal::{
         deemph::Deemphasis,
@@ -8,13 +18,6 @@ use crate::{
         squelch::{SquelchBlock, SquelchConfig},
     },
 };
-use rustradio::{
-    blockchain,
-    blocks::QuadratureDemod,
-    graph::{Graph, GraphRunner},
-};
-use std::sync::{Arc, atomic::AtomicU8, mpsc::SyncSender};
-use tracing::debug;
 
 pub struct DetectionGraphConfig<'a> {
     pub source_receiver: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
@@ -22,9 +25,9 @@ pub struct DetectionGraphConfig<'a> {
     pub config: &'a ScanningConfig,
     pub center_freq: f64,
     pub tune_freq: f64,
-    pub signal_tx: Option<SyncSender<crate::core::types::Signal>>,
+    pub signal_tx: Option<std::sync::mpsc::Sender<crate::core::types::Signal>>,
     pub audio_analyzer: crate::audio::quality::AudioAnalyzer,
-    pub window_id: usize,
+    pub window_id: WindowId,
 }
 
 pub fn create_detection_graph(

@@ -1,5 +1,7 @@
-use crate::core::types::Result;
-use crate::hardware::pool::{TaskRequirements, Tuner, TunerActivity};
+use crate::{
+    core::types::Result,
+    hardware::pool::{TaskRequirements, Tuner, TunerActivity},
+};
 
 /// Trait for objects that can provide tuners on demand
 ///

@@ -1,14 +1,22 @@
-use crate::core::types::{Result, ScannerError, ScanningConfig};
-use crate::hardware::pool::Pool;
-use crate::main_thread::MainThread;
-use crate::shutdown::ShutdownCoordinator;
-use crate::task::TaskScheduler;
-use crate::ui::TuiEvent;
-use crate::ui::tui::TuiProgressDisplay;
-use crate::ui::tui::themes::{ThemeName, create_theme};
-use std::sync::Arc;
-use std::sync::mpsc;
-use std::thread;
+use std::{
+    sync::{Arc, mpsc},
+    thread,
+};
+
+use crate::{
+    core::types::{Result, ScannerError, ScanningConfig},
+    hardware::pool::Pool,
+    main_thread::MainThread,
+    shutdown::ShutdownCoordinator,
+    task::TaskScheduler,
+    ui::{
+        TuiEvent,
+        tui::{
+            TuiProgressDisplay,
+            themes::{ThemeName, create_theme},
+        },
+    },
+};
 
 pub struct TuiContext {
     pub tui_event_sender: mpsc::Sender<TuiEvent>,
@@ -25,12 +33,9 @@ pub fn start_tui(
     tui_event_receiver: mpsc::Receiver<TuiEvent>,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
     theme_name: ThemeName,
-    scan_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::ScanEntity>>>,
-    station_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::StationEntity>>>,
+    task_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::TaskEntity>>>,
     audio_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::AudioEntity>>>,
-    candidate_entities: Arc<
-        std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::CandidateEntity>>,
-    >,
+    signal_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::SignalEntity>>>,
     pause_request_queue: crate::ecs::Resource<crate::ecs::PauseRequestQueue>,
     global_pause_resource: crate::ecs::GlobalPauseResource,
 ) -> thread::JoinHandle<std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>> {
@@ -43,12 +48,7 @@ pub fn start_tui(
             theme,
             theme_name,
         )
-        .with_entities(
-            scan_entities,
-            station_entities,
-            audio_entities,
-            candidate_entities,
-        )
+        .with_entities(task_entities, audio_entities, signal_entities)
         .with_pause_request_queue(pause_request_queue)
         .with_global_pause_resource(global_pause_resource);
         tui_display.run()
@@ -61,14 +61,14 @@ pub struct TuiRunContext {
     pub shutdown_coordinator: Arc<ShutdownCoordinator>,
     pub pool: Arc<Pool>,
     pub scheduler: Arc<TaskScheduler>,
-    pub scan_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::ScanEntity>>>,
-    pub station_entities:
-        Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::StationEntity>>>,
+    pub task_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::TaskEntity>>>,
     pub audio_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::AudioEntity>>>,
-    pub candidate_entities:
-        Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::CandidateEntity>>>,
+    pub signal_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::SignalEntity>>>,
     pub pause_request_queue: crate::ecs::Resource<crate::ecs::PauseRequestQueue>,
     pub global_pause_resource: crate::ecs::GlobalPauseResource,
+    pub pending_scan_request:
+        Arc<std::sync::RwLock<Option<crate::ecs::components::scan::PendingScanRequest>>>,
+    pub discovery_rx: std::sync::mpsc::Receiver<crate::discovery::Event>,
 }
 
 pub fn run_with_tui(
@@ -89,13 +89,14 @@ pub fn run_with_tui(
         context.pool.clone(),
         context.scheduler,
         Vec::new(),
-        context.scan_entities,
+        context.task_entities,
         window_entities,
-        context.station_entities,
         context.audio_entities,
-        context.candidate_entities,
+        context.signal_entities,
         context.pause_request_queue,
         context.global_pause_resource,
+        context.pending_scan_request,
+        context.discovery_rx,
     )?
     .with_tui_event_sender(tui_context.tui_event_sender)
     .start();

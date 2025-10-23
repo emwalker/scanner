@@ -1,11 +1,11 @@
 //! SoapySDR backend implementation
 
+use std::{any::Any, os::unix::io::AsRawFd};
+
+use rustradio::{Complex, graph::GraphRunner};
+
 use super::{Backend, Capabilities, DeviceId, DeviceInfo, DeviceTrait, types::TunerInfo};
 use crate::core::types::{Result, ScannerError};
-use rustradio::Complex;
-use rustradio::graph::GraphRunner;
-use std::any::Any;
-use std::os::unix::io::AsRawFd;
 
 /// Temporarily redirect stderr to /dev/null to suppress RtAudio spam
 fn suppress_stderr<F, R>(f: F) -> R
@@ -50,7 +50,7 @@ impl Backend for Soapy {
         // Suppress stderr during enumeration to prevent RtAudio spam
         let devices = suppress_stderr(|| soapysdr::enumerate(""))?;
 
-        // Group devices by (driver, serial) to collect modes as tuners
+        // Group devices by (driver, serial) - each physical device has multiple tuners (modes)
         let mut device_map: HashMap<(String, String), (String, Vec<TunerInfo>)> = HashMap::new();
 
         for d in devices {
@@ -83,17 +83,110 @@ impl Backend for Soapy {
                 id: crate::hardware::pool::TunerId::new(device_id, channel_index),
                 label: tuner_label,
                 mode,
+                antenna: None,
             });
         }
 
-        // For devices without modes, check if they support multiple channels
+        // Query antenna information for all devices and expand multi-channel devices
         let mut expanded_device_map: HashMap<(String, String), (String, Vec<TunerInfo>)> =
             HashMap::new();
 
         for ((driver, serial), (model, tuners)) in device_map {
-            if tuners.len() == 1 && tuners[0].mode.is_empty() {
-                let args = format!("driver={},serial={}", driver, serial);
-                if let Ok(device) = soapysdr::Device::new(soapysdr::Args::from(args.as_str()))
+            // For mode-based devices (RSPduo ST/DT/MA), query antenna for each mode separately
+            if !tuners.is_empty() && !tuners[0].mode.is_empty() {
+                let mut updated_tuners = Vec::new();
+
+                for tuner in tuners {
+                    // Open device with specific mode to query antenna info
+                    let args = format!("driver={},serial={},mode={}", driver, serial, tuner.mode);
+
+                    if let Ok(device) = soapysdr::Device::new(soapysdr::Args::from(args.as_str())) {
+                        // Check if this mode supports multiple channels (DT mode has 2 channels)
+                        let num_channels =
+                            device.num_channels(soapysdr::Direction::Rx).unwrap_or(1);
+
+                        if num_channels > 1 {
+                            // DT mode - expand into separate tuners for each channel
+                            for channel_index in 0..num_channels {
+                                let antenna = device
+                                    .antennas(soapysdr::Direction::Rx, channel_index)
+                                    .ok()
+                                    .and_then(|antennas| antennas.first().cloned());
+
+                                // Extract base label by removing the existing (driver:serial)
+                                // suffix
+                                let base_label = tuner
+                                    .label
+                                    .rsplit_once(" (")
+                                    .map(|(base, _)| base)
+                                    .unwrap_or(&tuner.label);
+
+                                let updated_label = if let Some(ref ant) = antenna {
+                                    format!(
+                                        "{} Ch{} - {} ({}:{})",
+                                        base_label, channel_index, ant, driver, serial
+                                    )
+                                } else {
+                                    format!(
+                                        "{} Ch{} ({}:{})",
+                                        base_label, channel_index, driver, serial
+                                    )
+                                };
+
+                                updated_tuners.push(TunerInfo {
+                                    id: crate::hardware::pool::TunerId::new(
+                                        tuner.id.device_id.clone(),
+                                        channel_index,
+                                    ),
+                                    label: updated_label,
+                                    mode: tuner.mode.clone(),
+                                    antenna,
+                                });
+                            }
+                        } else {
+                            // ST/MA/MA8 mode - single channel
+                            let antenna = device
+                                .antennas(soapysdr::Direction::Rx, 0)
+                                .ok()
+                                .and_then(|antennas| antennas.first().cloned());
+
+                            // Extract base label by removing the existing (driver:serial) suffix
+                            let base_label = tuner
+                                .label
+                                .rsplit_once(" (")
+                                .map(|(base, _)| base)
+                                .unwrap_or(&tuner.label);
+
+                            let updated_label = if let Some(ref ant) = antenna {
+                                format!("{} - {} ({}:{})", base_label, ant, driver, serial)
+                            } else {
+                                tuner.label.clone()
+                            };
+
+                            updated_tuners.push(TunerInfo {
+                                id: tuner.id,
+                                label: updated_label,
+                                mode: tuner.mode.clone(),
+                                antenna,
+                            });
+                        }
+                    } else {
+                        // Failed to open device, keep original tuner info
+                        updated_tuners.push(tuner);
+                    }
+                }
+
+                expanded_device_map.insert((driver, serial), (model, updated_tuners));
+                continue;
+            }
+
+            let args = format!("driver={},serial={}", driver, serial);
+
+            // Try to open device to query antenna info
+            if let Ok(device) = soapysdr::Device::new(soapysdr::Args::from(args.as_str())) {
+                // For devices without modes, check if they support multiple channels
+                if tuners.len() == 1
+                    && tuners[0].mode.is_empty()
                     && let Ok(num_channels) = device.num_channels(soapysdr::Direction::Rx)
                     && num_channels > 1
                 {
@@ -108,8 +201,20 @@ impl Backend for Soapy {
                     let mut channel_tuners = Vec::new();
 
                     for channel_index in 0..num_channels {
-                        let tuner_label =
-                            format!("{} Ch{} ({}:{})", model, channel_index, driver, serial);
+                        let antenna = device
+                            .antennas(soapysdr::Direction::Rx, channel_index)
+                            .ok()
+                            .and_then(|antennas| antennas.first().cloned());
+
+                        let tuner_label = if let Some(ref ant) = antenna {
+                            format!(
+                                "{} Ch{} - {} ({}:{})",
+                                model, channel_index, ant, driver, serial
+                            )
+                        } else {
+                            format!("{} Ch{} ({}:{})", model, channel_index, driver, serial)
+                        };
+
                         channel_tuners.push(TunerInfo {
                             id: crate::hardware::pool::TunerId::new(
                                 device_id.clone(),
@@ -117,6 +222,7 @@ impl Backend for Soapy {
                             ),
                             label: tuner_label,
                             mode: String::new(),
+                            antenna,
                         });
                     }
 
@@ -125,6 +231,7 @@ impl Backend for Soapy {
                 }
             }
 
+            // Fallback: couldn't open device or doesn't need expansion
             expanded_device_map.insert((driver, serial), (model, tuners));
         }
 
@@ -496,6 +603,7 @@ mod tests {
                     id: crate::hardware::pool::TunerId::new(device_id, 0),
                     label: format!("{} ({}:{})", model, driver, serial),
                     mode: mode.to_string(),
+                    antenna: None,
                 }],
             });
         }
@@ -510,7 +618,8 @@ mod tests {
         assert_eq!(
             ids.len(),
             4,
-            "All 4 RSPduo modes should have unique DeviceIds (regression test for duplicate serial issue)"
+            "All 4 RSPduo modes should have unique DeviceIds (regression test for duplicate \
+             serial issue)"
         );
 
         let expected_ids = vec![

@@ -145,7 +145,8 @@ fn test_sidelobe_discrimination_rejects_legitimate_fm_signal() {
 
     assert!(
         score > 0.0,
-        "Fixed algorithm should accept legitimate FM signal with 20 kHz span. Score: {:.3}, Analysis: '{}'",
+        "Fixed algorithm should accept legitimate FM signal with 20 kHz span. Score: {:.3}, \
+         Analysis: '{}'",
         score,
         analysis_summary
     );
@@ -190,12 +191,14 @@ fn test_frequency_rounding_100khz() {
 
 #[test]
 fn test_clear_processed_frequencies_with_concurrent_reads() {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+        time::Duration,
     };
-    use std::thread;
-    use std::time::Duration;
 
     state::clear_processed_frequencies();
 

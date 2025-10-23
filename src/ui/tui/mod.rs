@@ -1,7 +1,12 @@
 //! TUI module using The Elm Architecture pattern
 
-use crate::ecs::{AudioEntity, CandidateEntity, Entities, Entity, ScanEntity, StationEntity};
-use crate::ui::TuiEvent;
+use std::{
+    collections::HashMap,
+    io,
+    sync::mpsc,
+    time::{Duration, Instant},
+};
+
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -9,14 +14,16 @@ use crossterm::{
 };
 use indexmap::IndexMap;
 use ratatui::{Frame, Terminal, backend::CrosstermBackend};
-use std::{
-    collections::HashMap,
-    io,
-    sync::mpsc,
-    time::{Duration, Instant},
-};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
+
+use crate::{
+    ecs::{
+        AudioEntity, Entities, Entity, SignalEntity, TaskComponents, TaskEntity,
+        components::scan::PreviousPauseState,
+    },
+    ui::TuiEvent,
+};
 
 pub mod colors;
 pub mod layout;
@@ -25,15 +32,14 @@ pub mod renderers;
 pub mod themes;
 
 use layout::Layout;
-use model::Model;
-use renderers::{console::ConsoleRenderer, header, instructions, scan, spectrum, tuners};
+use model::{FocusState, Model};
+use renderers::{
+    activities::render_activities, console::ConsoleRenderer, header, instructions, task_progress,
+    tuners,
+};
 use themes::{Theme, ThemeName, create_theme};
 
-struct StationInfo {
-    frequency: f64,
-}
-
-/// TUI-based progress display for multiple candidates using The Elm Architecture
+/// TUI-based progress display for multiple signals using The Elm Architecture
 pub struct TuiProgressDisplay {
     receiver: mpsc::Receiver<TuiEvent>,
     model: Model,
@@ -42,14 +48,12 @@ pub struct TuiProgressDisplay {
     theme: Box<dyn Theme>,
     current_theme: ThemeName,
     ui_update_system: Option<crate::ecs::systems::UIUpdateSystem>,
-    scan_entities: Option<Entities<ScanEntity>>,
-    station_entities: Option<Entities<StationEntity>>,
+    task_entities: Option<Entities<TaskEntity>>,
     audio_entities: Option<Entities<AudioEntity>>,
-    candidate_entities: Option<Entities<CandidateEntity>>,
+    signal_entities: Option<Entities<SignalEntity>>,
     pause_request_queue: Option<crate::ecs::Resource<crate::ecs::PauseRequestQueue>>,
-    last_station_gen: u64,
     last_audio_gen: u64,
-    last_candidate_gen: u64,
+    last_scan_gen: u64,
 }
 
 impl TuiProgressDisplay {
@@ -65,14 +69,12 @@ impl TuiProgressDisplay {
             theme,
             current_theme,
             ui_update_system: None,
-            scan_entities: None,
-            station_entities: None,
+            task_entities: None,
             audio_entities: None,
-            candidate_entities: None,
+            signal_entities: None,
             pause_request_queue: None,
-            last_station_gen: 0,
             last_audio_gen: 0,
-            last_candidate_gen: 0,
+            last_scan_gen: 0,
         }
     }
 
@@ -91,29 +93,25 @@ impl TuiProgressDisplay {
             theme,
             current_theme,
             ui_update_system: None,
-            scan_entities: None,
-            station_entities: None,
+            task_entities: None,
             audio_entities: None,
-            candidate_entities: None,
+            signal_entities: None,
             pause_request_queue: None,
-            last_station_gen: 0,
             last_audio_gen: 0,
-            last_candidate_gen: 0,
+            last_scan_gen: 0,
         }
     }
 
     /// Set entity worlds for spectrum display integration
     pub fn with_entities(
         mut self,
-        scan_entities: Entities<ScanEntity>,
-        station_entities: Entities<StationEntity>,
+        task_entities: Entities<TaskEntity>,
         audio_entities: Entities<AudioEntity>,
-        candidate_entities: Entities<CandidateEntity>,
+        signal_entities: Entities<SignalEntity>,
     ) -> Self {
-        self.scan_entities = Some(scan_entities);
-        self.station_entities = Some(station_entities);
+        self.task_entities = Some(task_entities);
         self.audio_entities = Some(audio_entities);
-        self.candidate_entities = Some(candidate_entities);
+        self.signal_entities = Some(signal_entities);
         self.ui_update_system = Some(crate::ecs::systems::UIUpdateSystem::new());
         self
     }
@@ -234,23 +232,24 @@ impl TuiProgressDisplay {
             return;
         }
 
-        if let Some(ref scan_entities) = self.scan_entities
-            && let Ok(entities) = scan_entities.try_read()
-            && let Some(scan) = entities.iter().next()
-            && scan.is_paused()
+        if let Some(ref task_entities) = self.task_entities
+            && let Ok(entities) = task_entities.try_read()
+            && let Some(task) = entities.iter().next()
+            && let crate::ecs::TaskComponents::Scan { progress, .. } = &task.components
+            && progress.is_paused()
             && let model::UiMode::AwaitingTune {
-                navigation_index,
-                tuning_index,
-            } = self.model.ui_mode
-            && let Some(info) = self.model.selected_candidate_info()
+                signal_index,
+                tuning_signal_id: _,
+                window_id,
+            } = &self.model.ui_mode
+            && let Some(info) = self.model.selected_signal_info()
         {
             // Wait for audio entity to actually start playing before transitioning
             let audio_is_playing = if let Some(ref audio_entities) = self.audio_entities
                 && let Ok(audios) = audio_entities.try_read()
             {
                 audios.iter().any(|audio| {
-                    (audio.frequency() - info.candidate_frequency).abs() < 1000.0
-                        && audio.is_playing()
+                    (audio.frequency() - info.signal_frequency).abs() < 1000.0 && audio.is_playing()
                 })
             } else {
                 false
@@ -258,13 +257,13 @@ impl TuiProgressDisplay {
 
             if audio_is_playing {
                 self.model.ui_mode = model::UiMode::Listening {
-                    navigation_index,
-                    playing_index: tuning_index,
-                    playing_candidate_id: info.candidate_id.clone(),
+                    signal_index: *signal_index,
+                    window_id: *window_id,
+                    playing_signal_id: info.signal_id.clone(),
                 };
                 debug!(
-                    candidate_id = ?info.candidate_id,
-                    frequency_mhz = info.candidate_frequency / 1e6,
+                    signal_id = ?info.signal_id,
+                    frequency_mhz = info.signal_frequency / 1e6,
                     "TUI: Transitioned from AwaitingTune to Listening (audio confirmed playing)"
                 );
             }
@@ -274,128 +273,149 @@ impl TuiProgressDisplay {
     /// Update spectrum display data from entity worlds
     fn update_spectrum_from_entities(&mut self) {
         if let Some(system) = &mut self.ui_update_system
-            && let (Some(station_entities), Some(audio_entities), Some(candidate_entities)) = (
-                &self.station_entities,
+            && let (Some(task_entities), Some(audio_entities), Some(signal_entities)) = (
+                &self.task_entities,
                 &self.audio_entities,
-                &self.candidate_entities,
+                &self.signal_entities,
             )
         {
-            let (station_gen, audio_gen, candidate_gen) = match (
-                station_entities.try_read(),
-                audio_entities.try_read(),
-                candidate_entities.try_read(),
-            ) {
-                (Ok(stations), Ok(audios), Ok(candidates)) => (
-                    stations.generation(),
-                    audios.generation(),
-                    candidates.generation(),
-                ),
+            let (task_gen, audio_gen) = match (task_entities.try_read(), audio_entities.try_read())
+            {
+                (Ok(tasks), Ok(audios)) => (tasks.generation(), audios.generation()),
                 _ => {
                     return;
                 }
             };
 
-            if station_gen != self.last_station_gen
-                || audio_gen != self.last_audio_gen
-                || candidate_gen != self.last_candidate_gen
-            {
+            if task_gen != self.last_scan_gen || audio_gen != self.last_audio_gen {
                 use crate::ecs::{System, SystemContext};
 
                 debug!(
-                    station_gen = station_gen,
+                    task_gen = task_gen,
                     audio_gen = audio_gen,
-                    candidate_gen = candidate_gen,
-                    last_station_gen = self.last_station_gen,
+                    last_scan_gen = self.last_scan_gen,
                     last_audio_gen = self.last_audio_gen,
-                    last_candidate_gen = self.last_candidate_gen,
                     "TUI: Running UIUpdateSystem due to generation change"
                 );
 
                 let mut context = SystemContext::new()
-                    .with_station_entities(std::sync::Arc::clone(station_entities))
+                    .with_task_entities(std::sync::Arc::clone(task_entities))
                     .with_audio_entities(std::sync::Arc::clone(audio_entities))
-                    .with_candidate_entities(std::sync::Arc::clone(candidate_entities));
+                    .with_signal_entities(std::sync::Arc::clone(signal_entities));
 
                 if system.run(&mut context).is_ok() {
                     let spectrum_count = system.stations().len();
                     let active_count = system.stations().iter().filter(|s| s.is_active).count();
+                    let task_count = system.tasks().len();
 
                     self.model.spectrum_stations = system.stations().to_vec();
                     self.model.active_audio_frequency = system.active_frequency();
+                    self.model.active_tuner_id = system.active_tuner_id().cloned();
+                    self.model.tasks = system.tasks().to_vec();
 
-                    let candidates_by_window = system.candidates_by_window().clone();
-                    self.sync_candidates_to_model(&candidates_by_window);
+                    // Initialize displayed_task_id to first task if none selected
+                    if self.model.displayed_task_id.is_none() && !self.model.tasks.is_empty() {
+                        self.model.displayed_task_id = Some(self.model.tasks[0].task_id.clone());
+                    }
+
+                    // Clear displayed_task_id if task no longer exists
+                    if let Some(ref task_id) = self.model.displayed_task_id
+                        && !self.model.tasks.iter().any(|t| &t.task_id == task_id)
+                    {
+                        self.model.displayed_task_id = None;
+                    }
+
+                    let signals_by_window = system.signals_by_window().clone();
+                    self.sync_signals_to_model(&signals_by_window);
 
                     debug!(
                         spectrum_count = spectrum_count,
                         active_count = active_count,
-                        candidate_count = candidates_by_window
-                            .values()
-                            .map(|v| v.len())
-                            .sum::<usize>(),
+                        signal_count = signals_by_window.values().map(|v| v.len()).sum::<usize>(),
+                        task_count = task_count,
                         "TUI: Updated model from entities"
                     );
                 }
 
-                self.last_station_gen = station_gen;
+                self.last_scan_gen = task_gen;
                 self.last_audio_gen = audio_gen;
-                self.last_candidate_gen = candidate_gen;
             }
         }
     }
 
-    /// Sync candidate data from UIUpdateSystem to Model
-    fn sync_candidates_to_model(
+    /// Sync signal data from UIUpdateSystem to Model
+    fn sync_signals_to_model(
         &mut self,
-        candidates_by_window: &IndexMap<usize, Vec<crate::ecs::systems::ui::CandidateData>>,
+        signals_by_window: &IndexMap<
+            crate::ecs::components::window::WindowId,
+            Vec<crate::ecs::systems::ui::SignalData>,
+        >,
     ) {
-        use crate::ui::tui::model::types::{CandidateProgress, CandidateStatus, WindowProgress};
         use std::time::Instant;
 
-        for (window_id, candidate_data_list) in candidates_by_window {
+        use crate::ui::tui::model::types::{
+            AnalysisStatus, PlaybackState, SignalProgress, WindowProgress,
+        };
+
+        for (window_id, signal_data_list) in signals_by_window {
+            let window_index = window_id.window_index;
             let window = self
                 .model
                 .windows
-                .entry(*window_id)
+                .entry(window_index)
                 .or_insert_with(|| WindowProgress {
-                    window_id: *window_id,
-                    candidates: Vec::new(),
+                    window_id: window_index,
+                    signals: Vec::new(),
                     is_complete: false,
-                    candidate_lookup: HashMap::new(),
+                    signal_lookup: HashMap::new(),
                 });
 
-            for candidate_data in candidate_data_list {
-                let status = match candidate_data.state {
-                    crate::ecs::CandidateState::Detected => CandidateStatus::Detected,
-                    crate::ecs::CandidateState::Analyzing => CandidateStatus::Analyzing,
-                    crate::ecs::CandidateState::Signal => CandidateStatus::Signal,
-                    crate::ecs::CandidateState::Playing => CandidateStatus::Playing,
-                    crate::ecs::CandidateState::Rejected => CandidateStatus::Rejected,
-                    crate::ecs::CandidateState::Completed => CandidateStatus::Completed,
+            for signal_data in signal_data_list {
+                // Map ECS AnalysisStatus to TUI AnalysisStatus (keeping analysis and playback
+                // separate)
+                use crate::ecs::components::{
+                    AnalysisStatus as EcsStatus, signal::PlaybackState as EcsPlaybackState,
                 };
 
-                let candidate_progress = CandidateProgress {
-                    candidate_id: candidate_data.candidate_id.clone(),
-                    frequency_hz: candidate_data.frequency_hz,
-                    metadata: crate::scanning::window::WindowMetadata {
-                        window_id: *window_id,
-                        center_frequency_hz: candidate_data.frequency_hz,
-                    },
-                    completion: candidate_data.completion,
+                let (status, audio_quality, signal_strength) = match signal_data.status {
+                    EcsStatus::Detected => (AnalysisStatus::Detected, None, None),
+                    EcsStatus::Analyzing => (AnalysisStatus::Analyzing, None, None),
+                    EcsStatus::Signal { quality, strength } => {
+                        (AnalysisStatus::Signal, Some(quality), Some(strength))
+                    }
+                    EcsStatus::Rejected { quality, strength } => {
+                        (AnalysisStatus::Rejected, Some(quality), Some(strength))
+                    }
+                    EcsStatus::Error => (AnalysisStatus::Error, None, None),
+                };
+
+                let playback_state = match signal_data.playback_state {
+                    EcsPlaybackState::NotPlaying => PlaybackState::NotPlaying,
+                    EcsPlaybackState::Playing => PlaybackState::Playing,
+                    EcsPlaybackState::Completed => PlaybackState::Completed,
+                };
+
+                let signal_progress = SignalProgress {
+                    signal_id: signal_data.signal_id.clone(),
+                    frequency_hz: signal_data.frequency_hz,
+                    window_id: window_index,
+                    center_frequency_hz: signal_data.frequency_hz,
+                    completion: signal_data.completion,
                     status,
-                    audio_quality: candidate_data.audio_quality,
-                    signal_strength: candidate_data.signal_strength,
+                    playback_state,
+                    audio_quality,
+                    signal_strength,
                     last_update: Instant::now(),
                 };
 
-                if let Some(&index) = window.candidate_lookup.get(&candidate_data.candidate_id) {
-                    window.candidates[index] = candidate_progress;
+                if let Some(&index) = window.signal_lookup.get(&signal_data.signal_id) {
+                    window.signals[index] = signal_progress;
                 } else {
-                    let index = window.candidates.len();
+                    let index = window.signals.len();
                     window
-                        .candidate_lookup
-                        .insert(candidate_data.candidate_id.clone(), index);
-                    window.candidates.push(candidate_progress);
+                        .signal_lookup
+                        .insert(signal_data.signal_id.clone(), index);
+                    window.signals.push(signal_progress);
                 }
             }
         }
@@ -403,62 +423,72 @@ impl TuiProgressDisplay {
 
     /// Handle navigation keys (arrows)
     fn handle_navigation_keys(&mut self, key: KeyCode) {
+        let tuner_count = self.model.tuners.len();
+
         match key {
             KeyCode::Up => self.model.navigate_up(),
             KeyCode::Down => self.model.navigate_down(),
-            KeyCode::Left => self.model.navigate_left(),
+            KeyCode::Left => self.model.navigate_left(tuner_count),
             KeyCode::Right => {
-                // Hardcode tuner count to 2 for now (will be dynamic later)
-                self.model.navigate_right(2);
+                self.model.navigate_right(tuner_count);
             }
             _ => {}
         }
     }
 
-    fn handle_enter_browsing_mode(&mut self, selected_index: usize) -> bool {
-        self.model.ui_mode = model::UiMode::AwaitingTune {
-            navigation_index: selected_index,
-            tuning_index: selected_index,
-        };
-
-        // ECS-native: Push pause request to command queue
-        if let Some(ref pause_request_queue) = self.pause_request_queue
-            && let Some(ref scan_entities) = self.scan_entities
-            && let Ok(entities) = scan_entities.try_read()
-            && let Some(scan) = entities.iter().next()
-        {
-            let window_num = self.model.current_window;
-            let scan_id = *scan.id();
-
-            let request = if let Some(info) = self.model.selected_candidate_info() {
-                debug!(
-                    scan_id = ?scan_id,
-                    window_num = window_num,
-                    station_frequency_mhz = info.candidate_frequency / 1e6,
-                    "TUI: Queuing pause request with station"
-                );
-                crate::ecs::PauseRequest::with_station(
-                    scan_id,
-                    window_num,
-                    info.candidate_frequency,
-                    info.metadata.center_frequency_hz,
-                )
+    fn handle_enter_browsing_mode(&mut self, _selected_index: usize) -> bool {
+        // Get current flat index and window_id from the focused row
+        let rows = self.model.build_signal_rows();
+        if let FocusState::ScanProgress(flat_idx) = self.model.focus_state {
+            if let Some(row) = rows.get(flat_idx) {
+                let window_id = row.window_id;
+                if let Some(info) = self.model.selected_signal_info() {
+                    debug!(
+                        flat_idx,
+                        window_id,
+                        signal_id = %info.signal_id,
+                        frequency_mhz = info.signal_frequency / 1e6,
+                        "TUI: Transitioning to AwaitingTune mode"
+                    );
+                    self.model.ui_mode = model::UiMode::AwaitingTune {
+                        signal_index: flat_idx,
+                        window_id,
+                        tuning_signal_id: info.signal_id.clone(),
+                    };
+                } else {
+                    debug!("TUI: selected_signal_info returned None");
+                    return false;
+                }
             } else {
                 debug!(
-                    scan_id = ?scan_id,
-                    window_num = window_num,
-                    "TUI: Queuing pause request (no station selected)"
+                    flat_idx,
+                    available_rows = rows.len(),
+                    "TUI: focus_state index out of bounds"
                 );
-                crate::ecs::PauseRequest::new(scan_id, window_num)
-            };
-
-            match pause_request_queue.lock() {
-                Ok(mut queue) => queue.push_back(request),
-                Err(poisoned) => {
-                    debug!("Pause request queue lock poisoned, recovering");
-                    poisoned.into_inner().push_back(request);
-                }
+                return false;
             }
+        } else {
+            debug!(
+                focus_state = ?self.model.focus_state,
+                "TUI: focus_state is not ScanProgress"
+            );
+            return false;
+        }
+
+        // TODO: Re-implement pause request for hierarchical tasks
+        // PauseAndTuneRequest expects ScanId but hierarchical tasks use TaskId
+        let window_num = self.model.current_window;
+        if let Some(info) = self.model.selected_signal_info() {
+            debug!(
+                window_num = window_num,
+                station_frequency_mhz = info.signal_frequency / 1e6,
+                "TUI: Pause request with station (pending implementation)"
+            );
+        } else {
+            debug!(
+                window_num = window_num,
+                "TUI: Pause request (pending implementation)"
+            );
         }
 
         true
@@ -466,74 +496,51 @@ impl TuiProgressDisplay {
 
     fn handle_switch_station(
         &mut self,
-        selected_index: usize,
-        info: model::SelectedCandidateInfo,
+        _selected_index: usize,
+        info: model::SelectedSignalInfo,
     ) -> bool {
         debug!(
-            candidate_id = ?info.candidate_id,
-            window_id = info.metadata.window_id,
-            candidate_frequency_mhz = info.candidate_frequency / 1e6,
+            signal_id = ?info.signal_id,
+            window_id = info.window_id,
+            signal_frequency_mhz = info.signal_frequency / 1e6,
             "TUI: Switching to different station"
         );
 
-        self.model.ui_mode = model::UiMode::AwaitingTune {
-            navigation_index: selected_index,
-            tuning_index: selected_index,
-        };
-
-        // ECS-native: Push pause request to command queue
-        if let Some(ref pause_request_queue) = self.pause_request_queue
-            && let Some(ref scan_entities) = self.scan_entities
-            && let Ok(entities) = scan_entities.try_read()
-            && let Some(scan) = entities.iter().next()
-        {
-            let window_num = self.model.current_window;
-            let scan_id = *scan.id();
-
-            let request = crate::ecs::PauseRequest::with_station(
-                scan_id,
-                window_num,
-                info.candidate_frequency,
-                info.metadata.center_frequency_hz,
-            );
-
-            debug!(
-                scan_id = ?scan_id,
-                window_num = window_num,
-                station_frequency_mhz = info.candidate_frequency / 1e6,
-                "TUI: Queuing pause request with new station"
-            );
-
-            match pause_request_queue.lock() {
-                Ok(mut queue) => queue.push_back(request),
-                Err(poisoned) => {
-                    debug!("Pause request queue lock poisoned, recovering");
-                    poisoned.into_inner().push_back(request);
-                }
-            }
+        // Get flat index and window_id from current UiMode
+        if let Some(signal_index) = self.model.selected_signal_index() {
+            let window_id = info.window_id;
+            self.model.ui_mode = model::UiMode::AwaitingTune {
+                signal_index,
+                window_id,
+                tuning_signal_id: info.signal_id.clone(),
+            };
+        } else {
+            return false;
         }
+
+        // TODO: Re-implement pause request for hierarchical tasks
+        // PauseAndTuneRequest expects ScanId but hierarchical tasks use TaskId
+        let window_num = self.model.current_window;
+        debug!(
+            window_num = window_num,
+            station_frequency_mhz = info.signal_frequency / 1e6,
+            "TUI: Pause request with new station (pending implementation)"
+        );
 
         self.model.playback_active = true;
         true
     }
 
     fn handle_resume_scan(&mut self) -> bool {
-        self.model.exit_browsing_mode();
         self.model.ui_mode = model::UiMode::Idle;
 
-        // ECS Phase 5: Pure ECS - only set component, no commands
-        if let Some(ref scan_entities) = self.scan_entities
-            && let Ok(mut entities) = scan_entities.try_write()
-            && let Some(scan) = entities.iter_mut().next()
-        {
-            let window_num = self.model.current_window;
-            scan.request_resume(window_num);
-            debug!(
-                scan_id = ?scan.id(),
-                window_num = window_num,
-                "TUI: Set resume_request on ScanEntity"
-            );
-        }
+        // TODO: Re-implement resume request mechanism for hierarchical tasks
+        // The resume_request field doesn't exist in TaskComponents::Scan yet
+        let _window_num = self.model.current_window;
+        debug!(
+            window_num = _window_num,
+            "TUI: Resume scan requested (mechanism pending implementation)"
+        );
 
         // ECS Phase 5: Pure ECS - only set component, no commands
         if self.model.playback_active {
@@ -564,11 +571,11 @@ impl TuiProgressDisplay {
                         debug!("TUI: Spacebar pressed - pausing globally");
 
                         let had_active_scans = self.has_active_scans();
-                        let had_active_audio = self.has_active_audio();
+                        let playing_stations = self.collect_playing_stations();
 
                         *state = crate::ecs::GlobalPauseState::Paused {
                             had_active_scans,
-                            had_active_audio,
+                            playing_stations,
                         };
 
                         drop(state);
@@ -593,51 +600,54 @@ impl TuiProgressDisplay {
 
     /// Check if there are any active scans
     fn has_active_scans(&self) -> bool {
-        if let Some(ref scan_entities) = self.scan_entities
-            && let Ok(entities) = scan_entities.try_read()
+        if let Some(ref task_entities) = self.task_entities
+            && let Ok(entities) = task_entities.try_read()
         {
-            return entities.iter().any(|scan| scan.is_scanning());
+            return entities.iter().any(|task| {
+                let TaskComponents::Scan { progress, .. } = &task.components;
+                progress.is_scanning()
+            });
         }
         false
     }
 
-    /// Check if there is any active audio
-    fn has_active_audio(&self) -> bool {
-        if let Some(ref audio_entities) = self.audio_entities
-            && let Ok(entities) = audio_entities.try_read()
-        {
-            return entities.iter().any(|audio| audio.is_playing());
-        }
-        false
+    /// Collect information about currently playing signals
+    fn collect_playing_stations(&self) -> Vec<crate::ecs::PlayingStationInfo> {
+        let _playing_stations: Vec<crate::ecs::PlayingStationInfo> = Vec::new();
+
+        // TODO: Update to work with SignalEntity instead of StationEntity
+        // This method was collecting playing station information for global pause
+        // Will need to be updated to work with signal entities
+
+        Vec::new()
     }
 
     /// Pause all active scans globally
     fn pause_all_scans(&mut self) {
-        if let Some(ref scan_entities) = self.scan_entities
-            && let Ok(mut entities) = scan_entities.try_write()
+        if let Some(ref task_entities) = self.task_entities
+            && let Ok(mut entities) = task_entities.try_write()
         {
-            for scan in entities.iter_mut() {
-                let current_window = scan.current_window();
+            for task in entities.iter_mut() {
+                let TaskComponents::Scan { progress, .. } = &mut task.components;
+                let current_window = match &progress.current_window {
+                    Some(w) => w.clone(),
+                    None => continue,
+                };
 
-                let previous_state = if scan.is_scanning() {
-                    crate::ecs::components::scan::PreviousPauseState::WasScanning
-                } else if scan.is_listening() {
-                    if let Some(station) = self.get_listening_station(scan.id()) {
-                        crate::ecs::components::scan::PreviousPauseState::WasListening {
-                            window_num: current_window,
-                            station_frequency_hz: station.frequency,
-                        }
-                    } else {
-                        continue;
-                    }
+                let previous_state = if progress.is_scanning() {
+                    PreviousPauseState::WasScanning
+                } else if progress.is_listening() {
+                    // TODO: Fix type mismatch - get_listening_station expects ScanId but we have
+                    // TaskId For now, skip listening state preservation
+                    continue;
                 } else {
                     continue;
                 };
 
-                scan.progress.pause_globally(current_window, previous_state);
+                progress.pause_globally(current_window.clone(), previous_state);
                 debug!(
-                    scan_id = ?scan.id(),
-                    window = current_window,
+                    task_id = ?task.id(),
+                    window = ?current_window,
                     "TUI: Paused scan globally"
                 );
             }
@@ -651,11 +661,11 @@ impl TuiProgressDisplay {
         {
             for audio in entities.iter_mut() {
                 if audio.is_playing() {
-                    audio.request_stop_listening();
+                    audio.stop();
                     debug!(
                         audio_id = ?audio.id(),
                         frequency_hz = audio.frequency(),
-                        "TUI: Requested stop for audio entity"
+                        "TUI: Stopped audio entity for global pause"
                     );
                 }
             }
@@ -664,14 +674,15 @@ impl TuiProgressDisplay {
 
     /// Resume all globally paused scans
     fn resume_all_scans(&mut self) {
-        if let Some(ref scan_entities) = self.scan_entities
-            && let Ok(mut entities) = scan_entities.try_write()
+        if let Some(ref task_entities) = self.task_entities
+            && let Ok(mut entities) = task_entities.try_write()
         {
-            for scan in entities.iter_mut() {
-                if scan.progress.is_globally_paused() {
-                    scan.progress.resume_from_global_pause();
+            for task in entities.iter_mut() {
+                let TaskComponents::Scan { progress, .. } = &mut task.components;
+                if progress.is_globally_paused() {
+                    progress.resume_from_global_pause();
                     debug!(
-                        scan_id = ?scan.id(),
+                        task_id = ?task.id(),
                         "TUI: Resumed scan from global pause"
                     );
                 }
@@ -681,44 +692,11 @@ impl TuiProgressDisplay {
 
     /// Resume all audio that was playing before global pause
     fn resume_all_audio(&mut self) {
-        if let Some(ref scan_entities) = self.scan_entities
-            && let Ok(entities) = scan_entities.try_read()
-        {
-            for scan in entities.iter() {
-                if let crate::ecs::components::scan::ScanPauseState::Listening { paused_at_window } =
-                    scan.progress.state
-                    && let Some(station) = self.get_listening_station(scan.id())
-                    && let Some(ref pause_request_queue) = self.pause_request_queue
-                {
-                    debug!(
-                        scan_id = ?scan.id(),
-                        frequency_hz = station.frequency,
-                        "TUI: Resuming audio playback"
-                    );
+        // TODO: Update to work with SignalEntity instead of StationEntity
+        // This method was responsible for resuming audio playback after global pause
+        // Will need to be updated to work with signal entities
 
-                    let request = crate::ecs::queue::PauseRequest::with_station(
-                        *scan.id(),
-                        paused_at_window,
-                        station.frequency,
-                        station.frequency,
-                    );
-
-                    if let Ok(mut queue) = pause_request_queue.lock() {
-                        queue.push_back(request);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Get the station being listened to for a scan
-    fn get_listening_station(&self, _scan_id: &crate::ecs::ScanId) -> Option<StationInfo> {
-        if let Some(info) = self.model.selected_candidate_info() {
-            return Some(StationInfo {
-                frequency: info.candidate_frequency,
-            });
-        }
-        None
+        debug!("TUI: resume_all_audio temporarily disabled during StationEntity migration");
     }
 
     /// Handle tuning/playback actions (Enter key in various contexts)
@@ -731,34 +709,52 @@ impl TuiProgressDisplay {
         // Allow entering browsing mode when:
         // - Focus is on scan results
         // - Not already in browsing mode
-        // - Have a candidate selected
+        // - Have a signal selected
         // - Scan is paused/idle (including after scan completes)
-        if matches!(self.model.focus_state, model::FocusState::Scan)
-            && !self.model.browsing_mode()
-            && let Some(selected_index) = self.model.selected_candidate_index()
+        let has_scan_focus = matches!(self.model.focus_state, model::FocusState::ScanProgress(_));
+        let not_browsing = !self.model.browsing_mode();
+        let selected_idx = self.model.selected_signal_index();
+
+        if !has_scan_focus || !not_browsing || selected_idx.is_none() {
+            debug!(
+                has_scan_focus,
+                not_browsing,
+                has_selected_index = selected_idx.is_some(),
+                ui_mode = ?self.model.ui_mode,
+                focus_state = ?self.model.focus_state,
+                "TUI: ENTER key blocked - preconditions not met"
+            );
+        }
+
+        if has_scan_focus
+            && not_browsing
+            && let Some(selected_index) = selected_idx
         {
             return self.handle_enter_browsing_mode(selected_index);
         }
 
         // Case 2: Switch station while listening
         if let model::UiMode::Listening {
-            playing_candidate_id,
-            ..
+            playing_signal_id, ..
         } = &self.model.ui_mode
             && !self.model.is_continue_scan_selected()
-            && let Some(selected_index) = self.model.selected_candidate_index()
-            && let Some(info) = self.model.selected_candidate_info()
-            && &info.candidate_id != playing_candidate_id
+            && let Some(selected_index) = self.model.selected_signal_index()
+            && let Some(info) = self.model.selected_signal_info()
+            && &info.signal_id != playing_signal_id
         {
             return self.handle_switch_station(selected_index, info);
         }
 
         // Case 2b: Switch station while awaiting tune (allows canceling pending tune)
-        if let model::UiMode::AwaitingTune { tuning_index, .. } = self.model.ui_mode
+        if let model::UiMode::AwaitingTune {
+            tuning_signal_id: _,
+            signal_index: tuning_signal_index,
+            ..
+        } = &self.model.ui_mode
             && !self.model.is_continue_scan_selected()
-            && let Some(selected_index) = self.model.selected_candidate_index()
-            && let Some(info) = self.model.selected_candidate_info()
-            && selected_index != tuning_index
+            && let Some(selected_index) = self.model.selected_signal_index()
+            && let Some(info) = self.model.selected_signal_info()
+            && selected_index != *tuning_signal_index
         {
             return self.handle_switch_station(selected_index, info);
         }
@@ -815,6 +811,19 @@ impl TuiProgressDisplay {
                     // Handle spacebar for global pause/resume
                     if matches!(key.code, KeyCode::Char(' ')) {
                         self.handle_spacebar_pause();
+                        return Ok(false);
+                    }
+
+                    // Handle Tab for cycling focus between tables
+                    if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+                        let tuner_count = self.model.tuners.len();
+                        if key.modifiers.contains(event::KeyModifiers::SHIFT)
+                            || matches!(key.code, KeyCode::BackTab)
+                        {
+                            self.model.navigate_previous_table(tuner_count);
+                        } else {
+                            self.model.navigate_next_table(tuner_count);
+                        }
                         return Ok(false);
                     }
 
@@ -884,15 +893,36 @@ impl TuiProgressDisplay {
         Ok(())
     }
 
-    fn ui(&self, f: &mut Frame) {
+    fn ui(&mut self, f: &mut Frame) {
         let theme = self.theme.as_ref();
         let theme_name = self.current_theme.to_string();
-        let layout = Layout::new(f.area());
+
+        let tuner_count = self.model.tuners.len();
+        let signal_count = self.model.displayable_signal_count();
+        let layout = Layout::new(f.area(), tuner_count, signal_count);
 
         header::render_header(f, layout.header, &self.model, theme);
-        spectrum::render_spectrum(f, layout.spectrum, &self.model, theme);
-        scan::render_scan(f, layout.progress, &self.model, theme);
-        tuners::render_tuners(f, layout.tuners, &self.model, theme);
+        render_activities(f, layout.activities, &mut self.model, theme);
+
+        if let Some(task_id) = self.model.displayed_task_id.clone() {
+            task_progress::render_task_progress(
+                f,
+                layout.scan_progress,
+                &mut self.model,
+                theme,
+                &task_id,
+            );
+        } else {
+            task_progress::render_no_progress_message(
+                f,
+                layout.scan_progress,
+                theme,
+                "",
+                "No task selected",
+            );
+        }
+
+        tuners::render_tuners(f, layout.tuners, &mut self.model, theme);
 
         let all_themes: Vec<String> = themes::ThemeName::all()
             .iter()
@@ -963,7 +993,7 @@ impl TuiProgressDisplay {
             // Small sleep to prevent busy waiting
             std::thread::sleep(Duration::from_millis(50));
 
-            // Auto-exit after reasonable time if no activity, or if all candidates are done
+            // Auto-exit after reasonable time if no activity, or if all signals are done
             if (self.model.is_empty() && last_update.elapsed() > Duration::from_secs(30))
                 || (!self.model.is_empty()
                     && self.model.all_complete()
@@ -990,7 +1020,7 @@ impl TuiProgressDisplay {
 
         let mut last_update = Instant::now();
         let update_interval = Duration::from_millis(500); // Update every 500ms
-        let mut last_candidate_count = 0;
+        let mut last_signal_count = 0;
 
         loop {
             // Check for shutdown signal
@@ -1003,20 +1033,19 @@ impl TuiProgressDisplay {
                 self.model.update_tui_event(event);
             }
 
-            // Update display periodically or when candidates change
-            let current_candidate_count = self.model.candidate_count();
-            if last_update.elapsed() >= update_interval
-                || current_candidate_count != last_candidate_count
+            // Update display periodically or when signals change
+            let current_signal_count = self.model.signal_count();
+            if last_update.elapsed() >= update_interval || current_signal_count != last_signal_count
             {
                 // Move cursor up to overwrite previous output
-                if last_candidate_count > 0 {
+                if last_signal_count > 0 {
                     let lines_to_clear = ConsoleRenderer::calculate_display_lines(&self.model);
                     ConsoleRenderer::tty_print(&format!("\x1B[{}A", lines_to_clear)); // Move cursor up
                 }
 
                 ConsoleRenderer::print_tui_style_progress(&self.model);
                 last_update = Instant::now();
-                last_candidate_count = current_candidate_count;
+                last_signal_count = current_signal_count;
             }
 
             // Small sleep to prevent busy waiting
@@ -1034,5 +1063,73 @@ impl TuiProgressDisplay {
 
         ConsoleRenderer::tty_println("\nScanning complete.");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{Arc, RwLock},
+        time::SystemTime,
+    };
+
+    use super::*;
+    use crate::{
+        audio::quality::AudioQuality,
+        core::types::{ModulationType, Signal},
+        ecs::{AudioEntity, EntityWorld},
+    };
+
+    fn create_test_signal() -> Signal {
+        Signal {
+            frequency_hz: 88.9e6,
+            signal_strength: 0.8,
+            bandwidth_hz: 200_000.0,
+            modulation: ModulationType::WFM,
+            audio_sample_rate: 48000,
+            detected_at: SystemTime::now(),
+            analysis_duration_ms: 100,
+            detection_center_freq: 88.9e6,
+            audio_quality: AudioQuality::Good,
+        }
+    }
+
+    #[test]
+    fn test_pause_all_audio_stops_playing_entities() {
+        use tokio_util::sync::CancellationToken;
+
+        let signal = create_test_signal();
+        let audio1 = AudioEntity::new(signal.clone(), 88.9e6, None);
+        let audio2 = AudioEntity::new(signal, 89.3e6, None);
+
+        let mut audio_world = EntityWorld::new();
+        audio_world.insert(audio1);
+        audio_world.insert(audio2);
+
+        let audio_entities = Arc::new(RwLock::new(audio_world));
+
+        let (_, receiver) = mpsc::channel();
+        let shutdown_token = CancellationToken::new();
+        let mut tui = TuiProgressDisplay::new(receiver, shutdown_token);
+        tui.audio_entities = Some(audio_entities.clone());
+
+        {
+            let entities = audio_entities.read().unwrap();
+            assert_eq!(entities.len(), 2);
+            assert!(
+                entities.iter().all(|e| e.is_playing()),
+                "All audio should be playing before pause"
+            );
+        }
+
+        tui.pause_all_audio();
+
+        {
+            let entities = audio_entities.read().unwrap();
+            assert!(
+                entities.iter().all(|e| !e.is_playing()),
+                "All audio should be stopped after pause_all_audio"
+            );
+        }
     }
 }

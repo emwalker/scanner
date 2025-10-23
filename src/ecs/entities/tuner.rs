@@ -1,11 +1,16 @@
 //! Tuner entity - represents a physical SDR tuner (RX channel)
 
-use crate::ecs::Entity;
-use crate::ecs::components::{
-    AllocationComponent, ConstraintComponent, DeviceComponent, PriorityComponent, StatusComponent,
+use crate::{
+    ecs::{
+        Entity,
+        components::{
+            AllocationComponent, ConstraintComponent, DeviceComponent, DisplayNameComponent,
+            PriorityComponent, StatusComponent,
+        },
+    },
+    hardware,
+    hardware::pool::TunerId,
 };
-use crate::hardware;
-use crate::hardware::pool::TunerId;
 
 /// Entity representing a tuner (RX channel) within an SDR device
 ///
@@ -19,6 +24,12 @@ pub struct TunerEntity {
 
     /// Device information
     pub device: DeviceComponent,
+
+    /// Display name for the tuner
+    pub display_name: DisplayNameComponent,
+
+    /// Tuner mode (e.g., "ST", "DT" for RSPduo modes)
+    pub mode: String,
 
     /// Allocation status
     pub allocation: AllocationComponent,
@@ -40,12 +51,17 @@ impl TunerEntity {
         channel_index: usize,
         capabilities: hardware::Capabilities,
         backend: hardware::types::Backend,
+        display_name: String,
+        antenna: Option<String>,
+        mode: String,
     ) -> Self {
         let id = TunerId::new(device_id.clone(), channel_index);
 
         Self {
             id,
-            device: DeviceComponent::new(device_id, channel_index, capabilities, backend),
+            device: DeviceComponent::new(device_id, channel_index, capabilities, backend, antenna),
+            display_name: DisplayNameComponent::new(display_name),
+            mode,
             allocation: AllocationComponent::new(),
             status: StatusComponent::new(),
             priorities: PriorityComponent::default(),
@@ -74,11 +90,13 @@ impl Entity for TunerEntity {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ecs::EntityWorld;
-    use crate::ecs::components::TunerActivity;
-    use crate::hardware::{Capabilities, DeviceId};
     use proptest::prelude::*;
+
+    use super::*;
+    use crate::{
+        ecs::{EntityWorld, components::TunerActivity},
+        hardware::{Capabilities, DeviceId},
+    };
 
     fn create_test_entity(device_serial: &str, channel: usize) -> TunerEntity {
         let device_id = DeviceId::from_serial("sdrplay", device_serial);
@@ -89,6 +107,9 @@ mod tests {
             channel,
             capabilities,
             hardware::types::Backend::Soapy,
+            format!("Test Tuner {}", channel),
+            None,
+            "FM".to_string(),
         )
     }
 
@@ -115,7 +136,15 @@ mod tests {
         )
             .prop_map(|(device_id, channel, backend, connected, allocated)| {
                 let capabilities = Capabilities::for_device(&device_id);
-                let mut entity = TunerEntity::new(device_id, channel, capabilities, backend);
+                let mut entity = TunerEntity::new(
+                    device_id,
+                    channel,
+                    capabilities,
+                    backend,
+                    format!("Test Tuner {}", channel),
+                    None,
+                    "FM".to_string(),
+                );
                 if !connected {
                     entity.device.disconnect();
                 }

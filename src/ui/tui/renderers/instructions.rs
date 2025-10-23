@@ -1,15 +1,16 @@
 //! Instructions rendering for the bottom of the TUI
 
-use crate::ui::tui::{
-    model::{Model, UiMode},
-    themes::Theme,
-};
 use ratatui::{
     Frame,
     layout::Alignment,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
+};
+
+use crate::ui::tui::{
+    model::{Model, UiMode},
+    themes::Theme,
 };
 
 fn build_left_instructions_text(model: &Model) -> String {
@@ -66,8 +67,8 @@ pub fn render_instructions(
 
         let right_text = match &model.ui_mode {
             UiMode::Listening { .. } => {
-                if let Some(info) = model.selected_candidate_info() {
-                    format!("[Listening: {:.1} MHz]  ", info.candidate_frequency / 1e6)
+                if let Some(info) = model.selected_signal_info() {
+                    format!("[Listening: {:.1} MHz]  ", info.signal_frequency / 1e6)
                 } else {
                     format!("{}  ", theme_name)
                 }
@@ -138,9 +139,10 @@ fn render_theme_selector(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
     use crate::ui::tui::model::Model;
-    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_instructions_format_unchanged() {
@@ -166,7 +168,7 @@ mod tests {
         let mut model = Model::new();
         let resource = Arc::new(Mutex::new(crate::ecs::GlobalPauseState::Paused {
             had_active_scans: true,
-            had_active_audio: false,
+            playing_stations: vec![],
         }));
         model.set_global_pause_resource(resource);
 

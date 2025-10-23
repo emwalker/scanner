@@ -15,10 +15,12 @@
 //!
 //! State transitions are enforced at runtime, preventing operations in invalid states.
 
-use crate::core::types::{Result, ScannerError};
 use std::sync::Mutex;
+
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
+
+use crate::core::types::{Result, ScannerError};
 
 /// State: Coordinator is active and can spawn threads
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +74,7 @@ pub enum CoordinatorState {
 /// // Later: shutdown everything
 /// coordinator.shutdown();
 /// coordinator.wait()?; // All threads guaranteed to be joined
+/// //
 /// # Ok(())
 /// # }
 /// ```
@@ -307,10 +310,15 @@ impl Default for ShutdownCoordinator {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
+
     use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Duration;
 
     #[test]
     fn test_coordinator_creation() {

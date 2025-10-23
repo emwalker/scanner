@@ -1,5 +1,6 @@
-use crate::core::types::Result;
 use rustradio::Complex;
+
+use crate::core::types::Result;
 
 pub trait SampleSource {
     /// Read samples into the provided buffer

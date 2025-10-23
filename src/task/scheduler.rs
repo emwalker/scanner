@@ -1,15 +1,20 @@
 //! Task scheduler with backend serialization
 
-use super::{Task, TaskContinuation, TaskHandle, TaskId, TaskPriority, TaskStatus, TaskType};
-use crate::core::types::{Result, ScannerError};
-use crate::hardware::pool::Pool;
-use crate::hardware::types::Backend;
-use crate::shutdown::ShutdownCoordinator;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{Arc, Mutex},
+    time::Instant,
+};
+
 use dashmap::DashMap;
-use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use tracing::{debug, warn};
+
+use super::{Task, TaskContinuation, TaskHandle, TaskId, TaskPriority, TaskStatus, TaskType};
+use crate::{
+    core::types::{Result, ScannerError},
+    hardware::{pool::Pool, types::Backend},
+    shutdown::ShutdownCoordinator,
+};
 
 /// Task with priority for queue ordering
 #[allow(dead_code)]
@@ -104,15 +109,12 @@ impl TaskScheduler {
         let backend = self.determine_backend(&task);
         let semaphore = self.acquire_backend_permit(&backend);
 
-        self.running_tasks.insert(
-            task_id,
-            RunningTaskInfo {
-                task_type: task.task_type(),
-                description: task.description(),
-                started_at: Instant::now(),
-                cancel_token: cancel_token.clone(),
-            },
-        );
+        self.running_tasks.insert(task_id, RunningTaskInfo {
+            task_type: task.task_type(),
+            description: task.description(),
+            started_at: Instant::now(),
+            cancel_token: cancel_token.clone(),
+        });
 
         let running_tasks = self.running_tasks.clone();
         let shutdown_token = cancel_token.clone();
@@ -270,9 +272,10 @@ impl TaskScheduler {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
     use super::*;
     use crate::task::types::MockTaskTrait;
-    use std::sync::mpsc;
 
     struct MockTask {
         id: usize,
@@ -335,10 +338,10 @@ mod tests {
 
     /// Regression test for SDRplay hot-plug removal issue.
     ///
-    /// This test verifies that when a task yields the backend semaphore (via TaskContinuation::Resubmit),
-    /// tasks that are already queued waiting for the semaphore get priority over the yielding task
-    /// reacquiring. This FIFO ordering is critical for device enumeration to run promptly when
-    /// a scan task yields between windows.
+    /// This test verifies that when a task yields the backend semaphore (via
+    /// TaskContinuation::Resubmit), tasks that are already queued waiting for the semaphore get
+    /// priority over the yielding task reacquiring. This FIFO ordering is critical for device
+    /// enumeration to run promptly when a scan task yields between windows.
     ///
     /// Before the fix (using try_acquire_owned with busy-wait):
     /// - Task 1 would immediately reacquire: [1, 1, ...]
@@ -392,9 +395,10 @@ mod tests {
             }
         }
 
-        // Wait longer to ensure tasks 2 & 3 have started their threads and are blocked on acquire_owned()
-        // Task 1 is sleeping for 200ms, we've already waited 10ms, so wait another 150ms
-        // This gives tasks 2 & 3 a total of 150ms to reach acquire_owned() while task 1 still holds the permit
+        // Wait longer to ensure tasks 2 & 3 have started their threads and are blocked on
+        // acquire_owned() Task 1 is sleeping for 200ms, we've already waited 10ms, so wait
+        // another 150ms This gives tasks 2 & 3 a total of 150ms to reach acquire_owned()
+        // while task 1 still holds the permit
         std::thread::sleep(Duration::from_millis(150));
 
         // Collect all run events for 500ms
@@ -428,8 +432,8 @@ mod tests {
         // If FIFO works, tasks 2 or 3 should run before task 1's second run
         assert!(
             acquisition_order[1] != 1,
-            "FIFO failure: Task 1 reacquired immediately after yielding (position 1). \
-             With FIFO, queued tasks 2 or 3 should run first. Order: {:?}",
+            "FIFO failure: Task 1 reacquired immediately after yielding (position 1). With FIFO, \
+             queued tasks 2 or 3 should run first. Order: {:?}",
             acquisition_order
         );
 

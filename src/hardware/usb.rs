@@ -4,13 +4,15 @@
 //! labels. It provides device metadata but cannot open devices - actual device
 //! access is handled by other backends (Soapy, etc).
 
+use std::collections::HashMap;
+
+use tracing::debug;
+
 use super::{
     Backend, DeviceId, DeviceInfo, DeviceTrait, pool::TunerId, streaming::StreamingDevice,
     types::TunerInfo,
 };
 use crate::core::types::{Result, ScannerError};
-use std::collections::HashMap;
-use tracing::debug;
 
 pub struct Usb {
     known_devices: HashMap<(u16, u16), &'static str>,
@@ -141,6 +143,7 @@ impl Usb {
                 id: TunerId::new(device_id, 0),
                 label,
                 mode: String::new(),
+                antenna: None,
             }],
         })
     }

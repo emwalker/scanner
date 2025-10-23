@@ -1,63 +1,64 @@
 //! Layout calculations and constraints for TUI rendering
 
-use ratatui::layout::Layout as RatatuiLayout;
-use ratatui::layout::{Constraint, Direction, Rect};
+use ratatui::layout::{Constraint, Direction, Layout as RatatuiLayout, Rect};
 
-/// Main TUI layout with horizontal split for tuner list
+/// Main TUI layout with Activities at full width and Tuners/Progress side-by-side
 pub struct Layout {
     pub header: Rect,
-    pub spectrum: Rect,
-    pub progress: Rect,
+    pub activities: Rect,
     pub tuners: Rect,
+    pub scan_progress: Rect,
     pub instructions: Rect,
 }
 
 impl Layout {
-    pub fn new(area: Rect) -> Self {
+    pub fn new(area: Rect, tuner_count: usize, signal_count: usize) -> Self {
         let vertical_chunks = RatatuiLayout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3), // Header
-                Constraint::Length(5), // Spectrum (full width)
-                Constraint::Min(0),    // Content area (split horizontally for progress + tuners)
+                Constraint::Length(2), // Header
+                Constraint::Min(0),    // Content (activities + tuners/progress)
                 Constraint::Length(1), // Instructions
             ])
             .split(area);
 
-        let terminal_width = area.width as usize;
-        let wide_threshold = 100;
+        let tuners_height = (tuner_count + 3).max(3) as u16;
+        let scan_height = (signal_count + 3).max(3) as u16;
 
-        let content_chunks = if terminal_width >= wide_threshold {
-            RatatuiLayout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(50), // Left: progress
-                    Constraint::Length(2),      // Margin
-                    Constraint::Percentage(50), // Right: tuner list
-                ])
-                .split(vertical_chunks[2])
-        } else {
-            RatatuiLayout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(60), // Left: progress
-                    Constraint::Percentage(40), // Right: tuner list
-                ])
-                .split(vertical_chunks[2])
-        };
+        let content_chunks = RatatuiLayout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(4), // Activities (header + border + 1 row)
+                Constraint::Min(0),    /* Tuners and Progress (side-by-side with independent
+                                        * heights) */
+            ])
+            .split(vertical_chunks[1]);
 
-        let (progress_area, tuners_area) = if terminal_width >= wide_threshold {
-            (content_chunks[0], content_chunks[2])
-        } else {
-            (content_chunks[0], content_chunks[1])
-        };
+        let bottom_chunks = RatatuiLayout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(50), // Tuners column
+                Constraint::Percentage(50), // Scan progress column
+            ])
+            .split(content_chunks[1]);
+
+        // Create independent vertical layouts for each column
+        let tuners_column = RatatuiLayout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(tuners_height), Constraint::Min(0)])
+            .split(bottom_chunks[0]);
+
+        let scan_column = RatatuiLayout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(scan_height), Constraint::Min(0)])
+            .split(bottom_chunks[1]);
 
         Self {
             header: vertical_chunks[0],
-            spectrum: vertical_chunks[1],
-            progress: progress_area,
-            tuners: tuners_area,
-            instructions: vertical_chunks[3],
+            activities: content_chunks[0],
+            tuners: tuners_column[0],
+            scan_progress: scan_column[0],
+            instructions: vertical_chunks[2],
         }
     }
 }

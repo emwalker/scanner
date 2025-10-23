@@ -5,9 +5,7 @@ pub(crate) struct SquelchMonitoringParams {
     pub refined_frequency: f64,
     pub original_frequency_hz: f64,
     #[allow(dead_code)]
-    pub candidate_id: String,
-    #[allow(dead_code)]
-    pub metadata: crate::scanning::window::WindowMetadata,
+    pub signal_id: String,
     #[allow(dead_code)]
     pub tuner_id: Option<crate::hardware::DeviceId>,
 }
@@ -54,7 +52,7 @@ fn handle_timeout(
     max_wait_time: f64,
 ) {
     tracing::debug!(
-        "Squelch did not complete analysis after {:.1} seconds, moving to next candidate",
+        "Squelch did not complete analysis after {:.1} seconds, moving to next signal",
         max_wait_time
     );
 

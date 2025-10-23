@@ -1,7 +1,7 @@
 mod helpers;
 
 #[cfg(test)]
-mod candidate_lifecycle;
+mod signal_lifecycle;
 
 #[cfg(test)]
 mod state_preservation;
@@ -17,3 +17,9 @@ mod tuner_state_proptest;
 
 #[cfg(test)]
 mod global_pause;
+
+#[cfg(test)]
+mod display_regression;
+
+#[cfg(test)]
+mod scan_start;

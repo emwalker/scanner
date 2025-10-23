@@ -4,7 +4,7 @@
   "capture_duration": 1.0,
   "total_samples": 2000000,
   "format": "f32_le_complex",
-  "expected_candidates": [],
+  "expected_signals": [],
   "fft_size": 1024,
   "peak_detection_threshold": 1.0,
   "peak_scan_duration": 1.5,

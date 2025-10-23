@@ -1,16 +1,16 @@
 //! Device enumeration task - discovers available SDR devices for a backend
 
-use crate::core::types::{Result, ScannerError};
-use crate::discovery::tracker::DeviceTracker;
-use crate::hardware::Capabilities;
-use crate::hardware::backend::Backend as BackendTrait;
-use crate::hardware::pool::{AddDeviceResult, Pool};
-use crate::hardware::types::Backend;
-use crate::task::TaskContinuation;
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
+
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
+
+use crate::{
+    core::types::{Result, ScannerError},
+    discovery::tracker::DeviceTracker,
+    hardware::{Capabilities, backend::Backend as BackendTrait, pool::Pool, types::Backend},
+    task::TaskContinuation,
+};
 
 /// Device enumeration task - discovers available SDR devices for a backend
 ///
@@ -23,6 +23,8 @@ pub struct DeviceEnumerationTask {
     pool: Arc<Pool>,
     discovery_tx: mpsc::Sender<crate::discovery::Event>,
     tracker: Option<Arc<Mutex<DeviceTracker>>>,
+    shared_tuner_entities: Option<Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>>>,
+    shared_device_entities: Option<Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::DeviceEntity>>>>,
 }
 
 impl DeviceEnumerationTask {
@@ -37,6 +39,8 @@ impl DeviceEnumerationTask {
             pool,
             discovery_tx,
             tracker: None,
+            shared_tuner_entities: None,
+            shared_device_entities: None,
         }
     }
 
@@ -52,6 +56,27 @@ impl DeviceEnumerationTask {
             pool,
             discovery_tx,
             tracker: Some(tracker),
+            shared_tuner_entities: None,
+            shared_device_entities: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_shared_entities(
+        backend: Backend,
+        pool: Arc<Pool>,
+        discovery_tx: mpsc::Sender<crate::discovery::Event>,
+        tracker: Option<Arc<Mutex<DeviceTracker>>>,
+        shared_tuner_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>>,
+        shared_device_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::DeviceEntity>>>,
+    ) -> Self {
+        Self {
+            backend,
+            pool,
+            discovery_tx,
+            tracker,
+            shared_tuner_entities: Some(shared_tuner_entities),
+            shared_device_entities: Some(shared_device_entities),
         }
     }
 
@@ -125,44 +150,58 @@ impl DeviceEnumerationTask {
         for device_info in added_devices {
             let capabilities = Capabilities::for_device(&device_info.id);
 
-            let result = self.pool.add_device_metadata(
-                device_info.id.clone(),
-                capabilities,
-                self.backend.clone(),
-            );
+            // Write directly to shared EntityWorlds (Pool no longer creates entities)
+            let (Some(shared_tuner_entities), Some(shared_device_entities)) =
+                (&self.shared_tuner_entities, &self.shared_device_entities)
+            else {
+                debug!("Shared entities not available, skipping device addition");
+                continue;
+            };
 
-            match result {
-                AddDeviceResult::Added {
-                    device_id,
-                    tuner_count,
-                } => {
+            match (
+                shared_tuner_entities.try_lock(),
+                shared_device_entities.try_lock(),
+            ) {
+                (Ok(mut tuners), Ok(mut hardware)) => {
+                    // Create hardware entity
+                    let device_entity = crate::ecs::DeviceEntity::new_metadata_only(
+                        device_info.id.clone(),
+                        device_info.label.clone(),
+                        capabilities.clone(),
+                        self.backend.clone(),
+                    );
+                    hardware.insert(device_entity);
+
+                    // Create tuner entities
+                    for tuner_info in &device_info.tuners {
+                        let tuner_entity = crate::ecs::TunerEntity::new(
+                            device_info.id.clone(),
+                            tuner_info.id.channel_index,
+                            capabilities.clone(),
+                            self.backend.clone(),
+                            tuner_info.label.clone(),
+                            tuner_info.antenna.clone(),
+                            tuner_info.mode.clone(),
+                        );
+                        tuners.insert(tuner_entity);
+                    }
+
                     debug!(
-                        device_id = ?device_id,
-                        tuner_count = tuner_count,
-                        "Added device to pool"
+                        device_id = ?device_info.id,
+                        num_tuners = device_info.tuners.len(),
+                        "Created entities directly in shared EntityWorlds"
                     );
 
+                    // Send discovery event
                     let _ = self
                         .discovery_tx
                         .send(crate::discovery::Event::Added(device_info));
                 }
-                AddDeviceResult::FilteredOut { device_id, reason } => {
+                (Err(_), _) | (_, Err(_)) => {
                     debug!(
-                        device_id = ?device_id,
-                        reason = reason,
-                        "Device filtered out by pool but still showing in TUI"
+                        device_id = ?device_info.id,
+                        "Could not lock shared entities for device addition"
                     );
-
-                    let _ = self
-                        .discovery_tx
-                        .send(crate::discovery::Event::Added(device_info));
-                }
-                AddDeviceResult::ShutdownMode => {
-                    debug!("Pool in shutdown mode, stopping enumeration");
-                    break;
-                }
-                AddDeviceResult::PoolBusy => {
-                    debug!("Pool busy, skipping device");
                 }
             }
         }

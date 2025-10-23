@@ -1,9 +1,15 @@
-use super::*;
-use crate::audio::quality::AudioAnalyzer;
-use crate::core::types::ScanningConfig;
-use crate::hardware::pool::TunerActivity;
-use crate::hardware::{Backend, DeviceId};
 use std::sync::Arc;
+
+use super::*;
+use crate::{
+    audio::quality::AudioAnalyzer,
+    core::types::ScanningConfig,
+    ecs::test_helpers::create_test_pool_with_entities,
+    hardware::{
+        Backend, DeviceId,
+        pool::{TunerActivity, test_utils::add_test_device_to_pool},
+    },
+};
 
 fn create_test_config() -> ScanningConfig {
     let mut config = ScanningConfig::default();
@@ -95,14 +101,21 @@ fn test_pool_device_population() {
     let filter = PoolFilter::new()
         .with_driver("mock")
         .with_mode(TuningMode::SingleTuner);
-    let pool = Pool::new(filter, None);
+    let (pool, _tuner_entities, _device_entities) = create_test_pool_with_entities(filter, None);
 
     let mock_backend = crate::hardware::Mock;
     let pool_tuner_id = crate::hardware::pool::TunerId::new(tuner_id, 0);
     let device = mock_backend.open_tuner(&pool_tuner_id).unwrap();
 
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    let device_id = device.id().clone();
+    let caps = device.capabilities().clone();
+    add_test_device_to_pool(
+        &pool,
+        device_id,
+        caps,
+        crate::hardware::types::Backend::Mock,
+        None,
+    );
 
     let status = pool.status();
     assert_eq!(status.device_count, 1, "Pool should have one device");
@@ -116,13 +129,20 @@ fn test_pool_acquire_and_use() {
     let filter = PoolFilter::new()
         .with_driver("mock")
         .with_mode(TuningMode::SingleTuner);
-    let pool = Pool::new(filter, None);
+    let (pool, _tuner_entities, _device_entities) = create_test_pool_with_entities(filter, None);
 
     let mock_backend = crate::hardware::Mock;
     let pool_tuner_id = crate::hardware::pool::TunerId::new(tuner_id, 0);
     let device = mock_backend.open_tuner(&pool_tuner_id).unwrap();
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    let device_id = device.id().clone();
+    let caps = device.capabilities().clone();
+    add_test_device_to_pool(
+        &pool,
+        device_id,
+        caps,
+        crate::hardware::types::Backend::Mock,
+        None,
+    );
 
     let pool = Arc::new(pool);
 
@@ -218,23 +238,24 @@ fn test_coordinator_shutdown_on_drop() {
 
 #[test]
 fn test_tui_event_sender_wired_to_ui_update_system() {
-    use crate::ecs::Coordinator;
-    use crate::hardware::types::{Backend, Capabilities};
+    use crate::{
+        ecs::Coordinator,
+        hardware::types::{Backend, Capabilities},
+    };
 
     let (tui_sender, tui_receiver) = std::sync::mpsc::channel();
 
-    let pool = Arc::new(crate::hardware::pool::Pool::new(
+    let (pool, _tuner_entities, _device_entities) = create_test_pool_with_entities(
         crate::hardware::pool::PoolFilter::new().with_driver("sdrplay"),
         None,
-    ));
+    );
 
     let config = Arc::new(crate::core::types::ScanningConfig::default());
     let shutdown = Arc::new(crate::shutdown::ShutdownCoordinator::new());
 
-    let scan_entities = Arc::new(RwLock::new(crate::ecs::EntityWorld::new()));
-    let station_entities = Arc::new(RwLock::new(crate::ecs::EntityWorld::new()));
+    let task_entities = Arc::new(RwLock::new(crate::ecs::EntityWorld::new()));
     let audio_entities = Arc::new(RwLock::new(crate::ecs::EntityWorld::new()));
-    let candidate_entities = Arc::new(RwLock::new(crate::ecs::EntityWorld::new()));
+    let signal_entities = Arc::new(RwLock::new(EntityWorld::new()));
 
     let device_id = DeviceId::from_driver(Backend::Soapy, "sdrplay", "test123");
     let tuner_id = crate::hardware::pool::TunerId {
@@ -249,14 +270,16 @@ fn test_tui_event_sender_wired_to_ui_update_system() {
             0,
             Capabilities::for_mock("sdrplay", "test123"),
             Backend::Soapy,
+            "test tuner".to_string(),
+            None,
+            "FM".to_string(),
         ));
     }
 
     let mut coordinator = Coordinator::new(&pool, &config, &shutdown)
-        .with_scan_entities(scan_entities)
-        .with_station_entities(station_entities)
+        .with_task_entities(task_entities)
         .with_audio_entities(audio_entities)
-        .with_candidate_entities(candidate_entities);
+        .with_signal_entities(signal_entities);
 
     let mut ui_update_system = crate::ecs::systems::UIUpdateSystem::new();
     ui_update_system = ui_update_system.with_tui_event_sender(tui_sender);
@@ -286,14 +309,14 @@ fn test_tui_event_sender_wired_to_ui_update_system() {
 
     assert!(
         received_scanning_event,
-        "UIUpdateSystem should send ActiveTunersUpdated events with Scanning activity when TUI event sender is configured"
+        "UIUpdateSystem should send ActiveTunersUpdated events with Scanning activity when TUI \
+         event sender is configured"
     );
 }
 
 #[test]
 fn test_interactive_mode_keeps_coordinator_alive_after_scan_completion() {
-    use std::sync::atomic::Ordering;
-    use std::sync::mpsc;
+    use std::sync::{atomic::Ordering, mpsc};
 
     let mut config = create_test_config();
     config.audio.buffer_size = 8192;
@@ -306,20 +329,20 @@ fn test_interactive_mode_keeps_coordinator_alive_after_scan_completion() {
     let filter = crate::hardware::pool::PoolFilter::new()
         .with_driver("mock")
         .with_mode(crate::hardware::pool::TuningMode::SingleTuner);
-    let pool = Arc::new(crate::hardware::pool::Pool::new(filter, None));
+    let (pool, _tuner_entities, _device_entities) = create_test_pool_with_entities(filter, None);
     let scheduler = Arc::new(crate::task::TaskScheduler::new(
         pool.clone(),
         shutdown_coordinator.clone(),
     ));
 
     let scan_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
+    let task_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
     let window_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
-    let station_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
     let audio_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
-    let candidate_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
+    let signal_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
 
     let pause_request_queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
-        crate::ecs::PauseRequest,
+        crate::ecs::PauseAndTuneRequest,
     >::new()));
 
     // Create a scan entity that starts completed
@@ -335,7 +358,7 @@ fn test_interactive_mode_keeps_coordinator_alive_after_scan_completion() {
     )
     .with_stations(vec![88.9e6]);
 
-    let mut scan_entity = crate::ecs::ScanEntity::new(scan_config);
+    let mut scan_entity = crate::ecs::ScanEntity::new(scan_config, 1);
     scan_entity.lifecycle.complete();
     scan_entities.write().unwrap().insert(scan_entity);
 
@@ -347,6 +370,31 @@ fn test_interactive_mode_keeps_coordinator_alive_after_scan_completion() {
     let global_pause_resource =
         Arc::new(std::sync::Mutex::new(crate::ecs::GlobalPauseState::Active));
 
+    let scan_config = crate::ecs::components::scan::ScanConfigComponent::new(
+        crate::ecs::components::scan::ScanType::Stations,
+        88.9e6,
+        88.9e6,
+        2_000_000.0,
+        2_000_000.0,
+        24.0,
+        1.0,
+        1,
+    )
+    .with_stations(vec![88.9e6]);
+
+    let requirements = crate::hardware::pool::TaskRequirements {
+        frequency_hz: 88.9e6,
+        bandwidth_hz: 2_000_000.0,
+        required_sample_rate: 2_000_000.0,
+        priority: crate::hardware::pool::TaskPriority::Normal,
+    };
+
+    let pending_scan_request = Arc::new(std::sync::RwLock::new(Some(
+        crate::ecs::components::scan::PendingScanRequest::new(scan_config, 1, requirements),
+    )));
+
+    let (_discovery_tx, discovery_rx) = std::sync::mpsc::channel();
+
     let main_thread = MainThread::new_with_entities(
         Arc::new(config),
         backend,
@@ -354,13 +402,14 @@ fn test_interactive_mode_keeps_coordinator_alive_after_scan_completion() {
         pool.clone(),
         scheduler,
         Vec::new(),
-        scan_entities.clone(),
+        task_entities,
         window_entities,
-        station_entities,
         audio_entities,
-        candidate_entities,
+        signal_entities,
         pause_request_queue,
         global_pause_resource,
+        pending_scan_request,
+        discovery_rx,
     )
     .unwrap()
     .with_tui_event_sender(tui_sender)

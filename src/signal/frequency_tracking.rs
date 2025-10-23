@@ -1,5 +1,6 @@
-use rustradio::Complex;
 use std::f64::consts::PI;
+
+use rustradio::Complex;
 use tracing::debug;
 
 /// Configuration for frequency tracking algorithms

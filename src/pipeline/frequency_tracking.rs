@@ -105,7 +105,7 @@ pub(crate) fn run_frequency_tracking(
                 }
             }
             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
-                std::thread::sleep(std::time::Duration::from_micros(100));
+                std::thread::sleep(std::time::Duration::from_millis(100));
             }
             Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
                 tracing::debug!("Frequency tracking lagged behind SDR stream");
@@ -115,5 +115,58 @@ pub(crate) fn run_frequency_tracking(
                 return None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use super::*;
+
+    #[test]
+    fn test_frequency_tracking_sleeps_on_empty() {
+        // Regression test for CPU busy-wait issue
+        // Verifies that frequency_tracking properly sleeps when broadcast is empty
+        // instead of busy-polling. Sleep duration is 100ms to avoid excessive CPU.
+        // This test was added after fixing a 100μs sleep that caused 10,000 wakeups/sec.
+
+        let (tx, rx) = tokio::sync::broadcast::channel(16);
+
+        // Spawn a thread that closes the channel after 150ms
+        // This causes frequency_tracking to exit and gives us a measurable timeframe
+        let sender_handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            drop(tx); // Close the channel
+        });
+
+        let config = ScanningConfig::default();
+        let start = Instant::now();
+
+        // Run frequency_tracking with empty channel - will sleep until channel closes
+        let _result = run_frequency_tracking(88.9e6, &config, rx);
+
+        let elapsed = start.elapsed();
+        let _ = sender_handle.join();
+
+        // Should have waited at least 150ms for the channel to close
+        // If sleep was 100μs instead of 100ms, this would complete in <10ms
+        let millis = elapsed.as_millis() as u64;
+        assert!(
+            millis >= 150,
+            "Expected to sleep ~150ms while waiting for channel close, but completed in {}ms. \
+             This suggests the sleep duration regressed from 100ms to something shorter.",
+            millis
+        );
+
+        // Also verify it didn't sleep excessively (shouldn't take more than 500ms)
+        assert!(
+            millis < 500,
+            "Frequency tracking took {}ms, seems too long",
+            millis
+        );
     }
 }

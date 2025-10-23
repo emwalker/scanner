@@ -1,8 +1,10 @@
 #![allow(dead_code)]
 
-use crate::hardware;
 use std::collections::HashMap;
+
 use tracing::{debug, info};
+
+use crate::hardware;
 
 pub trait DeviceEnumerator: Send {
     fn enumerate(&self) -> Result<Vec<hardware::DeviceInfo>, Box<dyn std::error::Error>>;
@@ -97,13 +99,16 @@ impl SubprocessEnumerator {
     }
 
     fn spawn_and_enumerate(&self) -> Result<Vec<hardware::DeviceInfo>, Box<dyn std::error::Error>> {
+        use std::{
+            env,
+            os::unix::net::UnixStream,
+            path::Path,
+            process::{Command, Stdio},
+            thread,
+            time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+        };
+
         use crate::ipc::{ControlChannel, ControlMessage, UnixControlChannel};
-        use std::env;
-        use std::os::unix::net::UnixStream;
-        use std::path::Path;
-        use std::process::{Command, Stdio};
-        use std::thread;
-        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
         info!(backend = %self.backend_name, "Starting subprocess enumeration");
 
@@ -340,6 +345,7 @@ impl UsbEnumerator {
                 id: hardware::pool::TunerId::new(device_id, 0),
                 label,
                 mode: String::new(),
+                antenna: None,
             }],
         })
     }

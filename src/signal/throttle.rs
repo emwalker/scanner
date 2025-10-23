@@ -1,7 +1,10 @@
-use rustradio::Result;
-use rustradio::block::{Block, BlockEOF, BlockName, BlockRet};
-use rustradio::stream::{ReadStream, WriteStream};
 use std::time::{Duration, Instant};
+
+use rustradio::{
+    Result,
+    block::{Block, BlockEOF, BlockName, BlockRet},
+    stream::{ReadStream, WriteStream},
+};
 
 /// Throttle block that limits sample rate to prevent CPU busy-waiting
 ///

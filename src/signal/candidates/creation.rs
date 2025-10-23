@@ -1,3 +1,6 @@
+use tracing::debug;
+
+use super::analysis::analyze_spectral_characteristics;
 use crate::{
     core::{
         config::ScanningConfig,
@@ -5,15 +8,8 @@ use crate::{
     },
     signal::Candidate,
 };
-use tracing::debug;
 
-use super::analysis::analyze_spectral_characteristics;
-
-fn create_fm_candidate(
-    frequency_mhz: f64,
-    peaks: &[Peak],
-    spectral_score: f32,
-) -> types::Candidate {
+fn create_fm_signal(frequency_mhz: f64, peaks: &[Peak], spectral_score: f32) -> types::Candidate {
     let signal_strength = if spectral_score > 0.8 {
         "Strong"
     } else if spectral_score > 0.6 {
@@ -64,7 +60,7 @@ fn calculate_starting_fm_frequency(freq_start_mhz: f64) -> f64 {
     fm_freq
 }
 
-pub(crate) fn find_candidates(
+pub(crate) fn find_signals(
     peaks: &[Peak],
     config: &ScanningConfig,
     center_freq: f64,
@@ -80,7 +76,7 @@ pub(crate) fn find_candidates(
         freq_start_mhz, freq_end_mhz
     );
 
-    let mut candidates = Vec::new();
+    let mut signals = Vec::new();
     let mut fm_freq = calculate_starting_fm_frequency(freq_start_mhz);
 
     while fm_freq <= freq_end_mhz {
@@ -93,11 +89,11 @@ pub(crate) fn find_candidates(
         debug!("score: {:.3} ({})", spectral_score, analysis_summary);
 
         if spectral_score >= config.peak_detection.spectral_threshold {
-            candidates.push(create_fm_candidate(fm_freq, peaks, spectral_score));
+            signals.push(create_fm_signal(fm_freq, peaks, spectral_score));
         }
 
         fm_freq = next_fm_frequency(fm_freq);
     }
 
-    candidates
+    signals
 }

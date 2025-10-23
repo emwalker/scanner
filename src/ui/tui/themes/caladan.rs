@@ -1,7 +1,8 @@
 //! Caladan theme - Philosophical water world aesthetic
 
-use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 use ratatui::style::Color;
+
+use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 
 pub struct DarkTheme;
 
@@ -11,7 +12,7 @@ impl ColorScheme for DarkTheme {
     }
 
     fn secondary(&self) -> Color {
-        Color::Rgb(100, 130, 150)
+        Color::Rgb(160, 200, 220)
     }
 
     fn accent(&self) -> Color {
@@ -108,6 +109,18 @@ impl ColorScheme for DarkTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(150, 255, 150) // Bright green for quality when active
+    }
+
+    fn selection_bg(&self) -> Color {
+        Color::Rgb(12, 59, 97) // #0c3b61
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(40, 80, 100) // Ocean blue
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(220, 235, 245) // Light blue-white
     }
 }
 
@@ -268,6 +281,10 @@ impl ColorScheme for LightTheme {
         Color::Rgb(0, 120, 180) // Bright blue for selection
     }
 
+    fn selection_bg(&self) -> Color {
+        Color::Rgb(0, 40, 70) // Subtle ocean blue for selection background
+    }
+
     fn active_highlight_bg(&self) -> Color {
         Color::Rgb(0, 100, 150) // Deep blue background for active playing
     }
@@ -282,6 +299,14 @@ impl ColorScheme for LightTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(0, 180, 0) // Bright green for quality when active
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(30, 70, 100)
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(255, 255, 255)
     }
 }
 

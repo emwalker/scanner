@@ -2,34 +2,40 @@
 
 use std::collections::HashSet;
 
+use crate::ecs::components::WindowId;
+
 /// Pause state for a scan
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ScanPauseState {
     /// Scan has been requested but not yet started
     Pending,
     /// Scan is actively running
     Scanning,
     /// Scan is paused at a specific window
-    PausedAtWindow { window_index: usize },
+    PausedAtWindow { window_id: WindowId },
     /// Globally paused by user (spacebar)
     PausedGlobally {
-        at_window: usize,
+        window_id: WindowId,
         previous_state: PreviousPauseState,
     },
     /// Scan has completed all windows
     Completed,
     /// User is listening to a station (paused for audio)
-    Listening { paused_at_window: usize },
+    Listening { window_id: WindowId },
+    /// No tuners available at creation time
+    WaitingForTuner,
+    /// Assigned tuner disappeared from pool
+    TunerOffline,
 }
 
 /// Captures what was happening before global pause for resume
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PreviousPauseState {
     /// Was actively scanning
     WasScanning,
     /// Was listening to a station
     WasListening {
-        window_num: usize,
+        window_id: WindowId,
         station_frequency_hz: f64,
     },
 }
@@ -41,7 +47,7 @@ pub struct ScanProgressComponent {
     pub state: ScanPauseState,
 
     /// Current window being processed (when Scanning)
-    pub current_window: usize,
+    pub current_window: Option<WindowId>,
 
     /// Total number of windows to process
     pub total_windows: usize,
@@ -49,8 +55,8 @@ pub struct ScanProgressComponent {
     /// Number of windows completed
     pub windows_completed: usize,
 
-    /// Set of completed window indices (for non-sequential processing)
-    pub completed_windows: HashSet<usize>,
+    /// Set of completed window IDs (for non-sequential processing)
+    pub completed_windows: HashSet<WindowId>,
 }
 
 impl ScanProgressComponent {
@@ -58,7 +64,7 @@ impl ScanProgressComponent {
     pub fn new(total_windows: usize) -> Self {
         Self {
             state: ScanPauseState::Pending,
-            current_window: 0,
+            current_window: None,
             total_windows,
             windows_completed: 0,
             completed_windows: HashSet::new(),
@@ -66,8 +72,8 @@ impl ScanProgressComponent {
     }
 
     /// Start processing a window
-    pub fn start_window(&mut self, window_index: usize) {
-        self.current_window = window_index;
+    pub fn start_window(&mut self, window_id: WindowId) {
+        self.current_window = Some(window_id);
         self.state = ScanPauseState::Scanning;
     }
 
@@ -77,20 +83,20 @@ impl ScanProgressComponent {
     }
 
     /// Mark a specific window as completed
-    pub fn complete_window_at(&mut self, window_index: usize) {
-        if self.completed_windows.insert(window_index) {
+    pub fn complete_window_at(&mut self, window_id: WindowId) {
+        if self.completed_windows.insert(window_id) {
             self.windows_completed += 1;
         }
     }
 
     /// Check if a window has been completed
-    pub fn is_window_completed(&self, window_index: usize) -> bool {
-        self.completed_windows.contains(&window_index)
+    pub fn is_window_completed(&self, window_id: &WindowId) -> bool {
+        self.completed_windows.contains(window_id)
     }
 
     /// Pause at a specific window
-    pub fn pause(&mut self, window_index: usize) {
-        self.state = ScanPauseState::PausedAtWindow { window_index };
+    pub fn pause(&mut self, window_id: WindowId) {
+        self.state = ScanPauseState::PausedAtWindow { window_id };
     }
 
     /// Resume scanning
@@ -104,15 +110,13 @@ impl ScanProgressComponent {
     }
 
     /// Enter listening mode
-    pub fn start_listening(&mut self, paused_at_window: usize) {
-        self.state = ScanPauseState::Listening { paused_at_window };
+    pub fn start_listening(&mut self, window_id: WindowId) {
+        self.state = ScanPauseState::Listening { window_id };
     }
 
     /// Exit listening mode
-    pub fn stop_listening(&mut self, paused_at_window: usize) {
-        self.state = ScanPauseState::PausedAtWindow {
-            window_index: paused_at_window,
-        };
+    pub fn stop_listening(&mut self, window_id: WindowId) {
+        self.state = ScanPauseState::PausedAtWindow { window_id };
     }
 
     /// Check if scan is pending
@@ -154,23 +158,23 @@ impl ScanProgressComponent {
     }
 
     /// Pause globally (user-initiated via spacebar)
-    pub fn pause_globally(&mut self, window_index: usize, previous_state: PreviousPauseState) {
+    pub fn pause_globally(&mut self, window_id: WindowId, previous_state: PreviousPauseState) {
         self.state = ScanPauseState::PausedGlobally {
-            at_window: window_index,
+            window_id,
             previous_state,
         };
     }
 
     /// Resume from global pause, restoring previous state
     pub fn resume_from_global_pause(&mut self) {
-        if let ScanPauseState::PausedGlobally { previous_state, .. } = self.state {
+        if let ScanPauseState::PausedGlobally { previous_state, .. } = &self.state.clone() {
             match previous_state {
                 PreviousPauseState::WasScanning => {
                     self.state = ScanPauseState::Scanning;
                 }
-                PreviousPauseState::WasListening { window_num, .. } => {
+                PreviousPauseState::WasListening { window_id, .. } => {
                     self.state = ScanPauseState::Listening {
-                        paused_at_window: window_num,
+                        window_id: window_id.clone(),
                     };
                 }
             }
@@ -181,19 +185,46 @@ impl ScanProgressComponent {
     pub fn is_globally_paused(&self) -> bool {
         matches!(self.state, ScanPauseState::PausedGlobally { .. })
     }
+
+    /// Create a new progress component in WaitingForTuner state
+    pub fn new_waiting_for_tuner(total_windows: usize) -> Self {
+        Self {
+            state: ScanPauseState::WaitingForTuner,
+            current_window: None,
+            total_windows,
+            windows_completed: 0,
+            completed_windows: HashSet::new(),
+        }
+    }
+
+    /// Set state to TunerOffline
+    pub fn set_tuner_offline(&mut self) {
+        self.state = ScanPauseState::TunerOffline;
+    }
+
+    /// Check if scan is blocked by tuner issues
+    pub fn is_blocked_by_tuner(&self) -> bool {
+        matches!(
+            self.state,
+            ScanPauseState::WaitingForTuner | ScanPauseState::TunerOffline
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecs::TaskId;
 
     #[test]
     fn test_pause_globally_from_scanning() {
         let mut progress = ScanProgressComponent::new(5);
-        progress.start_window(2);
+        let task_id = TaskId::new("test_scan".to_string());
+        let window_id = WindowId::new(task_id, 2);
+        progress.start_window(window_id.clone());
         assert!(progress.is_scanning());
 
-        progress.pause_globally(2, PreviousPauseState::WasScanning);
+        progress.pause_globally(window_id, PreviousPauseState::WasScanning);
         assert!(matches!(
             progress.state,
             ScanPauseState::PausedGlobally { .. }
@@ -204,16 +235,15 @@ mod tests {
     #[test]
     fn test_pause_globally_from_listening() {
         let mut progress = ScanProgressComponent::new(5);
-        progress.start_listening(3);
+        let task_id = TaskId::new("test_scan".to_string());
+        let window_id = WindowId::new(task_id, 3);
+        progress.start_listening(window_id.clone());
         assert!(progress.is_listening());
 
-        progress.pause_globally(
-            3,
-            PreviousPauseState::WasListening {
-                window_num: 3,
-                station_frequency_hz: 88.9e6,
-            },
-        );
+        progress.pause_globally(window_id, PreviousPauseState::WasListening {
+            window_id: WindowId::new(TaskId::new("test_scan".to_string()), 3),
+            station_frequency_hz: 88.9e6,
+        });
         assert!(matches!(
             progress.state,
             ScanPauseState::PausedGlobally { .. }
@@ -224,7 +254,9 @@ mod tests {
     #[test]
     fn test_resume_from_globally_paused_to_scanning() {
         let mut progress = ScanProgressComponent::new(5);
-        progress.pause_globally(2, PreviousPauseState::WasScanning);
+        let task_id = TaskId::new("test_scan".to_string());
+        let window_id = WindowId::new(task_id, 2);
+        progress.pause_globally(window_id, PreviousPauseState::WasScanning);
 
         progress.resume_from_global_pause();
         assert!(progress.is_scanning());
@@ -233,18 +265,20 @@ mod tests {
     #[test]
     fn test_resume_from_globally_paused_to_listening() {
         let mut progress = ScanProgressComponent::new(5);
-        progress.pause_globally(
-            3,
-            PreviousPauseState::WasListening {
-                window_num: 3,
-                station_frequency_hz: 88.9e6,
-            },
-        );
+        let task_id = TaskId::new("test_scan".to_string());
+        let window_id = WindowId::new(task_id.clone(), 3);
+        progress.pause_globally(window_id.clone(), PreviousPauseState::WasListening {
+            window_id,
+            station_frequency_hz: 88.9e6,
+        });
 
         progress.resume_from_global_pause();
         assert!(progress.is_listening());
-        if let ScanPauseState::Listening { paused_at_window } = progress.state {
-            assert_eq!(paused_at_window, 3);
+        if let ScanPauseState::Listening {
+            window_id: resumed_window_id,
+        } = &progress.state
+        {
+            assert_eq!(resumed_window_id.window_index, 3);
         } else {
             panic!("Expected Listening state");
         }
@@ -255,10 +289,44 @@ mod tests {
         let mut progress = ScanProgressComponent::new(5);
         assert!(!progress.is_globally_paused());
 
-        progress.pause_globally(2, PreviousPauseState::WasScanning);
+        let task_id = TaskId::new("test_scan".to_string());
+        let window_id = WindowId::new(task_id, 2);
+        progress.pause_globally(window_id, PreviousPauseState::WasScanning);
         assert!(progress.is_globally_paused());
 
         progress.resume_from_global_pause();
         assert!(!progress.is_globally_paused());
+    }
+
+    #[test]
+    fn test_waiting_for_tuner_state() {
+        let component = ScanProgressComponent::new_waiting_for_tuner(10);
+
+        assert_eq!(component.state, ScanPauseState::WaitingForTuner);
+        assert_eq!(component.total_windows, 10);
+    }
+
+    #[test]
+    fn test_transition_to_tuner_offline() {
+        let mut component = ScanProgressComponent::new(10);
+        let task_id = TaskId::new("test_scan".to_string());
+        let window_id = WindowId::new(task_id, 0);
+        component.start_window(window_id);
+
+        component.set_tuner_offline();
+
+        assert_eq!(component.state, ScanPauseState::TunerOffline);
+    }
+
+    #[test]
+    fn test_is_blocked_by_tuner() {
+        let component_waiting = ScanProgressComponent::new_waiting_for_tuner(10);
+        let mut component_offline = ScanProgressComponent::new(10);
+        component_offline.set_tuner_offline();
+        let component_scanning = ScanProgressComponent::new(10);
+
+        assert!(component_waiting.is_blocked_by_tuner());
+        assert!(component_offline.is_blocked_by_tuner());
+        assert!(!component_scanning.is_blocked_by_tuner());
     }
 }

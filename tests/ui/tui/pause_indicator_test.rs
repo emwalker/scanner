@@ -1,6 +1,6 @@
-use scanner::ecs::GlobalPauseState;
-use scanner::ui::tui::model::Model;
 use std::sync::{Arc, Mutex};
+
+use scanner::{ecs::GlobalPauseState, ui::tui::model::Model};
 
 #[test]
 fn test_pause_indicator_toggling() {
@@ -14,7 +14,7 @@ fn test_pause_indicator_toggling() {
         let mut state = resource.lock().unwrap();
         *state = GlobalPauseState::Paused {
             had_active_scans: true,
-            had_active_audio: false,
+            playing_stations: vec![],
         };
     }
 
@@ -32,7 +32,7 @@ fn test_pause_indicator_toggling() {
 fn test_pause_state_persistence_across_queries() {
     let resource = Arc::new(Mutex::new(GlobalPauseState::Paused {
         had_active_scans: true,
-        had_active_audio: true,
+        playing_stations: vec![],
     }));
     let mut model = Model::new();
     model.set_global_pause_resource(Arc::clone(&resource));

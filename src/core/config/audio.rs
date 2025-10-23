@@ -17,7 +17,7 @@ impl Default for AudioConfig {
             sample_rate: 48000,
             analyzer: AudioAnalyzer::pass_through(),
             squelch: SquelchConfig::default(),
-            volume: 0.2,
+            volume: 0.5,
         }
     }
 }

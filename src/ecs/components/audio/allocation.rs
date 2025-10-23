@@ -1,11 +1,11 @@
 //! Audio allocation component
 
-use crate::hardware::DeviceId;
+use crate::hardware::pool::TunerId;
 
 /// Component tracking resource allocation for audio playback
 pub struct AudioAllocationComponent {
     /// ID of the tuner being used (if known)
-    pub tuner_id: Option<DeviceId>,
+    pub tuner_id: Option<TunerId>,
 
     /// Audio graph cancellation token
     pub graph_cancel: Option<rustradio::graph::CancellationToken>,
@@ -31,7 +31,7 @@ impl std::fmt::Debug for AudioAllocationComponent {
 }
 
 impl AudioAllocationComponent {
-    pub fn new(tuner_id: Option<DeviceId>) -> Self {
+    pub fn new(tuner_id: Option<TunerId>) -> Self {
         Self {
             tuner_id,
             graph_cancel: None,
@@ -66,13 +66,15 @@ impl AudioAllocationComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hardware::DeviceId;
 
     #[test]
     fn test_create_allocation() {
         let device_id = DeviceId::from_serial("test", "device");
-        let allocation = AudioAllocationComponent::new(Some(device_id.clone()));
+        let tuner_id = TunerId::new(device_id, 0);
+        let allocation = AudioAllocationComponent::new(Some(tuner_id.clone()));
 
-        assert_eq!(allocation.tuner_id, Some(device_id));
+        assert_eq!(allocation.tuner_id, Some(tuner_id));
         assert!(!allocation.has_active_graph());
     }
 

@@ -1,10 +1,10 @@
-use crate::core::types::Peak;
 use tracing::debug;
 
 use super::scoring::{
     calculate_center_proximity_score, calculate_frequency_span_score, calculate_peak_density_score,
     calculate_signal_consistency_score, calculate_signal_strength_score,
 };
+use crate::core::types::Peak;
 
 /// Analyze spectral characteristics around a frequency to determine if it's a main lobe or sidelobe
 /// Main lobes are wider and have characteristic spectral patterns compared to sidelobes
@@ -124,7 +124,8 @@ pub(crate) fn analyze_spectral_characteristics(
         let magnitude_ratio = max_magnitude / avg_magnitude.max(1.0);
         let peak_density = peak_count as f64 / freq_span_khz.max(1.0);
         debug!(
-            "88.9 MHz detailed analysis: peak_count={}, freq_span_khz={:.1}, max_mag={:.3}, avg_mag={:.3}, mag_ratio={:.2}, peak_density={:.1}, final_score={:.3}",
+            "88.9 MHz detailed analysis: peak_count={}, freq_span_khz={:.1}, max_mag={:.3}, \
+             avg_mag={:.3}, mag_ratio={:.2}, peak_density={:.1}, final_score={:.3}",
             peak_count,
             freq_span_khz,
             max_magnitude,

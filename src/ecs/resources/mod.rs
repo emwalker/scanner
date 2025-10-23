@@ -2,4 +2,4 @@
 
 pub mod global_pause;
 
-pub use global_pause::{GlobalPauseResource, GlobalPauseState};
+pub use global_pause::{GlobalPauseResource, GlobalPauseState, PlayingStationInfo};

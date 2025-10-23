@@ -1,14 +1,22 @@
-use scanner::hardware::mock::MockDevice;
-use scanner::hardware::pool::{Pool, TaskPriority, TaskRequirements, TunerActivity};
-use std::thread;
-use std::time::Duration;
+use std::{thread, time::Duration};
+
+use scanner::hardware::pool::{
+    Pool, TaskPriority, TaskRequirements, TunerActivity, test_utils::add_test_device_to_pool,
+};
 
 #[test]
 fn test_subprocess_crash_isolation() {
     let pool = Pool::new_unfiltered();
 
-    let device = Box::new(MockDevice::new("mock", "crash001", false));
-    pool.add_device(device, scanner::hardware::types::Backend::Mock);
+    let device_id = scanner::hardware::DeviceId::from_serial("mock", "crash001");
+    let caps = scanner::hardware::Capabilities::for_mock("mock", "crash001");
+    add_test_device_to_pool(
+        &pool,
+        device_id,
+        caps,
+        scanner::hardware::types::Backend::Mock,
+        None,
+    );
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -31,8 +39,15 @@ fn test_subprocess_crash_isolation() {
 fn test_failed_device_tune() {
     let pool = Pool::new_unfiltered();
 
-    let device = Box::new(MockDevice::new("mock", "failtune001", true));
-    pool.add_device(device, scanner::hardware::types::Backend::Mock);
+    let device_id = scanner::hardware::DeviceId::from_serial("mock", "failtune001");
+    let caps = scanner::hardware::Capabilities::for_mock("mock", "failtune001");
+    add_test_device_to_pool(
+        &pool,
+        device_id,
+        caps,
+        scanner::hardware::types::Backend::Mock,
+        None,
+    );
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -55,8 +70,15 @@ fn test_failed_device_tune() {
 fn test_no_available_tuner() {
     let pool = Pool::new_unfiltered();
 
-    let device = Box::new(MockDevice::new("mock", "noavail001", false));
-    pool.add_device(device, scanner::hardware::types::Backend::Mock);
+    let device_id = scanner::hardware::DeviceId::from_serial("mock", "noavail001");
+    let caps = scanner::hardware::Capabilities::for_mock("mock", "noavail001");
+    add_test_device_to_pool(
+        &pool,
+        device_id,
+        caps,
+        scanner::hardware::types::Backend::Mock,
+        None,
+    );
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -84,8 +106,15 @@ fn test_no_available_tuner() {
 fn test_unsupported_frequency() {
     let pool = Pool::new_unfiltered();
 
-    let device = Box::new(MockDevice::new("mock", "unsupfreq001", false));
-    pool.add_device(device, scanner::hardware::types::Backend::Mock);
+    let device_id = scanner::hardware::DeviceId::from_serial("mock", "unsupfreq001");
+    let caps = scanner::hardware::Capabilities::for_mock("mock", "unsupfreq001");
+    add_test_device_to_pool(
+        &pool,
+        device_id,
+        caps,
+        scanner::hardware::types::Backend::Mock,
+        None,
+    );
 
     let requirements = TaskRequirements {
         frequency_hz: 10e9,
@@ -108,8 +137,15 @@ fn test_unsupported_frequency() {
 fn test_unsupported_sample_rate() {
     let pool = Pool::new_unfiltered();
 
-    let device = Box::new(MockDevice::new("mock", "unsuprate001", false));
-    pool.add_device(device, scanner::hardware::types::Backend::Mock);
+    let device_id = scanner::hardware::DeviceId::from_serial("mock", "unsuprate001");
+    let caps = scanner::hardware::Capabilities::for_mock("mock", "unsuprate001");
+    add_test_device_to_pool(
+        &pool,
+        device_id,
+        caps,
+        scanner::hardware::types::Backend::Mock,
+        None,
+    );
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,

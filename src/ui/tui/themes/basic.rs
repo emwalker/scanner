@@ -1,7 +1,8 @@
 //! Basic theme implementations - original scanner aesthetic
 
-use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 use ratatui::style::Color;
+
+use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 
 /// Basic dark theme - original main branch colors
 pub struct BasicDarkTheme;
@@ -112,6 +113,14 @@ impl ColorScheme for BasicDarkTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(255, 220, 100) // Bright yellow-orange (matches theme)
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(100, 149, 237) // Cornflower blue (matches secondary)
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(255, 255, 255) // White text for contrast
     }
 }
 
@@ -296,6 +305,14 @@ impl ColorScheme for BasicLightTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(184, 134, 11) // Dark gold (matches theme)
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(30, 64, 175) // Dark blue (matches secondary)
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(255, 255, 255) // White text for contrast
     }
 }
 

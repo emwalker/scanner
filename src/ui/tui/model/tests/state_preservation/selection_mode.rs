@@ -1,42 +1,43 @@
-use super::super::helpers::ModelTestContext;
-use crate::audio::quality::AudioQuality;
-use crate::ecs::CandidateState;
-use crate::ui::tui::model::CandidateStatus;
+use super::super::helpers::{ModelTestContext, TestSignalState};
+use crate::{
+    audio::quality::AudioQuality,
+    ui::tui::model::{AnalysisStatus, PlaybackState},
+};
 
 #[test]
-fn test_playing_candidates_remain_playing_when_entering_selection_mode() {
+fn test_playing_signals_remain_playing_when_entering_selection_mode() {
     let mut ctx = ModelTestContext::new();
 
     let window_id = 1;
     let freq = 88_900_000.0;
 
-    ctx.update_candidate(freq, window_id, CandidateState::Detected, None, None);
-    ctx.update_candidate(
+    ctx.update_signal(freq, window_id, TestSignalState::Detected, None, None);
+    ctx.update_signal(
         freq,
         window_id,
-        CandidateState::Signal,
+        TestSignalState::Signal,
         Some(AudioQuality::Good),
         Some(50.0),
     );
-    ctx.update_candidate(freq, window_id, CandidateState::Playing, None, None);
+    ctx.update_signal(freq, window_id, TestSignalState::Playing, None, None);
     ctx.sync();
 
     ctx.model.current_window = window_id;
 
     let window = ctx.model.windows.get(&window_id).unwrap();
-    let candidate = &window.candidates[0];
-    assert_eq!(candidate.status, CandidateStatus::Playing);
+    let signal = &window.signals[0];
+    assert_eq!(signal.playback_state, PlaybackState::Playing);
 
     ctx.model.enter_selection_mode();
 
     let window = ctx.model.windows.get(&window_id).unwrap();
-    let candidate = &window.candidates[0];
-    assert_eq!(candidate.status, CandidateStatus::Playing);
-    assert_eq!(candidate.completion, 0.8);
+    let signal = &window.signals[0];
+    assert_eq!(signal.playback_state, PlaybackState::Playing);
+    assert_eq!(signal.completion, 0.8);
 }
 
 #[test]
-fn test_playing_candidates_remain_when_entering_selection_mode() {
+fn test_playing_signals_remain_when_entering_selection_mode() {
     let mut ctx = ModelTestContext::new();
 
     let window1_id = 1;
@@ -44,26 +45,26 @@ fn test_playing_candidates_remain_when_entering_selection_mode() {
     let freq1 = 88_900_000.0;
     let freq2 = 89_100_000.0;
 
-    ctx.update_candidate(freq1, window1_id, CandidateState::Detected, None, None);
-    ctx.update_candidate(
+    ctx.update_signal(freq1, window1_id, TestSignalState::Detected, None, None);
+    ctx.update_signal(
         freq1,
         window1_id,
-        CandidateState::Signal,
+        TestSignalState::Signal,
         Some(AudioQuality::Good),
         Some(50.0),
     );
-    ctx.update_candidate(freq1, window1_id, CandidateState::Playing, None, None);
+    ctx.update_signal(freq1, window1_id, TestSignalState::Playing, None, None);
     ctx.sync();
 
     let window = ctx.model.windows.get(&window1_id).unwrap();
-    let candidate = &window.candidates[0];
-    assert_eq!(candidate.status, CandidateStatus::Playing);
+    let signal = &window.signals[0];
+    assert_eq!(signal.playback_state, PlaybackState::Playing);
 
-    ctx.update_candidate(freq2, window2_id, CandidateState::Detected, None, None);
-    ctx.update_candidate(
+    ctx.update_signal(freq2, window2_id, TestSignalState::Detected, None, None);
+    ctx.update_signal(
         freq2,
         window2_id,
-        CandidateState::Signal,
+        TestSignalState::Signal,
         Some(AudioQuality::Moderate),
         Some(40.0),
     );
@@ -74,28 +75,28 @@ fn test_playing_candidates_remain_when_entering_selection_mode() {
     ctx.model.enter_selection_mode();
 
     let window = ctx.model.windows.get(&window1_id).unwrap();
-    let candidate = &window.candidates[0];
-    assert_eq!(candidate.status, CandidateStatus::Playing);
-    assert_eq!(candidate.completion, 0.8);
+    let signal = &window.signals[0];
+    assert_eq!(signal.playback_state, PlaybackState::Playing);
+    assert_eq!(signal.completion, 0.8);
 
     let window = ctx.model.windows.get(&window2_id).unwrap();
-    let candidate = &window.candidates[0];
-    assert_eq!(candidate.status, CandidateStatus::Signal);
-    assert_eq!(candidate.completion, 0.6);
+    let signal = &window.signals[0];
+    assert_eq!(signal.status, AnalysisStatus::Signal);
+    assert_eq!(signal.completion, 0.6);
 }
 
 #[test]
-fn test_signal_candidates_remain_signal_when_entering_selection_mode() {
+fn test_signal_signals_remain_signal_when_entering_selection_mode() {
     let mut ctx = ModelTestContext::new();
 
     let window_id = 1;
     let freq = 88_900_000.0;
 
-    ctx.update_candidate(freq, window_id, CandidateState::Detected, None, None);
-    ctx.update_candidate(
+    ctx.update_signal(freq, window_id, TestSignalState::Detected, None, None);
+    ctx.update_signal(
         freq,
         window_id,
-        CandidateState::Signal,
+        TestSignalState::Signal,
         Some(AudioQuality::Good),
         Some(50.0),
     );
@@ -104,13 +105,13 @@ fn test_signal_candidates_remain_signal_when_entering_selection_mode() {
     ctx.model.current_window = window_id;
 
     let window = ctx.model.windows.get(&window_id).unwrap();
-    let candidate = &window.candidates[0];
-    assert_eq!(candidate.status, CandidateStatus::Signal);
+    let signal = &window.signals[0];
+    assert_eq!(signal.status, AnalysisStatus::Signal);
 
     ctx.model.enter_selection_mode();
 
     let window = ctx.model.windows.get(&window_id).unwrap();
-    let candidate = &window.candidates[0];
-    assert_eq!(candidate.status, CandidateStatus::Signal);
-    assert_eq!(candidate.completion, 0.6);
+    let signal = &window.signals[0];
+    assert_eq!(signal.status, AnalysisStatus::Signal);
+    assert_eq!(signal.completion, 0.6);
 }

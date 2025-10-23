@@ -1,6 +1,6 @@
-use crate::core::types::Result;
-use crate::hardware::DeviceId;
 use rustradio::Complex;
+
+use crate::{core::types::Result, hardware::DeviceId};
 
 /// Actual hardware configuration values after device configuration
 ///

@@ -2,24 +2,29 @@
 
 use std::{collections::HashMap, time::Instant};
 
-/// Selected candidate information
+use crate::ui::tui::renderers::table_styles::{RowGroup, TableRow};
+
+/// Selected signal information
 #[derive(Debug, Clone)]
-pub struct SelectedCandidateInfo {
-    pub candidate_id: String,
-    pub metadata: crate::scanning::window::WindowMetadata,
-    pub candidate_frequency: f64,
+pub struct SelectedSignalInfo {
+    pub signal_id: String,
+    pub window_id: usize,
+    pub center_frequency_hz: f64,
+    pub signal_frequency: f64,
     pub signal_strength: Option<f64>,
     pub audio_quality: Option<crate::audio::quality::AudioQuality>,
 }
 
-/// Information about a candidate's progress
+/// Information about a signal's progress
 #[derive(Debug, Clone)]
-pub struct CandidateProgress {
-    pub candidate_id: String,
+pub struct SignalProgress {
+    pub signal_id: String,
     pub frequency_hz: f64,
-    pub metadata: crate::scanning::window::WindowMetadata,
+    pub window_id: usize,
+    pub center_frequency_hz: f64,
     pub completion: f64,
-    pub status: CandidateStatus,
+    pub status: AnalysisStatus,
+    pub playback_state: PlaybackState,
     pub audio_quality: Option<crate::audio::quality::AudioQuality>,
     pub signal_strength: Option<f64>,
     pub last_update: Instant,
@@ -30,96 +35,73 @@ pub struct CandidateProgress {
 pub struct WindowProgress {
     #[allow(dead_code)] // Kept for debugging and potential future use
     pub window_id: usize,
-    pub candidates: Vec<CandidateProgress>,
+    pub signals: Vec<SignalProgress>,
     pub is_complete: bool,
-    pub candidate_lookup: HashMap<String, usize>, // candidate_id -> index in candidates vec
+    pub signal_lookup: HashMap<String, usize>, // signal_id -> index in signals vec
 }
 
-impl WindowProgress {
-    /// Check if this window should be displayed in the UI
-    /// Returns false if all candidates are rejected (noise) and window is complete
-    pub fn should_display(&self) -> bool {
-        // Always show incomplete windows
-        if !self.is_complete {
-            return true;
-        }
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnalysisStatus {
+    Detected,
+    Analyzing,
+    Rejected,
+    Signal,
+    Error,
+}
 
-        // For complete windows, only show if there's at least one non-rejected candidate
-        self.candidates
-            .iter()
-            .any(|candidate| candidate.status != CandidateStatus::Rejected)
-    }
-
-    /// Get candidates that should be displayed for this window
-    /// For complete windows with signals, hide rejected candidates
-    /// For current window during scanning, show all candidates
-    /// In selection mode, always hide rejected candidates
-    pub fn displayable_candidates(
-        &self,
-        is_current_window: bool,
-        in_selection_mode: bool,
-    ) -> Vec<&CandidateProgress> {
-        // In selection mode, always hide rejected candidates regardless of window status
-        if in_selection_mode {
-            return self
-                .candidates
-                .iter()
-                .filter(|candidate| candidate.status != CandidateStatus::Rejected)
-                .collect();
-        }
-
-        // For complete windows, always hide rejected candidates (even if current window)
-        if self.is_complete {
-            return self
-                .candidates
-                .iter()
-                .filter(|candidate| candidate.status != CandidateStatus::Rejected)
-                .collect();
-        }
-
-        // For incomplete windows, show all candidates
-        // (including rejected ones, since they might still be processing)
-        if !self.is_complete || is_current_window {
-            self.candidates.iter().collect()
-        } else {
-            // This case should not be reachable, but handle it anyway
-            self.candidates
-                .iter()
-                .filter(|candidate| candidate.status != CandidateStatus::Rejected)
-                .collect()
+impl AnalysisStatus {
+    pub fn to_string(&self) -> &'static str {
+        match self {
+            AnalysisStatus::Detected => "Detected",
+            AnalysisStatus::Analyzing => "Analyzing",
+            AnalysisStatus::Rejected => "Rejected",
+            AnalysisStatus::Signal => "Signal",
+            AnalysisStatus::Error => "Error",
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum CandidateStatus {
-    Detected,
-    Analyzing,
-    Rejected,
-    Signal,
+pub enum PlaybackState {
+    NotPlaying,
     Playing,
     Completed,
 }
 
-impl CandidateStatus {
+impl PlaybackState {
     pub fn to_string(&self) -> &'static str {
         match self {
-            CandidateStatus::Detected => "DETECTED",
-            CandidateStatus::Analyzing => "ANALYZING",
-            CandidateStatus::Rejected => "NOISE",
-            CandidateStatus::Signal => "SIGNAL",
-            CandidateStatus::Playing => "PLAYING",
-            CandidateStatus::Completed => "DONE",
+            PlaybackState::NotPlaying => "",
+            PlaybackState::Playing => "Playing",
+            PlaybackState::Completed => "Completed",
         }
     }
 }
 
-/// Focus state for component navigation
+/// Which table currently has focus
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusedTable {
+    Activities,
+    Tuners,
+    ScanProgress,
+}
+
+/// Focus state for table navigation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusState {
-    Spectrum,
-    Scan,
-    Tuner(usize), // Index of focused tuner
+    Activities(usize),   // Index of selected row in Activities table
+    TunersTable(usize),  // Index of selected row in Tuners table
+    ScanProgress(usize), // Index of selected row in ScanProgress table
+}
+
+impl FocusState {
+    pub fn focused_table(&self) -> FocusedTable {
+        match self {
+            FocusState::Activities(_) => FocusedTable::Activities,
+            FocusState::TunersTable(_) => FocusedTable::Tuners,
+            FocusState::ScanProgress(_) => FocusedTable::ScanProgress,
+        }
+    }
 }
 
 /// Tuner state - what a specific tuner/SDR device is doing
@@ -147,23 +129,27 @@ impl TunerState {
 /// This is separate from scanner state (what SDRs are doing in background)
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiMode {
-    /// Watching scan progress (no candidate selected)
+    /// Watching scan progress (no signal selected)
     Idle,
 
-    /// Candidate selected, navigating scanner results while scan may still be running
-    NavigatingScanner { selected_index: usize },
+    /// signal selected, navigating scanner results while scan may still be running
+    NavigatingScanner {
+        signal_index: usize, // Stable index into full flattened list
+        window_id: usize,    // Window this signal belongs to
+    },
 
     /// Scan paused, waiting for Paused event before tuning to station
     AwaitingTune {
-        navigation_index: usize,
-        tuning_index: usize,
+        signal_index: usize, // Stable index into full flattened list
+        window_id: usize,
+        tuning_signal_id: String, // ID of signal being tuned
     },
 
     /// Actively listening to a station (scan paused, audio playing)
     Listening {
-        navigation_index: usize,
-        playing_index: usize,
-        playing_candidate_id: String,
+        signal_index: usize, // Stable index for navigation
+        window_id: usize,
+        playing_signal_id: String, // ID of playing signal
     },
 }
 
@@ -182,6 +168,44 @@ pub struct TunerDisplayInfo {
     pub id: crate::hardware::pool::TunerId,
     pub label: String,
     pub state: TunerState,
+    pub is_playing: bool,
+}
+
+impl TableRow for TunerDisplayInfo {
+    fn build_cells(
+        &self,
+        _theme: &dyn crate::ui::tui::themes::Theme,
+    ) -> Vec<ratatui::widgets::Cell<'static>> {
+        use ratatui::widgets::Cell;
+
+        vec![
+            Cell::from(self.label.clone()),
+            Cell::from(self.state.display()),
+        ]
+    }
+
+    fn special_style(
+        &self,
+        theme: &dyn crate::ui::tui::themes::Theme,
+    ) -> Option<ratatui::style::Style> {
+        use ratatui::style::Style;
+
+        if self.is_playing {
+            Some(
+                Style::default()
+                    .bg(theme.active_highlight_bg())
+                    .fg(theme.active_highlight_fg()),
+            )
+        } else {
+            None
+        }
+    }
+}
+
+impl RowGroup for TunerDisplayInfo {
+    type GroupId = ();
+
+    fn group_id(&self) -> Self::GroupId {}
 }
 
 /// Station marker for spectrum display
@@ -191,4 +215,92 @@ pub struct SpectrumStation {
     pub signal_strength: f32,
     pub audio_quality: Option<crate::audio::quality::AudioQuality>,
     pub is_active: bool,
+}
+
+/// Flattened signal row for rendering and filtering
+#[derive(Clone)]
+pub struct SignalRow {
+    pub window_id: usize,
+    pub frequency_hz: f64,
+    pub status: AnalysisStatus,
+    pub playback_state: PlaybackState,
+    pub audio_quality: Option<crate::audio::quality::AudioQuality>,
+    pub is_window_complete: bool,
+    pub completion: f64,
+}
+
+impl RowGroup for SignalRow {
+    type GroupId = usize;
+
+    fn group_id(&self) -> Self::GroupId {
+        self.window_id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ui_mode_navigating_contains_window_id() {
+        let ui_mode = UiMode::NavigatingScanner {
+            signal_index: 5,
+            window_id: 2,
+        };
+
+        match ui_mode {
+            UiMode::NavigatingScanner {
+                signal_index,
+                window_id,
+            } => {
+                assert_eq!(signal_index, 5);
+                assert_eq!(window_id, 2);
+            }
+            _ => panic!("Expected NavigatingScanner variant"),
+        }
+    }
+
+    #[test]
+    fn test_ui_mode_awaiting_tune_uses_signal_id() {
+        let ui_mode = UiMode::AwaitingTune {
+            signal_index: 3,
+            window_id: 1,
+            tuning_signal_id: "test_signal".to_string(),
+        };
+
+        match ui_mode {
+            UiMode::AwaitingTune {
+                signal_index,
+                window_id,
+                tuning_signal_id,
+            } => {
+                assert_eq!(signal_index, 3);
+                assert_eq!(window_id, 1);
+                assert_eq!(tuning_signal_id, "test_signal");
+            }
+            _ => panic!("Expected AwaitingTune variant"),
+        }
+    }
+
+    #[test]
+    fn test_ui_mode_listening_structure() {
+        let ui_mode = UiMode::Listening {
+            signal_index: 7,
+            window_id: 3,
+            playing_signal_id: "playing_signal".to_string(),
+        };
+
+        match ui_mode {
+            UiMode::Listening {
+                signal_index,
+                window_id,
+                playing_signal_id,
+            } => {
+                assert_eq!(signal_index, 7);
+                assert_eq!(window_id, 3);
+                assert_eq!(playing_signal_id, "playing_signal");
+            }
+            _ => panic!("Expected Listening variant"),
+        }
+    }
 }

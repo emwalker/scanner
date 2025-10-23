@@ -1,10 +1,14 @@
 //! Rustradio source block for subprocess IPC data
 
-use crate::ipc::{DataReceiver, UnixDataReceiver};
-use rustradio::block::{Block, BlockRet};
-use rustradio::stream::{ReadStream, WriteStream};
-use rustradio::{Complex, Result};
 use std::sync::{Arc, Mutex};
+
+use rustradio::{
+    Complex, Result,
+    block::{Block, BlockRet},
+    stream::{ReadStream, WriteStream},
+};
+
+use crate::ipc::{DataReceiver, UnixDataReceiver};
 
 /// Rustradio source that reads I/Q samples from subprocess via IPC
 pub struct SubprocessSource {

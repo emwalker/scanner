@@ -2,5 +2,5 @@
 #[derive(Clone, Default)]
 pub struct DebugConfig {
     pub pipeline: bool,
-    pub print_candidates: bool,
+    pub print_signals: bool,
 }

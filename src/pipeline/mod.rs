@@ -14,23 +14,23 @@ mod thread_coordination;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-mod entity_lifecycle_tests;
-
-use crate::ecs::{CandidateEntity, Entities};
+use crate::ecs::WindowId;
 
 pub struct AnalysisContext<'a> {
     pub config: &'a ScanningConfig,
     pub center_freq: f64,
-    pub metadata: crate::scanning::window::WindowMetadata,
-    pub candidate_entities: &'a Option<Entities<CandidateEntity>>,
+    pub window_id: WindowId,
 }
 
 /// Process a single peak through the complete pipeline to generate a signal
+///
+/// Takes two receivers created at the same buffer position to avoid race conditions
+/// where resubscribe() would be called after thread scheduling delay.
 pub fn process_peak_to_signal(
     frequency_hz: f64,
-    sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
-    signal_tx: std::sync::mpsc::SyncSender<Signal>,
+    sdr_rx_refining: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
+    sdr_rx_detection: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
+    signal_tx: std::sync::mpsc::Sender<Signal>,
     context: &AnalysisContext,
 ) -> Result<()> {
     tracing::debug!(
@@ -38,15 +38,20 @@ pub fn process_peak_to_signal(
         "Processing peak through pipeline"
     );
 
-    let candidate_id = format!("{:.1}-{}", frequency_hz / 1e6, context.metadata.window_id);
+    let signal_id = format!(
+        "{:.1}-{}-{}",
+        frequency_hz / 1e6,
+        context.window_id.task_id,
+        context.window_id.window_index
+    );
 
     let refined_frequency =
-        frequency_refining::refine_frequency(frequency_hz, context.config, sdr_rx.resubscribe())?;
+        frequency_refining::refine_frequency(frequency_hz, context.config, sdr_rx_refining)?;
 
     if frequency_refining::is_frequency_already_processed(refined_frequency)? {
         tracing::debug!(
             freq_mhz = refined_frequency / 1e6,
-            "Frequency already processed, skipping candidate creation"
+            "Frequency already processed, skipping signal creation"
         );
         return Ok(());
     }
@@ -54,9 +59,9 @@ pub fn process_peak_to_signal(
     detection::run_detection_analysis(
         frequency_hz,
         refined_frequency,
-        sdr_rx,
+        sdr_rx_detection,
         signal_tx,
-        &candidate_id,
+        &signal_id,
         context,
     )
 }

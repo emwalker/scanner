@@ -1,8 +1,11 @@
-use rustradio::block::{Block, BlockEOF, BlockName, BlockRet};
-use rustradio::fir::Fir;
-use rustradio::stream::{ReadStream, WriteStream};
-use rustradio::{Complex, Float, Result};
 use std::f32::consts::PI;
+
+use rustradio::{
+    Complex, Float, Result,
+    block::{Block, BlockEOF, BlockName, BlockRet},
+    fir::Fir,
+    stream::{ReadStream, WriteStream},
+};
 
 /// Frequency Translating FIR Filter
 ///

@@ -3,10 +3,11 @@
 //! This module implements dynamic noise floor estimation using percentile-based
 //! statistical methods to adapt detection thresholds to varying RF environments.
 
-use crate::core::types::Peak;
-use std::cmp::Ordering;
-use std::collections::VecDeque;
+use std::{cmp::Ordering, collections::VecDeque};
+
 use tracing::debug;
+
+use crate::core::types::Peak;
 
 /// Configuration for dynamic noise floor estimation
 #[derive(Debug, Clone)]
@@ -331,7 +332,8 @@ mod tests {
         println!("Original background: {}", magnitudes[10]);
         println!("Processed background: {}", processed[10]);
 
-        // Signal should be preserved or enhanced (local background is ~2.0, so signal becomes 10.0 - 2.0 = 8.0)
+        // Signal should be preserved or enhanced (local background is ~2.0, so signal becomes 10.0
+        // - 2.0 = 8.0)
         assert!(
             processed[50] >= 6.0,
             "Signal should be preserved after background subtraction: got {}",

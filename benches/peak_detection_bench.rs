@@ -1,6 +1,5 @@
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
-use scanner::testing::*;
-use scanner::types::ScanningConfig;
+use scanner::{testing::*, types::ScanningConfig};
 
 /// Benchmark peak detection performance across different scenarios
 fn benchmark_peak_detection(c: &mut Criterion) {

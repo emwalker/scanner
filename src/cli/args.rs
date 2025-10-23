@@ -1,5 +1,6 @@
-use crate::core::types::Band;
 use clap::{Parser, Subcommand, ValueEnum};
+
+use crate::core::types::Band;
 
 #[derive(ValueEnum, Clone, Debug)]
 pub enum AudioClassifier {
@@ -80,7 +81,8 @@ pub struct ScanArgs {
     #[arg(long)]
     pub disable_spectral_preprocessing: bool,
 
-    /// Disable squelch analysis and generate signals from all candidates regardless of audio quality
+    /// Disable squelch analysis and generate signals from all signals regardless of audio
+    /// quality
     #[arg(long)]
     pub disable_squelch: bool,
 
@@ -102,13 +104,21 @@ pub struct ScanArgs {
     #[arg(long, help = "SDR gain in dB (0 to 48 for SDRplay, default 24)")]
     pub gain: Option<f64>,
 
+    /// Write debug logs to file (useful with TUI to capture diagnostics)
+    #[arg(long)]
+    pub headless: bool,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+
     /// Duration in seconds for squelch to analyze audio vs noise
     #[arg(long, default_value_t = 1.0)]
     pub learning_duration: f32,
 
-    /// Audio playback volume (0.0 to 1.0, default 0.2)
-    #[arg(long, default_value_t = 0.2)]
-    pub volume: f32,
+    /// Output in standard log format
+    #[arg(long)]
+    pub log: bool,
 
     /// Write debug logs to file (useful with TUI to capture diagnostics)
     #[arg(long, default_value = "/tmp/scanner.log")]
@@ -122,13 +132,17 @@ pub struct ScanArgs {
     pub peak_scan_duration: f64,
 
     #[arg(long)]
-    pub print_candidates: bool,
+    pub print_signals: bool,
+
+    /// Suppress debug and info logs (only show WARN and ERROR)
+    #[arg(long)]
+    pub quiet: bool,
 
     /// Maximum number of scanning windows to process (default: all windows)
     #[arg(long)]
     pub scanning_windows: Option<usize>,
 
-    /// Minimum spectral score threshold for candidate creation (0.0-1.0)
+    /// Minimum spectral score threshold for signal creation (0.0-1.0)
     #[arg(long, default_value_t = 0.2)]
     pub spectral_threshold: f32,
 
@@ -140,37 +154,31 @@ pub struct ScanArgs {
     #[arg(long)]
     pub stations: Option<String>,
 
+    /// Output in simplified text format
+    #[arg(long)]
+    pub text: bool,
+
+    /// TUI theme selection (basic-dark, basic-light, bladerunner-dark, bladerunner-light,
+    /// interstellar-dark, interstellar-light, dune-dark, dune-light, transport-dark,
+    /// transport-light, archive-dark, archive-light, minimal-dark, minimal-light)
+    #[arg(long, default_value = "caladan-dark")]
+    pub theme: String,
+
     /// Required accuracy for frequency tracking convergence (Hz)
     #[arg(long, default_value_t = 5000.0)]
     pub tracking_accuracy: f64,
 
-    /// Reduce log output (show only INFO and above)
+    /// Reduce log output (show DEBUG and above)
     #[arg(long)]
     pub verbose: bool,
 
-    /// Suppress debug and info logs (only show WARN and ERROR)
-    #[arg(long)]
-    pub quiet: bool,
+    /// Audio playback volume (0.0 to 1.0, default 0.3)
+    #[arg(long, default_value_t = 0.3)]
+    pub volume: f32,
 
     /// Window overlap percentage for band scanning (0.0-1.0, where 0.75 = 75% overlap)
     #[arg(long, default_value_t = 0.75)]
     pub window_overlap: f64,
-
-    /// TUI theme selection (basic-dark, basic-light, bladerunner-dark, bladerunner-light, interstellar-dark, interstellar-light, dune-dark, dune-light, transport-dark, transport-light, archive-dark, archive-light, minimal-dark, minimal-light)
-    #[arg(long, default_value = "caladan-dark")]
-    pub theme: String,
-
-    /// Output in JSON format
-    #[arg(long)]
-    pub json: bool,
-
-    /// Output in standard log format
-    #[arg(long)]
-    pub log: bool,
-
-    /// Output in simplified text format
-    #[arg(long)]
-    pub text: bool,
 }
 
 #[derive(Parser, Debug)]

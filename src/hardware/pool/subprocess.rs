@@ -1,18 +1,27 @@
 //! Subprocess handle for managing device worker lifecycle
 
-use crate::core::types::{Result, ScannerError};
-use crate::hardware::{DeviceId, streaming::ActualConfig};
-use crate::ipc::{
-    ControlChannel, ControlMessage, DataReceiver, IQPacket, UnixControlChannel, UnixDataReceiver,
+use std::{
+    os::unix::net::UnixStream,
+    path::PathBuf,
+    process::{Child, Command, Stdio},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
 use tracing::debug;
+
+use crate::{
+    core::types::{Result, ScannerError},
+    hardware::{DeviceId, streaming::ActualConfig},
+    ipc::{
+        ControlChannel, ControlMessage, DataReceiver, IQPacket, UnixControlChannel,
+        UnixDataReceiver,
+    },
+};
 
 /// Handle for managing a device worker subprocess
 ///
@@ -65,15 +74,12 @@ impl SubprocessHandle {
 
         use crate::cli::worker_logging::{WorkerContext, WorkerType, generate_worker_log_path};
 
-        let worker_log_path = generate_worker_log_path(
-            parent_log_file,
-            WorkerType::Device,
-            &WorkerContext {
+        let worker_log_path =
+            generate_worker_log_path(parent_log_file, WorkerType::Device, &WorkerContext {
                 device_id: Some(device_id.to_string().replace([':', '/', ' '], "_")),
                 timestamp: Some(timestamp),
                 backend: None,
-            },
-        );
+            });
 
         let binary_path = std::env::current_exe()?;
         let binary_path_str = binary_path.to_string_lossy();

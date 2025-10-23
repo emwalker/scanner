@@ -1,7 +1,11 @@
 //! Device discovery system
 
-use crate::core::types::Result;
-use crate::ecs::system::{System, SystemContext};
+use tracing::debug;
+
+use crate::{
+    core::types::Result,
+    ecs::system::{System, SystemContext},
+};
 
 /// System that synchronizes device discovery state
 ///
@@ -27,18 +31,39 @@ impl System for DiscoverySystem {
         "DeviceDiscovery"
     }
 
-    fn run(&mut self, _context: &mut SystemContext) -> Result<()> {
+    fn run(&mut self, context: &mut SystemContext) -> Result<()> {
+        let tuner_entities = match &context.tuner_entities {
+            Some(entities) => entities.clone(),
+            None => return Ok(()), // No entities to process
+        };
+
+        let tuners = tuner_entities.lock().unwrap();
+
+        // Log tuner state metrics
+        let total_count = tuners.len();
+        let available_count = tuners.iter().filter(|t| t.is_available()).count();
+        let allocated_count = tuners.iter().filter(|t| !t.is_available()).count();
+
+        debug!(
+            total_tuners = total_count,
+            available_tuners = available_count,
+            allocated_tuners = allocated_count,
+            "Device discovery system validation complete"
+        );
+
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ecs::EntityWorld;
-    use crate::ecs::TunerEntity;
-    use crate::hardware::{Capabilities, DeviceId};
     use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::{
+        ecs::{EntityWorld, TunerEntity},
+        hardware::{Capabilities, DeviceId},
+    };
 
     fn create_test_entity(device_serial: &str, channel: usize) -> TunerEntity {
         let device_id = DeviceId::from_serial("sdrplay", device_serial);
@@ -49,6 +74,9 @@ mod tests {
             channel,
             capabilities,
             crate::hardware::types::Backend::Soapy,
+            format!("Test Tuner {}", channel),
+            None,
+            "FM".to_string(),
         )
     }
 

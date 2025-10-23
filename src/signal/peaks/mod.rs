@@ -10,13 +10,16 @@ pub mod multi_frame;
 pub mod noise_floor;
 pub mod windowing;
 
-use crate::core::types::{Peak, Result, ScanningConfig};
-use crate::testing::SampleSource;
+use std::{collections::BTreeMap, sync::Arc};
+
 use rustfft::num_complex::Complex32;
 use rustradio::Complex;
-use std::collections::BTreeMap;
-use std::sync::Arc;
 use tracing::debug;
+
+use crate::{
+    core::types::{Peak, Result, ScanningConfig},
+    testing::SampleSource,
+};
 
 /// State for signal averaging algorithms
 pub struct SignalAveragingState {
@@ -356,9 +359,11 @@ pub fn process_samples_for_peaks(params: &mut PeakProcessingParams) -> Vec<Peak>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::quality::AudioAnalyzer;
-    use crate::core::types::ScanningConfig;
-    use crate::testing::signal_generation::{PeakTestSignalGenerator, TestSignal};
+    use crate::{
+        audio::quality::AudioAnalyzer,
+        core::types::ScanningConfig,
+        testing::signal_generation::{PeakTestSignalGenerator, TestSignal},
+    };
 
     /// Integration test: Combined detection regression tests
     #[test]
@@ -446,10 +451,13 @@ mod tests {
             detection_ratio
         );
 
-        // This is the critical regression test - combined phases should not cause massive detection loss
+        // This is the critical regression test - combined phases should not cause massive detection
+        // loss
         assert!(
-            detection_ratio >= 0.5, // Allow up to 50% reduction, but this indicates a serious problem
-            "Combined signal averaging + CFAR should not reduce detection count by more than 50%. Got {:.1}% reduction (ratio: {:.2})",
+            detection_ratio >= 0.5, /* Allow up to 50% reduction, but this indicates a serious
+                                     * problem */
+            "Combined signal averaging + CFAR should not reduce detection count by more than 50%. \
+             Got {:.1}% reduction (ratio: {:.2})",
             (1.0 - detection_ratio) * 100.0,
             detection_ratio
         );
@@ -457,7 +465,8 @@ mod tests {
         // Warn if we see significant reduction
         if detection_ratio < 0.8 {
             println!(
-                "🚨 WARNING: Combined features reduced detection by {:.1}% - investigate signal averaging/CFAR interaction",
+                "🚨 WARNING: Combined features reduced detection by {:.1}% - investigate signal \
+                 averaging/CFAR interaction",
                 (1.0 - detection_ratio) * 100.0
             );
         }

@@ -1,5 +1,4 @@
-use super::super::helpers::ModelTestContext;
-use crate::ecs::CandidateState;
+use super::super::helpers::{ModelTestContext, TestSignalState};
 use crate::ui::tui::model::UiMode;
 
 #[test]
@@ -7,10 +6,10 @@ fn test_browsing_mode_only_true_when_scan_paused() {
     let mut ctx = ModelTestContext::new();
     let window_id = 0;
 
-    ctx.update_candidate(
+    ctx.update_signal(
         88_900_000.0,
         window_id,
-        CandidateState::Detected,
+        TestSignalState::Detected,
         None,
         None,
     );
@@ -27,20 +26,24 @@ fn test_browsing_mode_only_true_when_scan_paused() {
     assert!(ctx.model.selection_mode());
     assert!(!ctx.model.browsing_mode());
 
-    if let Some(selected_index) = ctx.model.selected_candidate_index() {
+    if let Some(signal_index) = ctx.model.selected_signal_index() {
+        let signal_id = ctx.model.windows.get(&window_id).unwrap().signals[signal_index]
+            .signal_id
+            .clone();
         ctx.model.ui_mode = UiMode::AwaitingTune {
-            navigation_index: selected_index,
-            tuning_index: selected_index,
+            signal_index,
+            window_id,
+            tuning_signal_id: signal_id,
         };
     }
     assert!(matches!(ctx.model.ui_mode, UiMode::AwaitingTune { .. }));
     assert!(ctx.model.browsing_mode());
 
-    if let Some(selected_index) = ctx.model.selected_candidate_index() {
+    if let Some(signal_index) = ctx.model.selected_signal_index() {
         ctx.model.ui_mode = UiMode::Listening {
-            navigation_index: selected_index,
-            playing_index: selected_index,
-            playing_candidate_id: "test-candidate".to_string(),
+            signal_index,
+            window_id,
+            playing_signal_id: "test-signal".to_string(),
         };
     }
     assert!(matches!(ctx.model.ui_mode, UiMode::Listening { .. }));

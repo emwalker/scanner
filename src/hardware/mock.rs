@@ -1,13 +1,13 @@
 //! Mock backend for testing without hardware
 
+use std::{any::Any, f32::consts::PI};
+
+use rustradio::{Complex, graph::GraphRunner};
+
 use super::{
     Backend, Capabilities, DeviceError, DeviceErrorKind, DeviceId, DeviceInfo, DeviceTrait,
 };
 use crate::core::types::Result;
-use rustradio::Complex;
-use rustradio::graph::GraphRunner;
-use std::any::Any;
-use std::f32::consts::PI;
 
 /// Mock backend for testing without hardware
 ///
@@ -31,6 +31,7 @@ impl Backend for Mock {
                     id: crate::hardware::pool::TunerId::new(device_001, 0),
                     label: "Mock RTL-SDR (mock:001)".to_string(),
                     mode: String::new(),
+                    antenna: None,
                 }],
             },
             DeviceInfo {
@@ -40,6 +41,7 @@ impl Backend for Mock {
                     id: crate::hardware::pool::TunerId::new(device_002, 0),
                     label: "Mock SDRplay (mock:002)".to_string(),
                     mode: String::new(),
+                    antenna: None,
                 }],
             },
         ])
@@ -245,8 +247,9 @@ impl super::streaming::StreamingDevice for MockStreamingDevice {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rustradio::graph::Graph;
+
+    use super::*;
 
     #[test]
     fn test_mock_backend_enumeration() {

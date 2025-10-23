@@ -1,13 +1,18 @@
 //! Audio entity combining audio components
 
-use crate::core::types::Signal;
-use crate::ecs::Entity;
-use crate::ecs::components::audio::{
-    AudioAllocationComponent, AudioId, AudioPlaybackComponent, AudioTuningComponent,
-    StopListeningRequestComponent,
-};
-use crate::hardware::DeviceId;
 use std::time::{Duration, Instant};
+
+use crate::{
+    core::types::Signal,
+    ecs::{
+        Entity,
+        components::audio::{
+            AudioAllocationComponent, AudioId, AudioPlaybackComponent, AudioTuningComponent,
+            StopListeningRequestComponent,
+        },
+    },
+    hardware::pool::TunerId,
+};
 
 /// Entity representing an active audio playback session
 #[derive(Debug)]
@@ -22,7 +27,7 @@ pub struct AudioEntity {
 }
 
 impl AudioEntity {
-    pub fn new(signal: Signal, center_frequency_hz: f64, tuner_id: Option<DeviceId>) -> Self {
+    pub fn new(signal: Signal, center_frequency_hz: f64, tuner_id: Option<TunerId>) -> Self {
         Self {
             id: AudioId::new(),
             tuning: AudioTuningComponent::new(signal, center_frequency_hz),
@@ -52,7 +57,7 @@ impl AudioEntity {
         self.playback.started_at()
     }
 
-    pub fn tuner_id(&self) -> Option<&DeviceId> {
+    pub fn tuner_id(&self) -> Option<&TunerId> {
         self.allocation.tuner_id.as_ref()
     }
 
@@ -82,12 +87,12 @@ impl Entity for AudioEntity {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::audio::quality::AudioQuality;
-    use crate::core::types::ModulationType;
+    use std::{thread, time::SystemTime};
+
     use proptest::prelude::*;
-    use std::thread;
-    use std::time::SystemTime;
+
+    use super::*;
+    use crate::{audio::quality::AudioQuality, core::types::ModulationType, hardware::DeviceId};
 
     fn create_test_signal() -> Signal {
         Signal {
@@ -103,16 +108,18 @@ mod tests {
         }
     }
 
-    fn arb_device_id() -> impl Strategy<Value = DeviceId> {
-        ("[a-z]{3,8}", "[0-9]{4,8}")
-            .prop_map(|(driver, serial)| DeviceId::from_serial(&driver, &serial))
+    fn arb_tuner_id() -> impl Strategy<Value = TunerId> {
+        ("[a-z]{3,8}", "[0-9]{4,8}", 0usize..2).prop_map(|(driver, serial, channel)| {
+            let device_id = DeviceId::from_serial(&driver, &serial);
+            TunerId::new(device_id, channel)
+        })
     }
 
     fn arb_audio_entity() -> impl Strategy<Value = AudioEntity> {
         (
             88.0e6..108.0e6f64,
             0.0..=1.0f32,
-            prop::option::of(arb_device_id()),
+            prop::option::of(arb_tuner_id()),
         )
             .prop_map(|(frequency, signal_strength, tuner_id)| {
                 let signal = Signal {
@@ -134,12 +141,13 @@ mod tests {
     fn test_create_audio_entity() {
         let signal = create_test_signal();
         let device_id = DeviceId::from_serial("test", "device");
-        let audio = AudioEntity::new(signal.clone(), 88.9e6, Some(device_id.clone()));
+        let tuner_id = TunerId::new(device_id, 0);
+        let audio = AudioEntity::new(signal.clone(), 88.9e6, Some(tuner_id.clone()));
 
         assert_eq!(audio.frequency(), 88.9e6);
         assert_eq!(audio.signal_strength(), 0.8);
         assert!(audio.is_playing());
-        assert_eq!(audio.tuner_id(), Some(&device_id));
+        assert_eq!(audio.tuner_id(), Some(&tuner_id));
     }
 
     #[test]

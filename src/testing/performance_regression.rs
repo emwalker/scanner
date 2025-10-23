@@ -1,8 +1,9 @@
 //! Performance regression testing module
 
+use tracing::debug;
+
 use super::benchmark_datasets::BenchmarkDataset;
 use crate::core::types::Result;
-use tracing::debug;
 
 /// Performance requirements for regression testing
 #[derive(Debug, Clone)]

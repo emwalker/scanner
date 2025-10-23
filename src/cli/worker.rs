@@ -1,17 +1,22 @@
-use crate::core::errors::ScannerError;
-use crate::core::types::Result;
-use crate::hardware::{Backend, Mock, Soapy, StreamingDevice};
-use crate::ipc::{
-    ControlChannel, ControlMessage, DataSender, IQPacket, UnixControlChannel, UnixDataSender,
+use std::{
+    collections::HashMap,
+    error::Error,
+    os::unix::net::UnixListener,
+    sync::mpsc::{self, Receiver, Sender},
+    thread,
+    time::SystemTime,
 };
+
 use rustradio::Complex;
-use std::collections::HashMap;
-use std::error::Error;
-use std::os::unix::net::UnixListener;
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
-use std::time::SystemTime;
 use tracing::debug;
+
+use crate::{
+    core::{errors::ScannerError, types::Result},
+    hardware::{Backend, Mock, Soapy, StreamingDevice},
+    ipc::{
+        ControlChannel, ControlMessage, DataSender, IQPacket, UnixControlChannel, UnixDataSender,
+    },
+};
 
 pub fn handle_enumerate_command(
     backend_name: &str,
@@ -19,8 +24,7 @@ pub fn handle_enumerate_command(
     log_file: Option<&str>,
 ) -> Result<()> {
     if let Some(log_path) = log_file {
-        use std::fs::OpenOptions;
-        use std::io::Write;
+        use std::{fs::OpenOptions, io::Write};
 
         let mut file = OpenOptions::new()
             .create(true)
@@ -57,8 +61,7 @@ pub fn handle_enumerate_command(
 
     debug!("Parent connected, enumerating devices");
 
-    use crate::hardware::Usb;
-    use crate::hardware::types::Backend as BackendEnum;
+    use crate::hardware::{Usb, types::Backend as BackendEnum};
 
     let backend_enum: BackendEnum = backend_name.parse().unwrap();
     let backend: Box<dyn Backend> = match backend_enum {
@@ -132,9 +135,6 @@ pub fn handle_device_command(
         crate::hardware::soapy::reset_soapysdr_state();
     }
 
-    // Open first tuner (channel_index 0) for streaming
-    let tuner_id = crate::hardware::pool::TunerId::new(device_id.clone(), 0);
-
     let backend_enum = device_id.backend();
     let backend = match backend_enum {
         BackendEnum::Soapy => Box::new(Soapy) as Box<dyn Backend>,
@@ -168,7 +168,7 @@ pub fn handle_device_command(
     })?;
 
     debug!("Entering main loop");
-    main_loop(ctl_channel, dat_sender, backend, tuner_id)?;
+    main_loop(ctl_channel, dat_sender, backend, device_id)?;
 
     debug!("Device worker shutting down");
     Ok(())
@@ -196,7 +196,7 @@ fn main_loop(
     mut ctl_channel: impl ControlChannel + Send + 'static,
     mut dat_sender: impl DataSender + Send + 'static,
     backend: Box<dyn Backend>,
-    tuner_id: crate::hardware::pool::TunerId,
+    device_id: crate::hardware::DeviceId,
 ) -> Result<()> {
     // Create channels for inter-thread communication
     let (cmd_tx, cmd_rx): (Sender<InternalCommand>, Receiver<InternalCommand>) = mpsc::channel();
@@ -267,7 +267,8 @@ fn main_loop(
                                 }
                                 Err(_) => {
                                     debug!(
-                                        "Data thread disconnected while waiting for StopStream response"
+                                        "Data thread disconnected while waiting for StopStream \
+                                         response"
                                     );
                                     break;
                                 }
@@ -327,6 +328,8 @@ fn main_loop(
 
                     let result = (|| {
                         debug!("Recreating device for new stream");
+                        let tuner_id =
+                            crate::hardware::pool::TunerId::new(device_id.clone(), channel);
                         let mut new_device = backend.open_streaming_tuner(&tuner_id)?;
                         debug!("Device opened successfully");
 
@@ -425,7 +428,8 @@ fn main_loop(
                             // This prevents deadlock when parent stops reading and sends StopStream
                             match cmd_rx.try_recv() {
                                 Ok(cmd) => {
-                                    // Command available - save it and break to process at top of loop
+                                    // Command available - save it and break to process at top of
+                                    // loop
                                     pending_command = Some(cmd);
                                     break;
                                 }
@@ -484,7 +488,8 @@ fn main_loop(
                         Ok(_) => {}
                         Err(e) => {
                             if e.to_string().contains("Timeout") {
-                                // Timeout is normal - break out of streaming loop to check for commands
+                                // Timeout is normal - break out of streaming loop to check for
+                                // commands
                                 break;
                             } else {
                                 debug!(channel = *channel, error = %e, "Stream read error");
@@ -523,10 +528,9 @@ fn main_loop(
 
 #[cfg(test)]
 mod tests {
+    use std::{os::unix::net::UnixStream, thread, time::Duration};
+
     use super::*;
-    use std::os::unix::net::UnixStream;
-    use std::thread;
-    use std::time::Duration;
 
     #[test]
     fn test_usb_backend_enumeration_completes() {
@@ -552,7 +556,8 @@ mod tests {
             }
             ControlMessage::Error { message, .. } => {
                 panic!(
-                    "USB enumeration should not return error (regression: worker explicitly rejected USB backend). Error: {}",
+                    "USB enumeration should not return error (regression: worker explicitly \
+                     rejected USB backend). Error: {}",
                     message
                 );
             }
@@ -571,8 +576,10 @@ mod tests {
 
     #[test]
     fn test_worker_does_not_busy_wait_when_idle() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
 
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
@@ -632,8 +639,8 @@ mod tests {
 
         assert!(
             iterations < 20,
-            "Worker should iterate ~10 times in 100ms (one per 10ms sleep), but got {} iterations. \
-             This indicates a busy-wait without proper sleep.",
+            "Worker should iterate ~10 times in 100ms (one per 10ms sleep), but got {} \
+             iterations. This indicates a busy-wait without proper sleep.",
             iterations
         );
     }

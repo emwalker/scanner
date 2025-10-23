@@ -1,172 +1,47 @@
-//! Tuner enumeration display for Caladan theme
+//! Tuner table display
 
-use crate::ui::tui::{
-    model::{FocusState, Model},
-    themes::Theme,
-};
 use ratatui::{
     Frame,
-    layout::Rect,
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph},
+    layout::{Constraint, Rect},
+    widgets::{Cell, Row, Table},
 };
 
-pub fn render_tuners(f: &mut Frame, area: Rect, model: &Model, theme: &dyn Theme) {
-    if area.height < 4 || area.width < 20 {
-        return;
-    }
+use super::table_styles::{self, AlwaysVisibleFilter, TableRenderer2, VisibilityContext};
+use crate::ui::tui::{
+    model::{Model, types::FocusedTable},
+    themes::Theme,
+};
 
-    let bracket_color = ratatui::style::Color::Rgb(160, 200, 220);
+pub fn render_tuners(f: &mut Frame, area: Rect, model: &mut Model, theme: &dyn Theme) {
+    let has_focus = table_styles::check_focus(&model.focus_state, FocusedTable::Tuners);
+    let block = table_styles::create_table_block("Tuners", has_focus, theme);
+
+    let header = Row::new(vec![Cell::from("Name"), Cell::from("Activity")])
+        .style(table_styles::header_style());
 
     let tuners = model.tuner_list();
-    if tuners.is_empty() {
-        render_no_devices(f, area, theme, bracket_color);
-        return;
-    }
 
-    let mut y_offset = 0;
+    let viewport_height = area.height.saturating_sub(3) as usize;
+    model.tuners_scroll.viewport_height = viewport_height;
 
-    for (tuner_idx, tuner_info) in tuners.iter().enumerate() {
-        if y_offset + 4 > area.height {
-            return;
-        }
+    let visibility_context = VisibilityContext::new(None, None);
 
-        let tuner_area = Rect {
-            x: area.x,
-            y: area.y + y_offset,
-            width: area.width,
-            height: 4,
-        };
+    let (rows, scrollbar_state) = {
+        let mut renderer = TableRenderer2::new(
+            &tuners,
+            FocusedTable::Tuners,
+            AlwaysVisibleFilter,
+            &mut model.tuners_scroll,
+        );
 
-        let has_focus = matches!(model.focus_state, FocusState::Tuner(i) if i == tuner_idx);
-        render_tuner_block(f, tuner_area, tuner_info, theme, bracket_color, has_focus);
-        y_offset += 4;
-    }
-}
-
-fn render_no_devices(
-    f: &mut Frame,
-    area: Rect,
-    theme: &dyn Theme,
-    bracket_color: ratatui::style::Color,
-) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(
-            Style::default()
-                .fg(bracket_color)
-                .add_modifier(Modifier::DIM),
-        )
-        .border_set(ratatui::symbols::border::Set {
-            top_left: "╭",
-            top_right: "╮",
-            bottom_left: "╰",
-            bottom_right: "╯",
-            vertical_left: " ",
-            vertical_right: " ",
-            horizontal_top: "─",
-            horizontal_bottom: "─",
-        })
-        .padding(ratatui::widgets::Padding::horizontal(1));
-
-    let inner = block.inner(area);
-
-    let lines = vec![
-        Line::from(vec![Span::styled(
-            "No SDR devices detected",
-            Style::default()
-                .fg(theme.secondary())
-                .add_modifier(Modifier::DIM),
-        )]),
-        Line::from(vec![Span::styled(
-            "Waiting for device discovery...",
-            Style::default()
-                .fg(theme.secondary())
-                .add_modifier(Modifier::DIM),
-        )]),
-    ];
-
-    let paragraph = Paragraph::new(lines);
-
-    f.render_widget(block, area);
-    f.render_widget(paragraph, inner);
-}
-
-fn render_tuner_block(
-    f: &mut Frame,
-    area: Rect,
-    tuner: &crate::ui::tui::model::TunerDisplayInfo,
-    theme: &dyn Theme,
-    bracket_color: ratatui::style::Color,
-    has_focus: bool,
-) {
-    let border_style = if has_focus {
-        Style::default()
-            .fg(bracket_color)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(bracket_color)
-            .add_modifier(Modifier::DIM)
+        renderer.render(&model.focus_state, theme, visibility_context)
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(border_style)
-        .border_set(ratatui::symbols::border::Set {
-            top_left: "╭",
-            top_right: "╮",
-            bottom_left: "╰",
-            bottom_right: "╯",
-            vertical_left: " ",
-            vertical_right: " ",
-            horizontal_top: "─",
-            horizontal_bottom: "─",
-        })
-        .padding(ratatui::widgets::Padding::horizontal(1));
+    let table = Table::new(rows, [Constraint::Min(20), Constraint::Length(10)])
+        .header(header)
+        .block(block)
+        .column_spacing(2);
 
-    let inner = block.inner(area);
-
-    let tuner_id_str = match &tuner.id.device_id {
-        crate::hardware::DeviceId::Driver { driver, serial, .. } => {
-            format!("{}:{}", driver, serial)
-        }
-        crate::hardware::DeviceId::Usb {
-            vid, pid, serial, ..
-        } => {
-            format!("USB {:04x}:{:04x} ({})", vid, pid, serial)
-        }
-    };
-
-    let status_style = match tuner.state {
-        crate::ui::tui::model::TunerState::Listening
-        | crate::ui::tui::model::TunerState::Scanning => Style::default()
-            .fg(theme.active_highlight_fg())
-            .add_modifier(Modifier::BOLD),
-        crate::ui::tui::model::TunerState::Available => Style::default()
-            .fg(theme.foreground())
-            .add_modifier(Modifier::DIM),
-    };
-
-    let lines = vec![
-        Line::from(vec![Span::styled(
-            &tuner.label,
-            Style::default()
-                .fg(theme.primary())
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(vec![
-            Span::styled(&tuner_id_str, Style::default().fg(theme.secondary())),
-            Span::raw("  "),
-            Span::styled(tuner.state.display(), status_style),
-        ]),
-    ];
-
-    let paragraph = Paragraph::new(lines);
-
-    f.render_widget(block, area);
-    f.render_widget(paragraph, inner);
+    f.render_widget(table, area);
+    table_styles::render_scrollbar(f, area, &scrollbar_state, theme);
 }

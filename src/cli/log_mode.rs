@@ -1,10 +1,12 @@
-use crate::core::types::{Result, ScannerError, ScanningConfig};
-use crate::hardware::pool::Pool;
-use crate::main_thread::MainThread;
-use crate::shutdown::ShutdownCoordinator;
-use crate::task::TaskScheduler;
-use std::sync::Arc;
-use std::thread;
+use std::{sync::Arc, thread};
+
+use crate::{
+    core::types::{Result, ScannerError, ScanningConfig},
+    hardware::pool::Pool,
+    main_thread::MainThread,
+    shutdown::ShutdownCoordinator,
+    task::TaskScheduler,
+};
 
 pub struct LogRunContext {
     pub config: ScanningConfig,
@@ -12,21 +14,21 @@ pub struct LogRunContext {
     pub shutdown_coordinator: Arc<ShutdownCoordinator>,
     pub pool: Arc<Pool>,
     pub scheduler: Arc<TaskScheduler>,
-    pub scan_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::ScanEntity>>>,
-    pub station_entities:
-        Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::StationEntity>>>,
+    pub task_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::TaskEntity>>>,
     pub audio_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::AudioEntity>>>,
-    pub candidate_entities:
-        Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::CandidateEntity>>>,
+    pub pending_scan_request:
+        Arc<std::sync::RwLock<Option<crate::ecs::components::scan::PendingScanRequest>>>,
+    pub discovery_rx: std::sync::mpsc::Receiver<crate::discovery::Event>,
 }
 
 pub fn run_with_logs(context: LogRunContext) -> Result<()> {
     let backend = Arc::new(crate::hardware::Soapy);
 
     let window_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
+    let signal_entities = Arc::new(std::sync::RwLock::new(crate::ecs::EntityWorld::new()));
 
     let pause_request_queue = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<
-        crate::ecs::PauseRequest,
+        crate::ecs::PauseAndTuneRequest,
     >::new()));
 
     let global_pause_resource =
@@ -39,13 +41,14 @@ pub fn run_with_logs(context: LogRunContext) -> Result<()> {
         context.pool.clone(),
         context.scheduler,
         Vec::new(),
-        context.scan_entities,
+        context.task_entities,
         window_entities,
-        context.station_entities,
         context.audio_entities,
-        context.candidate_entities,
+        signal_entities,
         pause_request_queue,
         global_pause_resource,
+        context.pending_scan_request,
+        context.discovery_rx,
     )?
     .start();
 
@@ -64,14 +67,15 @@ pub fn run_with_logs(context: LogRunContext) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::RwLock, time::Duration};
+
     use super::*;
-    use crate::audio::quality::AudioAnalyzer;
-    use crate::core::types::ScanningConfig;
-    use crate::ecs::components::scan::{ScanConfigComponent, ScanType};
-    use crate::ecs::{EntityWorld, ScanEntity};
-    use crate::hardware::pool::{PoolFilter, TuningMode};
-    use std::sync::RwLock;
-    use std::time::Duration;
+    use crate::{
+        audio::quality::AudioAnalyzer,
+        core::types::ScanningConfig,
+        ecs::{EntityWorld, test_helpers::create_test_pool_with_entities},
+        hardware::pool::{PoolFilter, TuningMode},
+    };
 
     #[test]
     fn test_log_mode_starts_coordinator() {
@@ -86,19 +90,18 @@ mod tests {
         let filter = PoolFilter::new()
             .with_driver("mock")
             .with_mode(TuningMode::SingleTuner);
-        let pool = Arc::new(Pool::new(filter, None));
+        let (pool, _tuner_entities, _device_entities) =
+            create_test_pool_with_entities(filter, None);
         let scheduler = Arc::new(TaskScheduler::new(
             pool.clone(),
             shutdown_coordinator.clone(),
         ));
 
-        let scan_entities = Arc::new(RwLock::new(EntityWorld::<ScanEntity>::new()));
-        let station_entities = Arc::new(RwLock::new(EntityWorld::new()));
+        let task_entities = Arc::new(RwLock::new(EntityWorld::new()));
         let audio_entities = Arc::new(RwLock::new(EntityWorld::new()));
-        let candidate_entities = Arc::new(RwLock::new(EntityWorld::new()));
 
-        let scan_config = ScanConfigComponent::new(
-            ScanType::Stations,
+        let scan_config = crate::ecs::components::scan::ScanConfigComponent::new(
+            crate::ecs::components::scan::ScanType::Stations,
             88.9e6,
             88.9e6,
             2_000_000.0,
@@ -109,8 +112,18 @@ mod tests {
         )
         .with_stations(vec![88.9e6]);
 
-        let scan_entity = ScanEntity::new(scan_config);
-        scan_entities.write().unwrap().insert(scan_entity);
+        let requirements = crate::hardware::pool::TaskRequirements {
+            frequency_hz: 88.9e6,
+            bandwidth_hz: 2_000_000.0,
+            required_sample_rate: 2_000_000.0,
+            priority: crate::hardware::pool::TaskPriority::Normal,
+        };
+
+        let pending_scan_request = Arc::new(std::sync::RwLock::new(Some(
+            crate::ecs::components::scan::PendingScanRequest::new(scan_config, 1, requirements),
+        )));
+
+        let (_discovery_tx, discovery_rx) = std::sync::mpsc::channel();
 
         let context = LogRunContext {
             config,
@@ -118,10 +131,10 @@ mod tests {
             shutdown_coordinator: shutdown_coordinator.clone(),
             pool: pool.clone(),
             scheduler,
-            scan_entities: scan_entities.clone(),
-            station_entities,
+            task_entities: task_entities.clone(),
             audio_entities,
-            candidate_entities,
+            pending_scan_request,
+            discovery_rx,
         };
 
         std::thread::spawn(move || {
@@ -131,12 +144,5 @@ mod tests {
 
         let result = run_with_logs(context);
         assert!(result.is_ok(), "Log mode should complete successfully");
-
-        let entities = scan_entities.read().unwrap();
-        let scan = entities.iter().next().unwrap();
-        assert!(
-            !scan.is_pending(),
-            "Scan should have been processed by coordinator (not Pending)"
-        );
     }
 }

@@ -1,7 +1,6 @@
-use scanner::hardware::DeviceId;
-use scanner::ipc::ControlMessage;
-use std::thread;
-use std::time::Duration;
+use std::{thread, time::Duration};
+
+use scanner::{hardware::DeviceId, ipc::ControlMessage};
 
 #[test]
 fn test_protocol_subprocess_control() {

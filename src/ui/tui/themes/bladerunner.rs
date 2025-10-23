@@ -1,7 +1,8 @@
 //! Blade Runner theme implementations - cyberpunk aesthetic
 
-use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 use ratatui::style::Color;
+
+use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 
 /// Blade Runner dark theme - cyberpunk neon aesthetic
 pub struct BladerunnerDarkTheme;
@@ -112,6 +113,14 @@ impl ColorScheme for BladerunnerDarkTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(255, 255, 0) // Yellow
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(41, 128, 185) // Blade Runner blue
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(236, 240, 241) // Light gray
     }
 }
 
@@ -295,6 +304,14 @@ impl ColorScheme for BladerunnerLightTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(218, 165, 32) // Golden rod
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(25, 80, 120) // Darker blue
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(255, 255, 255) // White
     }
 }
 

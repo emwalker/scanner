@@ -1,12 +1,16 @@
 use super::args::{AudioClassifier, ScanArgs};
-use crate::audio::quality::{AudioAnalyzer, AudioQuality};
-use crate::core::config::{
-    AudioConfig, AveragingConfig, CaptureConfig, CfarConfig, DebugConfig,
-    ExponentialSmoothingConfig, FrequencyTrackingConfig, MovingAverageConfig,
-    MultiFrameAveragingConfig, MultiFrameConfig, NoiseFloorConfig, PeakDetectionConfig,
-    SignalProcessingConfig, SquelchConfig, WindowingConfig,
+use crate::{
+    audio::quality::{AudioAnalyzer, AudioQuality},
+    core::{
+        config::{
+            AudioConfig, AveragingConfig, CaptureConfig, CfarConfig, DebugConfig,
+            ExponentialSmoothingConfig, FrequencyTrackingConfig, MovingAverageConfig,
+            MultiFrameAveragingConfig, MultiFrameConfig, NoiseFloorConfig, PeakDetectionConfig,
+            SignalProcessingConfig, SquelchConfig, WindowingConfig,
+        },
+        types::{Format, Result, ScannerError, ScanningConfig},
+    },
 };
-use crate::core::types::{Format, Result, ScannerError, ScanningConfig};
 
 pub fn parse_squelch_threshold(threshold_str: &str) -> Result<AudioQuality> {
     match threshold_str.to_lowercase().as_str() {
@@ -181,7 +185,7 @@ pub fn build_scanning_config(args: &ScanArgs) -> Result<ScanningConfig> {
         },
         debug: DebugConfig {
             pipeline: args.debug_pipeline,
-            print_candidates: args.print_candidates,
+            print_signals: args.print_signals,
         },
     })
 }

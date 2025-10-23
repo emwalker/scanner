@@ -1,6 +1,8 @@
 use super::helpers::create_test_pool_status;
-use crate::hardware::{DeviceId, DeviceInfo, pool::TunerId};
-use crate::ui::tui::model::{Model, TunerState, UiMode};
+use crate::{
+    hardware::{DeviceId, DeviceInfo, pool::TunerId},
+    ui::tui::model::{Model, TunerState, UiMode},
+};
 
 #[test]
 fn test_only_used_tuner_shows_scanning_state() {
@@ -13,6 +15,7 @@ fn test_only_used_tuner_shows_scanning_state() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "Generic RTL-SDR".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("rtlsdr", "00000001"), 0),
         }],
     };
@@ -35,6 +38,7 @@ fn test_only_used_tuner_shows_scanning_state() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "SDRplay RSPduo".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("sdrplay", "2301034E34:ST"), 0),
         }],
     };
@@ -97,6 +101,7 @@ fn test_only_used_tuner_shows_listening_state() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "Generic RTL-SDR".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("rtlsdr", "00000001"), 0),
         }],
     };
@@ -108,6 +113,7 @@ fn test_only_used_tuner_shows_listening_state() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "SDRplay RSPduo".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("sdrplay", "2301034E34:ST"), 0),
         }],
     };
@@ -133,13 +139,11 @@ fn test_only_used_tuner_shows_listening_state() {
     // SDRplay is now Scanning
     assert_eq!(model.tuner_state(&sdrplay_tuner_id), TunerState::Scanning);
 
-    // User presses Enter to tune to the candidate - MainThread moves tuner to listening
+    // User presses Enter to tune to the signal - MainThread moves tuner to listening
     model.update_tui_event(crate::ui::TuiEvent::ActiveTunersUpdated {
-        status: create_test_pool_status(
-            vec![sdrplay_device.id.clone()],
-            vec![],
-            vec![sdrplay_device.id.clone()],
-        ),
+        status: create_test_pool_status(vec![sdrplay_device.id.clone()], vec![], vec![
+            sdrplay_device.id.clone(),
+        ]),
     });
 
     // SDRplay should transition to Listening
@@ -150,7 +154,7 @@ fn test_only_used_tuner_shows_listening_state() {
     );
 
     // RTL-SDR should still be Available (regression test for incorrect listening state)
-    // The bug was: update_candidate() set self.tuners.first() to Listening
+    // The bug was: update_signal() set self.tuners.first() to Listening
     // instead of using event.tuner_id
     assert_eq!(
         model.tuner_state(&rtlsdr_tuner_id),
@@ -190,6 +194,7 @@ fn test_tuner_stays_scanning_during_automatic_audio_playback() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "SDRplay RSPduo".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("sdrplay", "2301034E34:ST"), 0),
         }],
     };
@@ -271,6 +276,7 @@ fn test_correct_tuner_shows_scanning_when_returning_from_listening() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "Generic RTL-SDR".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("rtlsdr", "00000001"), 0),
         }],
     };
@@ -282,6 +288,7 @@ fn test_correct_tuner_shows_scanning_when_returning_from_listening() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "SDRplay RSPduo".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("sdrplay", "2301034E34:ST"), 0),
         }],
     };
@@ -310,11 +317,9 @@ fn test_correct_tuner_shows_scanning_when_returning_from_listening() {
 
     // User presses Enter to listen - MainThread moves SDRplay to listening list
     model.update_tui_event(crate::ui::TuiEvent::ActiveTunersUpdated {
-        status: create_test_pool_status(
-            vec![sdrplay_device.id.clone()],
-            vec![],
-            vec![sdrplay_device.id.clone()],
-        ),
+        status: create_test_pool_status(vec![sdrplay_device.id.clone()], vec![], vec![
+            sdrplay_device.id.clone(),
+        ]),
     });
 
     // SDRplay should be Listening, RTL-SDR should remain Available
@@ -387,6 +392,7 @@ fn test_scanning_tuner_displays_scanning_label() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "SDRplay RSPduo".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("sdrplay", "2301034E34:ST"), 0),
         }],
     };
@@ -429,6 +435,7 @@ fn test_listening_tuner_displays_listening_label() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "SDRplay RSPduo".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("sdrplay", "2301034E34:ST"), 0),
         }],
     };
@@ -436,11 +443,9 @@ fn test_listening_tuner_displays_listening_label() {
 
     // Allocate tuner for listening
     model.update_tui_event(crate::ui::TuiEvent::ActiveTunersUpdated {
-        status: create_test_pool_status(
-            vec![sdrplay_device.id.clone()],
-            vec![],
-            vec![sdrplay_device.id.clone()],
-        ),
+        status: create_test_pool_status(vec![sdrplay_device.id.clone()], vec![], vec![
+            sdrplay_device.id.clone(),
+        ]),
     });
 
     // Create TunerId (helper creates tuners with channel_index: 0)
@@ -471,6 +476,7 @@ fn test_available_tuner_displays_available_label() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "SDRplay RSPduo".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("sdrplay", "2301034E34:ST"), 0),
         }],
     };
@@ -509,6 +515,7 @@ fn test_state_transition_updates_label() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "SDRplay RSPduo".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("sdrplay", "2301034E34:ST"), 0),
         }],
     };
@@ -540,11 +547,9 @@ fn test_state_transition_updates_label() {
 
     // Transition to Listening
     model.update_tui_event(crate::ui::TuiEvent::ActiveTunersUpdated {
-        status: create_test_pool_status(
-            vec![sdrplay_device.id.clone()],
-            vec![],
-            vec![sdrplay_device.id.clone()],
-        ),
+        status: create_test_pool_status(vec![sdrplay_device.id.clone()], vec![], vec![
+            sdrplay_device.id.clone(),
+        ]),
     });
 
     let display_states = model.tuner_display_states();
@@ -577,6 +582,7 @@ fn test_multiple_tuners_show_correct_individual_labels() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "Generic RTL-SDR".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("rtlsdr", "00000001"), 0),
         }],
     };
@@ -588,6 +594,7 @@ fn test_multiple_tuners_show_correct_individual_labels() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "SDRplay RSPduo".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("sdrplay", "2301034E34:ST"), 0),
         }],
     };
@@ -639,11 +646,13 @@ fn test_multi_channel_device_shows_different_states_per_channel() {
             crate::hardware::types::TunerInfo {
                 label: "SDRplay RSPduo - Dual Tuner - Channel 0".to_string(),
                 mode: "DT".to_string(),
+                antenna: None,
                 id: TunerId::new(DeviceId::from_serial("sdrplay", "2301034E34:DT"), 0),
             },
             crate::hardware::types::TunerInfo {
                 label: "SDRplay RSPduo - Dual Tuner - Channel 1".to_string(),
                 mode: "DT".to_string(),
+                antenna: None,
                 id: TunerId::new(DeviceId::from_serial("sdrplay", "2301034E34:DT"), 1),
             },
         ],
@@ -699,6 +708,7 @@ fn test_added_devices_populate_tuners() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "SDRplay RSPduo".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("sdrplay", "2301034E34"), 0),
         }],
     };
@@ -709,6 +719,7 @@ fn test_added_devices_populate_tuners() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "Generic RTL-SDR".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("rtlsdr", "00000001"), 0),
         }],
     };
@@ -749,6 +760,7 @@ fn test_dynamically_discovered_devices_populate_tuners_immediately() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "SDRplay RSPduo".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("sdrplay", "2301034E34"), 0),
         }],
     };
@@ -767,6 +779,7 @@ fn test_dynamically_discovered_devices_populate_tuners_immediately() {
         tuners: vec![crate::hardware::types::TunerInfo {
             label: "Generic RTL-SDR".to_string(),
             mode: String::new(),
+            antenna: None,
             id: TunerId::new(DeviceId::from_serial("rtlsdr", "00000001"), 0),
         }],
     };

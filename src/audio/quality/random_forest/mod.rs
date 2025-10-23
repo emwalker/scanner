@@ -71,8 +71,8 @@ mod tests {
     fn test_classifier_regression() -> crate::core::types::Result<()> {
         let model_path = "models/audio_quality_rf_v0.1.0_20250917.bin";
         let classifier = super::Classifier::load_pretrained(model_path)?;
-        // Deviations from the training data needed to keep the test passing. The shorter this list is, the closer the
-        // classifier is to the training data.
+        // Deviations from the training data needed to keep the test passing. The shorter this list
+        // is, the closer the classifier is to the training data.
         let overrides = [("000.088.900.000Hz-wfm-001.wav", AudioQuality::Moderate)];
         crate::testing::assert_classifies_audio(&classifier, &overrides)
     }

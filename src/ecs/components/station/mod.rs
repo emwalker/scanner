@@ -5,16 +5,20 @@ mod history;
 mod info;
 mod playback;
 mod transition;
+mod tune_allocation;
 mod tune_request;
+mod tune_state;
+
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use discovery::StationDiscoveryComponent;
 pub use history::StationHistoryComponent;
 pub use info::StationInfoComponent;
 pub use playback::{StationPlaybackComponent, StationPlaybackState};
 pub use transition::{TuneStage, TuneTransitionComponent};
+pub use tune_allocation::{TuneAllocationComponent, TuneAllocationState};
 pub use tune_request::TuneRequestComponent;
-
-use std::sync::atomic::{AtomicU64, Ordering};
+pub use tune_state::TuneState;
 
 /// Unique identifier for a station
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

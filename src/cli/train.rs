@@ -1,9 +1,7 @@
-use crate::core::types::Result;
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
-use super::args::TrainArgs;
-use super::model::generate_versioned_filename;
+use super::{args::TrainArgs, model::generate_versioned_filename};
+use crate::core::types::Result;
 
 pub fn handle_train_command(args: TrainArgs) -> Result<()> {
     let level = crate::logging::level_from_flags(args.verbose, args.quiet);

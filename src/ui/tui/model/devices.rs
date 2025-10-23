@@ -1,9 +1,9 @@
 //! Device management methods
 
-use crate::hardware::{DeviceId, DeviceInfo};
 use tracing::debug;
 
 use super::{state::Model, types::TunerState};
+use crate::hardware::{DeviceId, DeviceInfo};
 
 impl Model {
     /// Extract serial number from a device ID for matching purposes
@@ -114,13 +114,8 @@ impl Model {
                         let mut enriched_device = device.clone();
                         enriched_device.label = usb_device.label.clone();
 
-                        for (driver_tuner, usb_tuner) in enriched_device
-                            .tuners
-                            .iter_mut()
-                            .zip(usb_device.tuners.iter())
-                        {
-                            driver_tuner.label = usb_tuner.label.clone();
-                        }
+                        // Keep driver tuner labels (they have antenna info from SoapySDR)
+                        // USB enumeration cannot query antenna information
 
                         for tuner in &enriched_device.tuners {
                             let tuner_info = crate::ui::tui::model::TunerInfo {
@@ -131,7 +126,7 @@ impl Model {
                             debug!(
                                 tuner_id = ?tuner_info.id,
                                 label = %tuner_info.label,
-                                "Populating tuner with USB-enriched label"
+                                "Populating tuner with driver label (includes antenna info)"
                             );
                         }
 
@@ -212,9 +207,11 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hardware::pool::TunerId;
-    use crate::hardware::types::{Backend, TunerInfo};
-    use crate::hardware::{DeviceId, DeviceInfo};
+    use crate::hardware::{
+        DeviceId, DeviceInfo,
+        pool::TunerId,
+        types::{Backend, TunerInfo},
+    };
 
     fn create_usb_device(serial: &str, label: &str) -> DeviceInfo {
         let device_id = DeviceId::Usb {
@@ -231,6 +228,7 @@ mod tests {
                 id: TunerId::new(device_id, 0),
                 label: label.to_string(),
                 mode: String::new(),
+                antenna: None,
             }],
         }
     }
@@ -249,6 +247,7 @@ mod tests {
                 id: TunerId::new(device_id, 0),
                 label: label.to_string(),
                 mode: String::new(),
+                antenna: None,
             }],
         }
     }
@@ -283,8 +282,8 @@ mod tests {
 
         let tuner = model.tuners.iter().next().unwrap();
         assert_eq!(
-            tuner.label, "RTLSDRBlog Blog V4 :: 00000001",
-            "Should use USB label"
+            tuner.label, "Generic RTL2832U OEM :: 00000001 (rtlsdr:00000001)",
+            "Should use driver label (may include antenna info)"
         );
         assert!(
             matches!(tuner.id.device_id, DeviceId::Driver { .. }),
@@ -384,11 +383,13 @@ mod tests {
                     id: TunerId::new(usb_id.clone(), 0),
                     label: "RTLSDRBlog Blog V4 Ch0 :: 00000001".to_string(),
                     mode: String::new(),
+                    antenna: None,
                 },
                 TunerInfo {
                     id: TunerId::new(usb_id, 1),
                     label: "RTLSDRBlog Blog V4 Ch1 :: 00000001".to_string(),
                     mode: String::new(),
+                    antenna: None,
                 },
             ],
         };
@@ -408,11 +409,13 @@ mod tests {
                     id: TunerId::new(driver_id.clone(), 0),
                     label: "Generic RTL2832U OEM Ch0 :: 00000001".to_string(),
                     mode: String::new(),
+                    antenna: None,
                 },
                 TunerInfo {
                     id: TunerId::new(driver_id, 1),
                     label: "Generic RTL2832U OEM Ch1 :: 00000001".to_string(),
                     mode: String::new(),
+                    antenna: None,
                 },
             ],
         };
@@ -425,7 +428,13 @@ mod tests {
         );
 
         let labels: Vec<_> = model.tuners.iter().map(|t| t.label.as_str()).collect();
-        assert!(labels.contains(&"RTLSDRBlog Blog V4 Ch0 :: 00000001"));
-        assert!(labels.contains(&"RTLSDRBlog Blog V4 Ch1 :: 00000001"));
+        assert!(
+            labels.contains(&"Generic RTL2832U OEM Ch0 :: 00000001"),
+            "Should use driver label for Ch0"
+        );
+        assert!(
+            labels.contains(&"Generic RTL2832U OEM Ch1 :: 00000001"),
+            "Should use driver label for Ch1"
+        );
     }
 }

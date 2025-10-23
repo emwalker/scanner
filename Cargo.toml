@@ -15,27 +15,31 @@ name = "scanner"
 path = "bin/scanner.rs"
 
 [[test]]
-name = "integration_test"
-path = "tests/integration_test.rs"
+name = "scanning"
+path = "tests/scanning.rs"
 
 [[test]]
-name = "band_scanning_test"
-path = "tests/band_scanning_test.rs"
+name = "window_processing"
+path = "tests/window_processing.rs"
 
 [[test]]
-name = "frequency_detection_test"
-path = "tests/frequency_detection_test.rs"
+name = "resource_management"
+path = "tests/resource_management.rs"
 
 [[test]]
-name = "shutdown_test"
-path = "tests/shutdown_test.rs"
+name = "shutdown"
+path = "tests/shutdown.rs"
 
 [[test]]
-name = "loom_shutdown_test"
-path = "tests/loom_shutdown_test.rs"
+name = "integration"
+path = "tests/integration.rs"
 
 [[test]]
-name = "tui_regression_test"
+name = "discovery"
+path = "tests/discovery_test.rs"
+
+[[test]]
+name = "tui_regression"
 path = "tests/tui_regression_test.rs"
 
 [[bench]]
@@ -81,6 +85,7 @@ thread-priority = "1.2"
 libc = "0.2"
 postcard = { version = "1.0", features = ["alloc"] }
 indexmap = "2.12.0"
+uuid = { version = "1.18.1", features = ["v4"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 udev = "0.9"

@@ -1,7 +1,8 @@
 //! Interstellar theme implementations - atmospheric amber aesthetic
 
-use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 use ratatui::style::Color;
+
+use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 
 /// Interstellar dark theme - atmospheric amber monochrome
 pub struct InterstellarDarkTheme;
@@ -112,6 +113,14 @@ impl ColorScheme for InterstellarDarkTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(255, 140, 0) // Deep amber
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(30, 60, 100)
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(200, 220, 240)
     }
 }
 
@@ -295,6 +304,14 @@ impl ColorScheme for InterstellarLightTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(202, 138, 4) // Medium gold
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(20, 50, 90)
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(255, 255, 255)
     }
 }
 

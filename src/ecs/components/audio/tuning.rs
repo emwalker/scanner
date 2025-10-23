@@ -31,10 +31,10 @@ impl AudioTuningComponent {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::audio::quality::AudioQuality;
-    use crate::core::types::ModulationType;
     use std::time::SystemTime;
+
+    use super::*;
+    use crate::{audio::quality::AudioQuality, core::types::ModulationType};
 
     fn create_test_signal() -> Signal {
         Signal {

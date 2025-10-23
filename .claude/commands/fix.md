@@ -1,7 +1,6 @@
 ---
 description: Run tests and fix linting issues automatically
 argument-hint: [optional test filter]
-allowed-tools: Bash(cargo:*), Bash(make lint:*)
 ---
 
 I need you to run tests and fix linting issues for this Rust project. Follow these steps:

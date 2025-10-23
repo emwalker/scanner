@@ -1,6 +1,8 @@
-use crate::core::types::Result;
-use serde::{Deserialize, Serialize};
 use std::fs::File;
+
+use serde::{Deserialize, Serialize};
+
+use crate::core::types::Result;
 
 /// Metadata for audio fixture files
 #[derive(Serialize, Deserialize, Debug, Clone)]

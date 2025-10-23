@@ -1,13 +1,19 @@
-//! Audio playback system - spawns audio entities for tune requests
+//! Audio playback system - spawns audio entities for tune requests and audio queue requests
 
-use crate::core::types::{ModulationType, Result, Signal};
-use crate::ecs::queue::TunerRequest;
-use crate::ecs::system::{Resource, System, SystemContext};
-use crate::ecs::{AudioEntity, AudioId, Entities, Entity, StationEntity};
-use crate::hardware::pool::SegmentTrait;
-use crate::scanning::window::spawn_audio_entity;
 use std::collections::HashMap;
+
 use tracing::debug;
+
+use crate::{
+    core::types::{ModulationType, Result, Signal},
+    ecs::{
+        AudioEntity, AudioId, Entities, SignalEntity,
+        queue::TunerRequest,
+        system::{Resource, System, SystemContext},
+    },
+    hardware::pool::SegmentTrait,
+    scanning::window::spawn_audio_entity,
+};
 
 struct AudioResources<'a> {
     entities: &'a Entities<AudioEntity>,
@@ -39,26 +45,31 @@ impl PlaybackSystem {
 
     fn process_single_request(
         request: &TunerRequest,
-        station_entities: &Entities<StationEntity>,
+        signal_entities: &Entities<SignalEntity>,
         pool: &std::sync::Arc<crate::hardware::pool::Pool>,
         config: &std::sync::Arc<crate::core::types::ScanningConfig>,
         shutdown_coordinator: &std::sync::Arc<crate::shutdown::ShutdownCoordinator>,
         audio_resources: &AudioResources,
     ) -> bool {
-        // Find the station
-        let mut stations = match station_entities.try_write() {
+        // Find the signal by station_id (string match during dual-write)
+        let mut signals = match signal_entities.try_write() {
             Ok(s) => s,
             Err(_) => return false,
         };
 
-        let station = match stations.iter_mut().find(|s| s.id() == &request.station_id) {
+        // During dual-write, station_id on request might not match signal IDs directly
+        // For now, we'll find by frequency match since tune requests use frequency
+        let signal = match signals
+            .iter_mut()
+            .find(|s| (s.frequency() - request.frequency).abs() < 1000.0)
+        {
             Some(s) => s,
             None => {
                 debug!(
                     station_id = ?request.station_id,
-                    "AudioPlaybackSystem: Station not found"
+                    "AudioPlaybackSystem: Signal not found"
                 );
-                return true; // Station gone, consider this "success" (remove from queue)
+                return true; // Signal gone, consider this "success" (remove from queue)
             }
         };
 
@@ -106,9 +117,9 @@ impl PlaybackSystem {
         };
 
         // Spawn audio
-        let signal = Signal {
+        let signal_data = Signal {
             frequency_hz: request.frequency,
-            signal_strength: station.signal_strength(),
+            signal_strength: signal.info.signal_strength().unwrap_or(0.5) as f32,
             bandwidth_hz: 200_000.0,
             modulation: ModulationType::WFM,
             audio_sample_rate: config.audio.sample_rate,
@@ -120,7 +131,7 @@ impl PlaybackSystem {
 
         let sdr_rx = segment.audio_subscriber();
 
-        match spawn_audio_entity(signal, sdr_rx, config, request.center_frequency) {
+        match spawn_audio_entity(signal_data, sdr_rx, config, request.center_frequency) {
             Ok((audio_entity, stream)) => {
                 let audio_id = audio_entity.id;
 
@@ -141,8 +152,10 @@ impl PlaybackSystem {
                     .unwrap()
                     .insert(audio_id, segment);
 
-                station.playback.start_playing(audio_id);
-                station.clear_tune_request();
+                signal
+                    .playback
+                    .transition_to(crate::ecs::components::signal::PlaybackState::Playing);
+                signal.clear_tune_state();
 
                 debug!(
                     station_id = ?request.station_id,
@@ -180,7 +193,8 @@ impl PlaybackSystem {
             Ok(audios) => audios.iter().map(|a| a.id).collect(),
             Err(_) => {
                 debug!(
-                    "AudioPlaybackSystem: Could not acquire audio_entities lock for cleanup, skipping"
+                    "AudioPlaybackSystem: Could not acquire audio_entities lock for cleanup, \
+                     skipping"
                 );
                 return;
             }
@@ -215,6 +229,95 @@ impl PlaybackSystem {
             "AudioPlaybackSystem: Cleanup complete"
         );
     }
+
+    fn process_audio_queue(
+        audio_entities: &Entities<AudioEntity>,
+        audio_streams: &Resource<HashMap<AudioId, cpal::Stream>>,
+        audio_segments: &Resource<HashMap<AudioId, crate::hardware::pool::Segment>>,
+        audio_queue: &Resource<crate::ecs::components::audio::AudioQueueComponent>,
+        pool: &std::sync::Arc<crate::hardware::pool::Pool>,
+        config: &std::sync::Arc<crate::core::types::ScanningConfig>,
+        shutdown_coordinator: &std::sync::Arc<crate::shutdown::ShutdownCoordinator>,
+    ) {
+        let mut queue = match audio_queue.try_lock() {
+            Ok(q) => q,
+            Err(_) => return, // Queue locked, skip this tick
+        };
+
+        // Process queue head if available
+        if let Some(request) = queue.peek() {
+            debug!(
+                frequency_mhz = request.frequency() / 1e6,
+                "AudioPlaybackSystem: Processing audio queue request"
+            );
+
+            // Attempt to spawn audio for this request
+            let signal = request.signal().clone();
+            let sdr_rx_result = pool.acquire(
+                &crate::hardware::pool::TaskRequirements {
+                    frequency_hz: signal.frequency_hz,
+                    bandwidth_hz: config.samp_rate,
+                    required_sample_rate: config.samp_rate,
+                    priority: crate::hardware::pool::TaskPriority::Normal,
+                },
+                crate::hardware::pool::TunerActivity::Listening,
+            );
+
+            match sdr_rx_result {
+                Ok(tuner) => {
+                    if let Ok(segment) = crate::hardware::pool::Segment::from_tuner(
+                        tuner,
+                        signal.frequency_hz,
+                        config,
+                        shutdown_coordinator.token(),
+                    ) {
+                        let sdr_rx = segment.audio_subscriber();
+
+                        match spawn_audio_entity(
+                            signal.clone(),
+                            sdr_rx,
+                            config,
+                            signal.frequency_hz,
+                        ) {
+                            Ok((audio_entity, stream)) => {
+                                let audio_id = audio_entity.id;
+
+                                if let Ok(mut audios) = audio_entities.try_write() {
+                                    audios.insert(audio_entity);
+
+                                    audio_streams.lock().unwrap().insert(audio_id, stream);
+                                    audio_segments.lock().unwrap().insert(audio_id, segment);
+
+                                    debug!(
+                                        audio_id = ?audio_id,
+                                        frequency_mhz = signal.frequency_hz / 1e6,
+                                        "AudioPlaybackSystem: Spawned audio from queue"
+                                    );
+
+                                    // Successfully spawned, remove from queue
+                                    queue.dequeue();
+                                }
+                            }
+                            Err(e) => {
+                                debug!(
+                                    error = %e,
+                                    frequency_mhz = signal.frequency_hz / 1e6,
+                                    "AudioPlaybackSystem: Failed to spawn audio from queue"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Tuner not available, leave in queue for next tick
+                    debug!(
+                        frequency_mhz = request.frequency() / 1e6,
+                        "AudioPlaybackSystem: Tuner not available for queue request"
+                    );
+                }
+            }
+        }
+    }
 }
 
 impl System for PlaybackSystem {
@@ -223,8 +326,13 @@ impl System for PlaybackSystem {
     }
 
     fn run(&mut self, context: &mut SystemContext) -> Result<()> {
-        let (station_entities, audio_entities, tuner_request_queue) = match (
-            &context.station_entities,
+        // Don't process tune requests during global pause
+        if context.is_globally_paused() {
+            return Ok(());
+        }
+
+        let (signal_entities, audio_entities, tuner_request_queue) = match (
+            &context.signal_entities,
             &context.audio_entities,
             &context.tuner_request_queue,
         ) {
@@ -277,7 +385,7 @@ impl System for PlaybackSystem {
             // Try to acquire tuner and spawn audio
             let success = Self::process_single_request(
                 &request,
-                &station_entities,
+                &signal_entities,
                 &pool,
                 &config,
                 &shutdown_coordinator,
@@ -308,6 +416,19 @@ impl System for PlaybackSystem {
             }
         }
 
+        // Process audio queue if available
+        if let Some(audio_queue) = &context.audio_queue {
+            Self::process_audio_queue(
+                &audio_entities,
+                &audio_streams,
+                &audio_segments,
+                audio_queue,
+                &pool,
+                &config,
+                &shutdown_coordinator,
+            );
+        }
+
         Self::cleanup_audio_resources(&audio_entities, &audio_streams, &audio_segments);
 
         Ok(())
@@ -316,15 +437,19 @@ impl System for PlaybackSystem {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex, RwLock},
+    };
+
     use super::*;
-    use crate::audio::quality::AudioQuality;
-    use crate::core::types::{ModulationType, ScanningConfig, Signal};
-    use crate::ecs::{EntityWorld, ScanId, StationEntity};
-    use crate::hardware::pool::{Pool, PoolFilter};
-    use crate::scanning::window::WindowMetadata;
-    use crate::shutdown::ShutdownCoordinator;
-    use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex, RwLock};
+    use crate::{
+        audio::quality::AudioQuality,
+        core::types::{ModulationType, ScanningConfig, Signal},
+        ecs::{Entity, EntityWorld, StationEntity, TaskId, components::window::WindowId},
+        hardware::pool::Pool,
+        shutdown::ShutdownCoordinator,
+    };
 
     fn create_test_signal(frequency: f64) -> Signal {
         Signal {
@@ -344,12 +469,10 @@ mod tests {
     fn test_empty_queue_returns_immediately() {
         let mut system = PlaybackSystem::new();
 
-        let station_entities = Arc::new(RwLock::new(EntityWorld::new()));
         let audio_entities = Arc::new(RwLock::new(EntityWorld::new()));
         let tuner_request_queue = Arc::new(Mutex::new(VecDeque::new()));
 
         let mut context = SystemContext::new()
-            .with_station_entities(station_entities)
             .with_audio_entities(audio_entities)
             .with_tuner_request_queue(tuner_request_queue.clone());
 
@@ -364,13 +487,15 @@ mod tests {
     fn test_request_remains_in_queue_when_no_context() {
         let mut system = PlaybackSystem::new();
 
+        let task_id = TaskId::new("test-scan".to_string());
+        let window_id = WindowId::new(task_id, 0);
         let tuner_request_queue = Arc::new(Mutex::new(VecDeque::new()));
         {
             let mut queue = tuner_request_queue.lock().unwrap();
             queue.push_back(TunerRequest {
                 station_id: crate::ecs::StationId::new(),
                 frequency: 88.9e6,
-                window_id: 0,
+                window_id: window_id.clone(),
                 center_frequency: 88.9e6,
             });
         }
@@ -393,29 +518,31 @@ mod tests {
     fn test_request_removed_when_station_not_found() {
         let mut system = PlaybackSystem::new();
 
-        let station_entities = Arc::new(RwLock::new(EntityWorld::new()));
         let audio_entities = Arc::new(RwLock::new(EntityWorld::new()));
-        let pool = Arc::new(Pool::new(PoolFilter::allow_all(), None));
+        let signal_entities = Arc::new(RwLock::new(EntityWorld::new())); // Empty signal_entities
+        let pool = Arc::new(Pool::new_unfiltered());
         let config = Arc::new(ScanningConfig::default());
         let shutdown = Arc::new(ShutdownCoordinator::new());
         #[allow(clippy::arc_with_non_send_sync)]
         let audio_streams = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let audio_segments = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
+        let task_id = TaskId::new("test-scan".to_string());
+        let window_id = WindowId::new(task_id, 0);
         let tuner_request_queue = Arc::new(Mutex::new(VecDeque::new()));
         {
             let mut queue = tuner_request_queue.lock().unwrap();
             queue.push_back(TunerRequest {
                 station_id: crate::ecs::StationId::new(),
                 frequency: 88.9e6,
-                window_id: 0,
+                window_id: window_id.clone(),
                 center_frequency: 88.9e6,
             });
         }
 
         let mut context = SystemContext::new()
-            .with_station_entities(station_entities)
             .with_audio_entities(audio_entities)
+            .with_signal_entities(signal_entities) // Add empty signal_entities
             .with_tuner_request_queue(tuner_request_queue.clone())
             .with_pool(pool)
             .with_config(config)
@@ -430,7 +557,46 @@ mod tests {
         assert_eq!(
             queue.len(),
             0,
-            "Request should be removed when station not found"
+            "Request should be removed when signal not found (empty signal_entities)"
+        );
+    }
+
+    #[test]
+    fn test_system_respects_global_pause() {
+        use crate::ecs::GlobalPauseState;
+
+        let mut system = PlaybackSystem::new();
+
+        let tuner_request_queue = Arc::new(Mutex::new(VecDeque::new()));
+        {
+            let mut queue = tuner_request_queue.lock().unwrap();
+            let task_id = TaskId::new("test-scan".to_string());
+            let window_id = WindowId::new(task_id, 0);
+            queue.push_back(TunerRequest {
+                station_id: crate::ecs::StationId::new(),
+                frequency: 88.9e6,
+                window_id,
+                center_frequency: 88.9e6,
+            });
+        }
+
+        let global_pause = Arc::new(Mutex::new(GlobalPauseState::Paused {
+            had_active_scans: true,
+            playing_stations: vec![],
+        }));
+
+        let mut context = SystemContext::new()
+            .with_tuner_request_queue(tuner_request_queue.clone())
+            .with_global_pause_resource(global_pause);
+
+        let result = system.run(&mut context);
+        assert!(result.is_ok());
+
+        let queue = tuner_request_queue.lock().unwrap();
+        assert_eq!(
+            queue.len(),
+            1,
+            "AudioPlaybackSystem should not process queue during global pause"
         );
     }
 
@@ -442,22 +608,10 @@ mod tests {
         let signal2 = create_test_signal(89.7e6);
 
         let mut station_world = EntityWorld::new();
-        let station1 = StationEntity::from_signal(
-            &signal1,
-            ScanId::new(),
-            WindowMetadata {
-                window_id: 0,
-                center_frequency_hz: 88.9e6,
-            },
-        );
-        let station2 = StationEntity::from_signal(
-            &signal2,
-            ScanId::new(),
-            WindowMetadata {
-                window_id: 1,
-                center_frequency_hz: 89.7e6,
-            },
-        );
+        let window_id1 = WindowId::new(TaskId::new("test-scan".to_string()), 0);
+        let station1 = StationEntity::from_signal(&signal1, window_id1.clone());
+        let window_id2 = WindowId::new(TaskId::new("test-scan".to_string()), 1);
+        let station2 = StationEntity::from_signal(&signal2, window_id2.clone());
         let station1_id = *station1.id();
         let station2_id = *station2.id();
         station_world.insert(station1);
@@ -465,7 +619,7 @@ mod tests {
 
         let station_entities = Arc::new(RwLock::new(station_world));
         let audio_entities = Arc::new(RwLock::new(EntityWorld::new()));
-        let pool = Arc::new(Pool::new(PoolFilter::allow_all(), None));
+        let pool = Arc::new(Pool::new_unfiltered());
         let config = Arc::new(ScanningConfig::default());
         let shutdown = Arc::new(ShutdownCoordinator::new());
         #[allow(clippy::arc_with_non_send_sync)]
@@ -478,19 +632,18 @@ mod tests {
             queue.push_back(TunerRequest {
                 station_id: station1_id,
                 frequency: 88.9e6,
-                window_id: 0,
+                window_id: window_id1.clone(),
                 center_frequency: 88.9e6,
             });
             queue.push_back(TunerRequest {
                 station_id: station2_id,
                 frequency: 89.7e6,
-                window_id: 1,
+                window_id: window_id2.clone(),
                 center_frequency: 89.7e6,
             });
         }
 
         let mut context = SystemContext::new()
-            .with_station_entities(station_entities.clone())
             .with_audio_entities(audio_entities)
             .with_tuner_request_queue(tuner_request_queue.clone())
             .with_pool(pool)

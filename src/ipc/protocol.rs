@@ -1,10 +1,14 @@
-use super::traits;
-use crate::core::types::Result;
+use std::{
+    io::{Read, Write},
+    os::unix::net::UnixStream,
+    path::PathBuf,
+};
+
 use num::Complex;
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+
+use super::traits;
+use crate::core::types::Result;
 
 /// Unix socket implementation of control channel
 ///

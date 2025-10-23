@@ -3,12 +3,20 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod allocation;
+mod duration;
 mod playback;
+mod queue;
+mod request;
+mod request_component;
 mod stop_listening_request;
 mod tuning;
 
 pub use allocation::AudioAllocationComponent;
+pub use duration::PlaybackDuration;
 pub use playback::AudioPlaybackComponent;
+pub use queue::AudioQueueComponent;
+pub use request::AudioRequest;
+pub use request_component::AudioRequestComponent;
 pub use stop_listening_request::StopListeningRequestComponent;
 pub use tuning::AudioTuningComponent;
 

@@ -1,13 +1,14 @@
-use crate::core::types::ScannerError;
 use tracing::debug;
+
+use crate::core::types::ScannerError;
 
 /// Test helper function to assert that a classifier correctly classifies audio samples
 ///
 /// # Arguments
 /// * `classifier` - An instantiated classifier implementing the Classifier trait
-/// * `overrides` - List of (filename, expected_quality) tuples for cases where the classifier
-///   is expected to deviate from the training dataset. An empty list means
-///   the classifier should have perfect accuracy against the training data.
+/// * `overrides` - List of (filename, expected_quality) tuples for cases where the classifier is
+///   expected to deviate from the training dataset. An empty list means the classifier should have
+///   perfect accuracy against the training data.
 ///
 /// # Usage
 /// A poor classifier will need many overrides to pass the test, while a good classifier

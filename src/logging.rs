@@ -1,18 +1,15 @@
-use crate::core::types::{Format, Result};
-use std::io::{self, Write};
-use std::sync::{Arc, Mutex};
-pub use tracing::Level;
-use tracing_subscriber::FmtSubscriber;
-use tracing_subscriber::fmt::MakeWriter;
+use std::{
+    io::{self, Write},
+    sync::{Arc, Mutex},
+};
 
-pub fn level_from_flags(verbose: bool, quiet: bool) -> Level {
-    if quiet {
-        Level::WARN
-    } else if verbose {
-        Level::INFO
-    } else {
-        Level::DEBUG
-    }
+pub use tracing::Level;
+use tracing_subscriber::{FmtSubscriber, fmt::MakeWriter};
+
+use crate::core::types::{Format, Result};
+
+pub fn level_from_flags(_verbose: bool, quiet: bool) -> Level {
+    if quiet { Level::WARN } else { Level::DEBUG }
 }
 
 struct BrokenPipeIgnoringWriter<W> {

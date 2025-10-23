@@ -1,5 +1,3 @@
-use crate::core::types::ScanningConfig;
-use crate::signal::filter_config::{FilterPurpose, FmFilterConfig};
 use rustradio::{
     Complex, Float, blockchain,
     blocks::RationalResampler,
@@ -10,7 +8,13 @@ use rustradio::{
 };
 use tracing::debug;
 
-/// Shared FM pipeline building blocks to eliminate duplication between detection and audio pipelines
+use crate::{
+    core::types::ScanningConfig,
+    signal::filter_config::{FilterPurpose, FmFilterConfig},
+};
+
+/// Shared FM pipeline building blocks to eliminate duplication between detection and audio
+/// pipelines
 pub struct FmPipelineBuilder;
 
 impl FmPipelineBuilder {

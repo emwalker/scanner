@@ -1,4 +1,3 @@
-use crate::core::types::{Result, Signal};
 use rustradio::graph::GraphRunner;
 
 use super::{
@@ -6,11 +5,12 @@ use super::{
     squelch_monitoring::{SquelchMonitoringParams, spawn_squelch_monitoring_thread},
     thread_coordination::wait_for_threads_completion,
 };
+use crate::core::types::{Result, Signal};
 
 fn build_detection_graph_config<'a>(
     refined_frequency: f64,
     sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
-    signal_tx: std::sync::mpsc::SyncSender<Signal>,
+    signal_tx: std::sync::mpsc::Sender<Signal>,
     context: &'a AnalysisContext,
 ) -> crate::signal::DetectionGraphConfig<'a> {
     let audio_analyzer = context.config.audio.analyzer.clone();
@@ -23,7 +23,7 @@ fn build_detection_graph_config<'a>(
         tune_freq: refined_frequency,
         signal_tx: Some(signal_tx),
         audio_analyzer,
-        window_id: context.metadata.window_id,
+        window_id: context.window_id.clone(),
     }
 }
 
@@ -31,8 +31,8 @@ pub(crate) fn run_detection_analysis(
     original_frequency_hz: f64,
     refined_frequency: f64,
     sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
-    signal_tx: std::sync::mpsc::SyncSender<Signal>,
-    candidate_id: &str,
+    signal_tx: std::sync::mpsc::Sender<Signal>,
+    signal_id: &str,
     context: &AnalysisContext,
 ) -> Result<()> {
     let graph_config = build_detection_graph_config(refined_frequency, sdr_rx, signal_tx, context);
@@ -41,7 +41,7 @@ pub(crate) fn run_detection_analysis(
     let detection_cancel_token = detection_graph.cancel_token();
 
     tracing::debug!(
-        "Processing candidate at {:.1} MHz with center freq {:.1} MHz",
+        "Processing signal at {:.1} MHz with center freq {:.1} MHz",
         original_frequency_hz / 1e6,
         context.center_freq / 1e6
     );
@@ -55,8 +55,7 @@ pub(crate) fn run_detection_analysis(
             squelch_learning_duration: context.config.audio.squelch.learning_duration,
             refined_frequency,
             original_frequency_hz,
-            candidate_id: candidate_id.to_string(),
-            metadata: context.metadata,
+            signal_id: signal_id.to_string(),
             tuner_id: None,
         },
         decision_state,
@@ -69,8 +68,6 @@ pub(crate) fn run_detection_analysis(
         timer_handle,
         original_frequency_hz,
         result_rx,
-        context.candidate_entities,
-        context.metadata.window_id,
     )
 }
 

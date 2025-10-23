@@ -1,7 +1,8 @@
 //! Entity storage for ECS architecture
 
-use super::entity::Entity;
 use indexmap::IndexMap;
+
+use super::entity::Entity;
 
 /// Storage for entities of a specific type
 ///

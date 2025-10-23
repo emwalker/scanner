@@ -1,16 +1,20 @@
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, mpsc},
+    time::Duration,
+};
+
+use tokio_util::sync::CancellationToken;
+use tracing::debug;
+
 use super::{
     service::{Event, Service},
     tracker::DeviceTracker,
 };
-use crate::hardware::pool::Pool;
-use crate::hardware::types::Backend;
-use crate::task::{DeviceEnumerationTask, Task, TaskScheduler};
-use std::collections::HashMap;
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use crate::{
+    hardware::{pool::Pool, types::Backend},
+    task::{DeviceEnumerationTask, Task, TaskScheduler},
+};
 
 pub struct Polling {
     scheduler: Arc<TaskScheduler>,
@@ -18,6 +22,8 @@ pub struct Polling {
     backends: Vec<Backend>,
     poll_interval: Duration,
     trackers: HashMap<Backend, Arc<Mutex<DeviceTracker>>>,
+    tuner_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>>,
+    device_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::DeviceEntity>>>,
 }
 
 impl Polling {
@@ -26,6 +32,8 @@ impl Polling {
         pool: Arc<Pool>,
         backends: Vec<Backend>,
         poll_interval: Duration,
+        tuner_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>>,
+        device_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::DeviceEntity>>>,
     ) -> Self {
         let trackers = backends
             .iter()
@@ -38,6 +46,8 @@ impl Polling {
             backends,
             poll_interval,
             trackers,
+            tuner_entities,
+            device_entities,
         }
     }
 
@@ -51,11 +61,13 @@ impl Polling {
                 .cloned()
                 .expect("Tracker should exist for backend");
 
-            let task = DeviceEnumerationTask::with_tracker(
+            let task = DeviceEnumerationTask::with_shared_entities(
                 backend.clone(),
                 self.pool.clone(),
                 event_tx.clone(),
-                tracker,
+                Some(tracker),
+                self.tuner_entities.clone(),
+                self.device_entities.clone(),
             );
 
             self.scheduler

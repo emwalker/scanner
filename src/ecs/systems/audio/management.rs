@@ -1,9 +1,14 @@
 //! Audio management system
 
-use crate::core::types::Result;
-use crate::ecs::Entity;
-use crate::ecs::system::{System, SystemContext};
 use tracing::debug;
+
+use crate::{
+    core::types::Result,
+    ecs::{
+        Entity,
+        system::{System, SystemContext},
+    },
+};
 
 /// System that manages audio playback sessions
 ///
@@ -39,6 +44,7 @@ impl System for ManagementSystem {
         "AudioManagement"
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn run(&mut self, context: &mut SystemContext) -> Result<()> {
         let audio_entities = match &context.audio_entities {
             Some(entities) => entities.clone(),
@@ -76,11 +82,85 @@ impl System for ManagementSystem {
         }
 
         if !entities_to_remove.is_empty() {
-            let mut entities = audio_entities.write().unwrap();
-            for audio_id in entities_to_remove {
-                if let Some(mut entity) = entities.remove(&audio_id) {
-                    entity.stop();
-                    debug!(audio_id = ?audio_id, "Cleaned up audio session");
+            // Collect frequencies of audio being removed for signal updates
+            let mut audio_frequencies = Vec::new();
+            {
+                let mut entities = audio_entities.write().unwrap();
+                for audio_id in entities_to_remove.iter() {
+                    if let Some(mut entity) = entities.remove(audio_id) {
+                        audio_frequencies.push(entity.frequency());
+                        entity.stop();
+                        debug!(audio_id = ?audio_id, "Cleaned up audio session");
+                    }
+                }
+            } // Release lock
+
+            // Clean up audio segments (releases tuners back to pool via Drop)
+            if let Some(audio_segments) = &context.audio_segments
+                && let Ok(mut segments) = audio_segments.try_lock()
+            {
+                for audio_id in &entities_to_remove {
+                    if let Some(segment) = segments.remove(audio_id) {
+                        drop(segment);
+                        debug!(audio_id = ?audio_id, "Cleaned up audio segment, tuner returned to pool");
+                    }
+                }
+            }
+
+            // Clean up audio streams
+            if let Some(audio_streams) = &context.audio_streams
+                && let Ok(mut streams) = audio_streams.try_lock()
+            {
+                for audio_id in &entities_to_remove {
+                    if streams.remove(audio_id).is_some() {
+                        debug!(audio_id = ?audio_id, "Cleaned up audio stream");
+                    }
+                }
+            }
+
+            // Update signal states for removed audio
+            let mut windows_to_clear = Vec::new();
+            if let Some(signal_entities) = &context.signal_entities
+                && let Ok(mut signals) = signal_entities.try_write()
+            {
+                const FREQ_TOLERANCE_HZ: f64 = 1000.0;
+                for freq in &audio_frequencies {
+                    // Find signals with matching frequency and mark as completed
+                    for signal in signals.iter_mut() {
+                        if (signal.frequency() - freq).abs() < FREQ_TOLERANCE_HZ
+                            && signal.playback.is_playing()
+                        {
+                            signal.playback.transition_to(
+                                crate::ecs::components::signal::PlaybackState::Completed,
+                            );
+                            signal.history.end_play_session();
+                            windows_to_clear.push(signal.window_id().clone());
+                            debug!(
+                                signal_id = ?signal.id(),
+                                frequency_mhz = freq / 1e6,
+                                "ManagementSystem: Transitioned signal to Completed after removing audio"
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Clear window playback state so the next queued signal can start
+            if let Some(window_entities) = &context.window_entities {
+                use std::collections::HashSet;
+                let unique_windows: HashSet<_> = windows_to_clear.into_iter().collect();
+
+                if let Ok(mut windows) = window_entities.try_write() {
+                    for window in windows.iter_mut() {
+                        if unique_windows.contains(window.id()) {
+                            window.allocation.stop_playing();
+                            debug!(
+                                window_index = window.window_index(),
+                                "ManagementSystem: Cleared window current_playing after audio \
+                                 completion"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -91,12 +171,17 @@ impl System for ManagementSystem {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{Arc, RwLock},
+        time::{Duration, SystemTime},
+    };
+
     use super::*;
-    use crate::audio::quality::AudioQuality;
-    use crate::core::types::{ModulationType, Signal};
-    use crate::ecs::{AudioEntity, EntityWorld};
-    use std::sync::{Arc, RwLock};
-    use std::time::{Duration, SystemTime};
+    use crate::{
+        audio::quality::AudioQuality,
+        core::types::{ModulationType, Signal},
+        ecs::{AudioEntity, EntityWorld},
+    };
 
     fn create_test_signal() -> Signal {
         Signal {
@@ -160,6 +245,71 @@ mod tests {
         let entities = context_entities.read().unwrap();
         assert_eq!(entities.len(), 1);
         assert!(entities.iter().all(|e| e.is_playing()));
+    }
+
+    #[test]
+    fn test_cleanup_clears_station_history_play_start() {
+        use crate::ecs::{SignalEntity, StationEntity, TaskId, components::window::WindowId};
+
+        let mut system = ManagementSystem::new();
+
+        let signal = create_test_signal();
+        let window_id = WindowId::new(TaskId::new("test-scan"), 1);
+
+        let mut station = StationEntity::from_signal(&signal, window_id.clone());
+
+        // Create SignalEntity and set it to playing
+        let mut signal_entity = SignalEntity::new(88.9e6, window_id);
+        signal_entity
+            .playback
+            .transition_to(crate::ecs::components::signal::PlaybackState::Playing);
+        signal_entity.history.start_play_session();
+
+        // Record initial play count before system runs
+        let initial_play_count = signal_entity.history.play_count();
+
+        let mut audio_entity = AudioEntity::new(signal, 88.9e6, None);
+        let audio_id = *audio_entity.id();
+
+        station.playback.start_playing(audio_id);
+
+        audio_entity.stop();
+
+        let mut station_world = EntityWorld::new();
+        station_world.insert(station);
+
+        let mut signal_world = EntityWorld::new();
+        signal_world.insert(signal_entity);
+
+        let mut audio_world = EntityWorld::new();
+        audio_world.insert(audio_entity);
+
+        let _station_entities = Arc::new(RwLock::new(station_world));
+        let signal_entities = Arc::new(RwLock::new(signal_world));
+        let audio_entities = Arc::new(RwLock::new(audio_world));
+
+        let mut context = SystemContext::new()
+            .with_audio_entities(audio_entities)
+            .with_signal_entities(signal_entities.clone());
+
+        let result = system.run(&mut context);
+        assert!(result.is_ok());
+
+        let signals = signal_entities.read().unwrap();
+        let signal = signals.iter().next().unwrap();
+
+        assert_eq!(
+            signal.history.play_count(),
+            initial_play_count + 1,
+            "play_count should be incremented when play session ends (indicating end_play_session \
+             was called)"
+        );
+
+        assert_eq!(
+            signal.playback.state(),
+            crate::ecs::components::signal::PlaybackState::Completed,
+            "signal playback state should be set to Completed when audio stops"
+        );
     }
 
     #[test]
@@ -229,6 +379,82 @@ mod tests {
             entities.len(),
             1,
             "Session should remain without max duration set"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::arc_with_non_send_sync)]
+    fn test_cleanup_removes_segments_and_streams() {
+        use std::{collections::HashMap, sync::Mutex};
+
+        use cpal::traits::{DeviceTrait, HostTrait};
+
+        use crate::ecs::components::audio::AudioId;
+
+        let mut system = ManagementSystem::new();
+
+        let signal = create_test_signal();
+        let mut audio_entity = AudioEntity::new(signal, 88.9e6, None);
+        let audio_id = *audio_entity.id();
+
+        audio_entity.stop();
+
+        let mut audio_world = EntityWorld::new();
+        audio_world.insert(audio_entity);
+
+        let audio_entities = Arc::new(RwLock::new(audio_world));
+
+        let audio_streams = Arc::new(Mutex::new(HashMap::<AudioId, cpal::Stream>::new()));
+        let audio_segments = Arc::new(Mutex::new(HashMap::new()));
+
+        {
+            let mut streams = audio_streams.lock().unwrap();
+            streams.insert(
+                audio_id,
+                cpal::default_host()
+                    .default_output_device()
+                    .unwrap()
+                    .build_output_stream(
+                        &cpal::StreamConfig {
+                            channels: 2,
+                            sample_rate: cpal::SampleRate(48000),
+                            buffer_size: cpal::BufferSize::Default,
+                        },
+                        |_data: &mut [f32], _: &cpal::OutputCallbackInfo| {},
+                        |_err| {},
+                        None,
+                    )
+                    .unwrap(),
+            );
+        }
+
+        let mut context = SystemContext::new()
+            .with_audio_entities(audio_entities.clone())
+            .with_audio_streams(audio_streams.clone())
+            .with_audio_segments(audio_segments.clone());
+
+        assert_eq!(
+            audio_streams.lock().unwrap().len(),
+            1,
+            "Stream should exist before cleanup"
+        );
+
+        let result = system.run(&mut context);
+        assert!(result.is_ok());
+
+        let audio_world = audio_entities.read().unwrap();
+        assert_eq!(audio_world.len(), 0, "AudioEntity should be removed");
+
+        assert_eq!(
+            audio_streams.lock().unwrap().len(),
+            0,
+            "Stream should be removed when audio entity is cleaned up"
+        );
+
+        assert_eq!(
+            audio_segments.lock().unwrap().len(),
+            0,
+            "Segment should be removed when audio entity is cleaned up"
         );
     }
 }

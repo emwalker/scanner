@@ -1,12 +1,16 @@
-use crate::core::types::{Result, ScannerError, ScanningConfig, Signal};
-use crate::ecs::{AudioEntity, Entity};
-use crate::hardware::pool::SegmentTrait;
-use crate::pause_signal::PauseSignal;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{BufferSize, SampleFormat, StreamConfig};
+use cpal::{
+    BufferSize, SampleFormat, StreamConfig,
+    traits::{DeviceTrait, HostTrait, StreamTrait},
+};
 use rustradio::graph::{Graph, GraphRunner};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
+
+use crate::{
+    core::types::{Result, ScannerError, ScanningConfig, Signal},
+    ecs::{AudioEntity, Entity},
+    pause_signal::PauseSignal,
+};
 
 pub fn setup_audio_device(
     audio_sample_rate: u32,
@@ -44,8 +48,10 @@ pub fn create_audio_stream(
 
     let underrun_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let sample_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let last_log_at = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let underrun_counter_clone = underrun_counter.clone();
     let sample_counter_clone = sample_counter.clone();
+    let last_log_at_clone = last_log_at.clone();
 
     let mut leftover: Option<(crate::mpsc::AudioPacket, usize)> = None;
 
@@ -97,7 +103,16 @@ pub fn create_audio_stream(
                 }
             }
 
-            sample_counter_clone.fetch_add(filled, std::sync::atomic::Ordering::Relaxed);
+            let total_samples = sample_counter_clone
+                .fetch_add(filled, std::sync::atomic::Ordering::Relaxed)
+                + filled;
+
+            // Log audio playback every 48000 samples (1 second at 48kHz)
+            let last_log = last_log_at_clone.load(std::sync::atomic::Ordering::Relaxed);
+            if total_samples - last_log >= 48000 {
+                last_log_at_clone.store(total_samples, std::sync::atomic::Ordering::Relaxed);
+                debug!(total_samples = total_samples, "Audio streaming to device");
+            }
 
             if underrun_occurred {
                 let underrun_count =
@@ -449,98 +464,148 @@ pub fn spawn_audio_entity(
     Ok((entity, stream))
 }
 
-pub(super) fn play_signals(
-    window_num: usize,
-    config: &ScanningConfig,
-    shutdown_token: &CancellationToken,
-    pause_signal: &Option<PauseSignal>,
-    signals: Vec<crate::core::types::Signal>,
-    segment: &dyn SegmentTrait,
-    candidate_entities: &Option<crate::ecs::Entities<crate::ecs::CandidateEntity>>,
-) -> Result<()> {
-    if signals.is_empty() {
-        return Ok(());
-    }
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, RwLock};
 
-    let mut sorted_signals = signals;
-    sorted_signals.sort_by(|a, b| {
-        a.frequency_hz
-            .partial_cmp(&b.frequency_hz)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    debug!(
-        "Window {} playing {} signals in frequency order",
-        window_num,
-        sorted_signals.len()
-    );
-
-    let audio_packet_size = 4096;
-    let audio_buffer_packets = 16;
-    let (audio_tx, audio_rx) =
-        std::sync::mpsc::sync_channel::<crate::mpsc::AudioPacket>(audio_buffer_packets);
-
-    let (audio_device, supported_config) = setup_audio_device(config.audio.sample_rate)?;
-    let sample_format = supported_config.sample_format();
-    let mut stream_config: StreamConfig = supported_config.into();
-    stream_config.buffer_size = BufferSize::Fixed(config.audio.buffer_size);
-
-    let stream = match sample_format {
-        SampleFormat::F32 => {
-            create_audio_stream(&audio_device, &stream_config, audio_rx, config.audio.volume)?
-        }
-        _ => {
-            return Err(ScannerError::UnsupportedAudioFormat(
-                "WAV format required".to_string(),
-            ));
-        }
+    use super::*;
+    use crate::{
+        audio::quality::AudioQuality,
+        ecs::{EntityWorld, SignalEntity, SignalId, TaskId, WindowId},
     };
 
-    stream.play()?;
-    debug!("Audio system ready for window {}", window_num);
+    #[test]
+    fn test_signal_analysis_completed_before_playback() {
+        let task_id = TaskId::new("test-scan");
+        let window_index = 1;
+        let frequency_hz = 88.9e6;
+        let window_id = WindowId::new(task_id.clone(), window_index);
 
-    for signal in sorted_signals.iter() {
-        // Update entity to Playing state
-        if let Some(entities_arc) = candidate_entities {
-            use crate::ecs::CandidateId;
-            let id = CandidateId::new(signal.frequency_hz, window_num);
-            if let Ok(mut entities) = entities_arc.write()
-                && let Some(entity) = entities.get_mut(&id)
-            {
-                entity.start_playback();
-            }
-        }
-
-        tracing::info!(
-            "playing {:.1} MHz [{}]",
-            signal.frequency_hz / 1e6,
-            signal.audio_quality.to_human_string()
+        let signal = SignalEntity::new(frequency_hz, window_id.clone());
+        assert!(
+            signal.analysis.is_not_started(),
+            "Candidate should start with NotStarted analysis"
         );
-        let sdr_rx = segment.audio_subscriber();
 
-        if let Err(e) = process_signal_for_audio(
-            signal,
-            sdr_rx,
-            audio_tx.clone(),
-            config,
-            shutdown_token,
-            pause_signal.as_ref(),
-            audio_packet_size,
-        ) {
-            debug!("Error processing signal for audio: {}", e);
+        let mut world = EntityWorld::new();
+        world.insert(signal);
+        let signal_entities = Arc::new(RwLock::new(world));
+
+        let signal = Signal::new_fm(
+            frequency_hz,
+            0.8,
+            200_000.0,
+            48000,
+            100,
+            frequency_hz,
+            AudioQuality::Good,
+        );
+
+        let id = SignalId::new(signal.frequency_hz, window_id.clone());
+        if let Ok(mut entities) = signal_entities.write()
+            && let Some(entity) = entities.get_mut(&id)
+        {
+            entity
+                .analysis
+                .confirm_analysis(signal.audio_quality, signal.signal_strength as f64);
+            entity.info.set_audio_quality(Some(signal.audio_quality));
+            entity
+                .info
+                .set_signal_strength(Some(signal.signal_strength as f64));
+
+            entity
+                .playback
+                .transition_to(crate::ecs::components::PlaybackState::Playing);
         }
 
-        // Update entity to Completed state
-        if let Some(entities_arc) = candidate_entities {
-            use crate::ecs::CandidateId;
-            let id = CandidateId::new(signal.frequency_hz, window_num);
-            if let Ok(mut entities) = entities_arc.write()
-                && let Some(entity) = entities.get_mut(&id)
-            {
-                entity.complete_playback();
-            }
+        let entities = signal_entities.read().unwrap();
+        let entity = entities.get(&id).unwrap();
+
+        assert!(
+            entity.analysis.is_done(),
+            "Candidate analysis must be Complete when playback state is Playing"
+        );
+        assert_eq!(
+            entity.playback.state(),
+            crate::ecs::components::PlaybackState::Playing,
+            "Candidate should be in Playing state"
+        );
+
+        let status = entity.status();
+        assert!(
+            matches!(
+                status,
+                crate::ecs::components::AnalysisStatus::Signal { .. }
+            ),
+            "Candidate status should be Signal, not Detected"
+        );
+
+        if let crate::ecs::components::AnalysisStatus::Signal { quality, strength } = status {
+            assert_eq!(
+                quality,
+                AudioQuality::Good,
+                "Audio quality should be available"
+            );
+            assert!(
+                (strength - 0.8).abs() < 0.01,
+                "Signal strength should be approximately 0.8, got {}",
+                strength
+            );
         }
     }
 
-    Ok(())
+    #[test]
+    fn test_playing_signal_has_non_blank_audio_quality() {
+        let task_id = TaskId::new("test-scan");
+        let window_index = 2;
+        let frequency_hz = 89.3e6;
+        let window_id = WindowId::new(task_id.clone(), window_index);
+
+        let signal = SignalEntity::new(frequency_hz, window_id.clone());
+
+        let mut world = EntityWorld::new();
+        world.insert(signal);
+        let signal_entities = Arc::new(RwLock::new(world));
+
+        let signal = Signal::new_fm(
+            frequency_hz,
+            0.65,
+            200_000.0,
+            48000,
+            100,
+            frequency_hz,
+            AudioQuality::Moderate,
+        );
+
+        let id = SignalId::new(signal.frequency_hz, window_id.clone());
+        if let Ok(mut entities) = signal_entities.write()
+            && let Some(entity) = entities.get_mut(&id)
+        {
+            entity
+                .analysis
+                .confirm_analysis(signal.audio_quality, signal.signal_strength as f64);
+            entity.info.set_audio_quality(Some(signal.audio_quality));
+            entity
+                .info
+                .set_signal_strength(Some(signal.signal_strength as f64));
+
+            entity
+                .playback
+                .transition_to(crate::ecs::components::PlaybackState::Playing);
+        }
+
+        let entities = signal_entities.read().unwrap();
+        let entity = entities.get(&id).unwrap();
+        let status = entity.status();
+
+        if let crate::ecs::components::AnalysisStatus::Signal { quality, .. } = status {
+            assert_eq!(
+                quality,
+                AudioQuality::Moderate,
+                "Playing signal must have audio quality data (not blank)"
+            );
+        } else {
+            panic!("Playing signal must have Signal status with audio quality");
+        }
+    }
 }

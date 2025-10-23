@@ -1,8 +1,11 @@
 //! System scheduling and execution
 
-use crate::core::types::Result;
-use crate::ecs::system::{System, SystemContext};
 use tracing::{debug, warn};
+
+use crate::{
+    core::types::Result,
+    ecs::system::{System, SystemContext},
+};
 
 /// System scheduler that executes systems in a defined order
 pub struct Scheduler {

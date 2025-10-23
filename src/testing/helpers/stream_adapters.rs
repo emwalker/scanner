@@ -1,8 +1,10 @@
-use super::trait_def::SampleSource;
 use tokio::sync::broadcast::error::TryRecvError;
 
+use super::trait_def::SampleSource;
+
 /// Adapter to make SDR broadcast receiver compatible with SampleSource trait
-/// This allows the unified peak detection code to work with both testing sources and real SDR streams
+/// This allows the unified peak detection code to work with both testing sources and real SDR
+/// streams
 pub struct SdrStreamSource {
     sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
     sample_rate: f64,
@@ -36,8 +38,7 @@ impl SampleSource for SdrStreamSource {
         &mut self,
         buffer: &mut [rustradio::Complex],
     ) -> crate::core::types::Result<usize> {
-        use std::thread;
-        use std::time::Duration;
+        use std::{thread, time::Duration};
 
         let mut samples_read = 0;
         let mut empty_count = 0;

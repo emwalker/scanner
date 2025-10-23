@@ -1,14 +1,20 @@
 //! Station entity combining station components
 
-use crate::core::types::Signal;
-use crate::ecs::Entity;
-use crate::ecs::components::scan::ScanId;
-use crate::ecs::components::station::{
-    StationDiscoveryComponent, StationHistoryComponent, StationId, StationInfoComponent,
-    StationPlaybackComponent, TuneRequestComponent, TuneTransitionComponent,
-};
-use crate::scanning::window::WindowMetadata;
 use std::time::{Duration, Instant};
+
+use crate::{
+    core::types::Signal,
+    ecs::{
+        Entity,
+        components::{
+            station::{
+                StationDiscoveryComponent, StationHistoryComponent, StationId,
+                StationInfoComponent, StationPlaybackComponent, TuneState, TuneTransitionComponent,
+            },
+            window::WindowId,
+        },
+    },
+};
 
 /// Entity representing a discovered or known station
 #[derive(Debug, Clone)]
@@ -18,13 +24,12 @@ pub struct StationEntity {
     pub discovery: StationDiscoveryComponent,
     pub history: StationHistoryComponent,
     pub playback: StationPlaybackComponent,
-    pub tune_request: Option<TuneRequestComponent>,
-    pub transition: Option<TuneTransitionComponent>,
+    pub tune_state: TuneState,
 }
 
 impl StationEntity {
     /// Create a new station entity from a discovered signal
-    pub fn from_signal(signal: &Signal, scan_id: ScanId, window_metadata: WindowMetadata) -> Self {
+    pub fn from_signal(signal: &Signal, window_id: WindowId) -> Self {
         Self {
             id: StationId::new(),
             info: StationInfoComponent::new(
@@ -32,31 +37,41 @@ impl StationEntity {
                 signal.signal_strength,
                 Some(signal.audio_quality),
             ),
-            discovery: StationDiscoveryComponent::new(
-                scan_id,
-                window_metadata.window_id,
-                window_metadata,
-            ),
+            discovery: StationDiscoveryComponent::new(window_id),
             history: StationHistoryComponent::new(),
             playback: StationPlaybackComponent::new(),
-            tune_request: None,
-            transition: None,
+            tune_state: TuneState::Idle,
         }
     }
 
-    /// Request tuning to this station
-    pub fn request_tune(&mut self, window_id: usize, center_frequency: f64) {
-        self.tune_request = Some(TuneRequestComponent::new(window_id, center_frequency));
+    /// Set tune transition state
+    pub fn set_tune_transition(&mut self, window_id: WindowId, center_frequency: f64) {
+        self.tune_state =
+            TuneState::Transitioning(TuneTransitionComponent::new(window_id, center_frequency));
     }
 
-    /// Clear tune request
+    /// Check if station is awaiting tuner allocation
+    pub fn is_awaiting_tuner(&self) -> bool {
+        matches!(
+            self.tune_state,
+            TuneState::Transitioning(_) | TuneState::RequestQueued { .. }
+        )
+    }
+
+    /// Check if station is actively tuned
+    pub fn is_actively_tuned(&self) -> bool {
+        matches!(self.tune_state, TuneState::Active { .. })
+    }
+
+    /// Clear tune state back to Idle
+    pub fn clear_tune_state(&mut self) {
+        self.tune_state = TuneState::Idle;
+    }
+
+    /// Temporary bridge method for existing code
+    /// TODO: Remove after TunerAllocationSystem handles this
     pub fn clear_tune_request(&mut self) {
-        self.tune_request = None;
-    }
-
-    /// Check if station has pending tune request
-    pub fn has_tune_request(&self) -> bool {
-        self.tune_request.is_some()
+        self.tune_state = TuneState::Idle;
     }
 
     /// Get the station frequency
@@ -81,7 +96,7 @@ impl StationEntity {
 
     /// Check if this station is currently playing
     pub fn is_playing(&self) -> bool {
-        self.history.is_playing()
+        self.playback.is_playing()
     }
 
     /// Get total play duration
@@ -100,10 +115,15 @@ impl Entity for StationEntity {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::audio::quality::AudioQuality;
-    use proptest::prelude::*;
     use std::time::SystemTime;
+
+    use proptest::prelude::*;
+
+    use super::*;
+    use crate::{
+        audio::quality::AudioQuality,
+        ecs::{TaskId, components::window::WindowId},
+    };
 
     fn create_test_signal() -> Signal {
         Signal {
@@ -119,11 +139,8 @@ mod tests {
         }
     }
 
-    fn create_test_metadata() -> WindowMetadata {
-        WindowMetadata {
-            center_frequency_hz: 88.9e6,
-            window_id: 1,
-        }
+    fn create_window_id() -> WindowId {
+        WindowId::new(TaskId::new("test-scan"), 1)
     }
 
     fn arb_audio_quality() -> impl Strategy<Value = AudioQuality> {
@@ -155,21 +172,17 @@ mod tests {
                     detection_center_freq: frequency,
                     audio_quality: audio_quality.unwrap_or(AudioQuality::Good),
                 };
-                let metadata = WindowMetadata {
-                    center_frequency_hz: frequency,
-                    window_id: 1,
-                };
-                StationEntity::from_signal(&signal, ScanId::new(), metadata)
+                let window_id = WindowId::new(TaskId::new("test-scan"), 1);
+                StationEntity::from_signal(&signal, window_id)
             })
     }
 
     #[test]
     fn test_from_signal() {
         let signal = create_test_signal();
-        let scan_id = ScanId::new();
-        let metadata = create_test_metadata();
+        let window_id = create_window_id();
 
-        let station = StationEntity::from_signal(&signal, scan_id, metadata);
+        let station = StationEntity::from_signal(&signal, window_id);
 
         assert_eq!(station.frequency(), 88.9e6);
         assert_eq!(station.signal_strength(), 0.8);
@@ -181,16 +194,21 @@ mod tests {
     #[test]
     fn test_play_tracking() {
         let signal = create_test_signal();
-        let scan_id = ScanId::new();
-        let metadata = create_test_metadata();
+        let window_id = create_window_id();
 
-        let mut station = StationEntity::from_signal(&signal, scan_id, metadata);
+        let mut station = StationEntity::from_signal(&signal, window_id);
 
+        use crate::ecs::AudioId;
+        let audio_id = AudioId::new();
+
+        station.playback.start_playing(audio_id);
         station.history.record_play_start();
         assert!(station.is_playing());
         assert_eq!(station.play_count(), 1);
 
         std::thread::sleep(Duration::from_millis(10));
+
+        station.playback.stop_playing();
         station.history.record_play_end();
 
         assert!(!station.is_playing());
@@ -200,11 +218,10 @@ mod tests {
     #[test]
     fn test_entity_trait() {
         let signal = create_test_signal();
-        let scan_id = ScanId::new();
-        let metadata = create_test_metadata();
+        let window_id = create_window_id();
 
-        let station1 = StationEntity::from_signal(&signal, scan_id, metadata);
-        let station2 = StationEntity::from_signal(&signal, scan_id, metadata);
+        let station1 = StationEntity::from_signal(&signal, window_id.clone());
+        let station2 = StationEntity::from_signal(&signal, window_id);
 
         assert_ne!(
             station1.id(),
@@ -216,16 +233,37 @@ mod tests {
     #[test]
     fn test_convenience_methods() {
         let signal = create_test_signal();
-        let scan_id = ScanId::new();
-        let metadata = create_test_metadata();
+        let window_id = create_window_id();
 
-        let station = StationEntity::from_signal(&signal, scan_id, metadata);
+        let station = StationEntity::from_signal(&signal, window_id);
 
         assert_eq!(station.frequency(), signal.frequency_hz);
         assert_eq!(station.signal_strength(), signal.signal_strength);
         assert_eq!(station.last_played_at(), None);
         assert_eq!(station.play_count(), 0);
         assert_eq!(station.total_play_duration(), Duration::ZERO);
+    }
+
+    #[test]
+    fn test_is_playing_uses_playback_not_history() {
+        let signal = create_test_signal();
+        let window_id = create_window_id();
+
+        let mut station = StationEntity::from_signal(&signal, window_id);
+
+        station.history.record_play_start();
+        assert!(station.history.is_playing(), "history should say playing");
+
+        station.playback.stop_playing();
+        assert!(
+            !station.playback.is_playing(),
+            "playback should say not playing"
+        );
+
+        assert!(
+            !station.is_playing(),
+            "is_playing() should check playback, not history"
+        );
     }
 
     proptest! {

@@ -3,8 +3,9 @@
 //! This module provides gain-invariant and sample-rate-independent audio quality metrics
 //! designed to preserve calibration results across different system parameters.
 
-use rustfft::{Fft, FftPlanner};
 use std::sync::Arc;
+
+use rustfft::{Fft, FftPlanner};
 use tracing::debug;
 
 /// Fast normalized metrics classifier

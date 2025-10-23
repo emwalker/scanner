@@ -1,14 +1,22 @@
-use scanner::hardware::mock::MockDevice;
-use scanner::hardware::pool::{Pool, TaskPriority, TaskRequirements, TunerActivity};
-use std::thread;
-use std::time::Duration;
+use std::{thread, time::Duration};
+
+use scanner::hardware::pool::{
+    Pool, TaskPriority, TaskRequirements, TunerActivity, test_utils::add_test_device_to_pool,
+};
 
 #[test]
 fn test_subprocess_spawns_lazily() {
     let pool = Pool::new_unfiltered();
 
-    let device = Box::new(MockDevice::new("mock", "lazy001", false));
-    pool.add_device(device, scanner::hardware::types::Backend::Mock);
+    let device_id = scanner::hardware::DeviceId::from_serial("mock", "lazy001");
+    let caps = scanner::hardware::Capabilities::for_mock("mock", "lazy001");
+    add_test_device_to_pool(
+        &pool,
+        device_id,
+        caps,
+        scanner::hardware::types::Backend::Mock,
+        None,
+    );
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -29,8 +37,15 @@ fn test_subprocess_spawns_lazily() {
 fn test_subprocess_reuse_for_second_allocation() {
     let pool = Pool::new_unfiltered();
 
-    let device = Box::new(MockDevice::new("mock", "reuse001", false));
-    pool.add_device(device, scanner::hardware::types::Backend::Mock);
+    let device_id = scanner::hardware::DeviceId::from_serial("mock", "reuse001");
+    let caps = scanner::hardware::Capabilities::for_mock("mock", "reuse001");
+    add_test_device_to_pool(
+        &pool,
+        device_id,
+        caps,
+        scanner::hardware::types::Backend::Mock,
+        None,
+    );
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -57,8 +72,15 @@ fn test_subprocess_reuse_for_second_allocation() {
 fn test_subprocess_graceful_shutdown() {
     let pool = Pool::new_unfiltered();
 
-    let device = Box::new(MockDevice::new("mock", "shutdown001", false));
-    pool.add_device(device, scanner::hardware::types::Backend::Mock);
+    let device_id = scanner::hardware::DeviceId::from_serial("mock", "shutdown001");
+    let caps = scanner::hardware::Capabilities::for_mock("mock", "shutdown001");
+    add_test_device_to_pool(
+        &pool,
+        device_id,
+        caps,
+        scanner::hardware::types::Backend::Mock,
+        None,
+    );
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -84,8 +106,15 @@ fn test_subprocess_graceful_shutdown() {
 fn test_subprocess_persists_across_allocations() {
     let pool = Pool::new_unfiltered();
 
-    let device = Box::new(MockDevice::new("mock", "persist001", false));
-    pool.add_device(device, scanner::hardware::types::Backend::Mock);
+    let device_id = scanner::hardware::DeviceId::from_serial("mock", "persist001");
+    let caps = scanner::hardware::Capabilities::for_mock("mock", "persist001");
+    add_test_device_to_pool(
+        &pool,
+        device_id,
+        caps,
+        scanner::hardware::types::Backend::Mock,
+        None,
+    );
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,

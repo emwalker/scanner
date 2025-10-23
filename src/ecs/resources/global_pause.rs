@@ -2,8 +2,19 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::ecs::components::{StationId, WindowId};
+
+/// Information about a station that was playing before global pause
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayingStationInfo {
+    pub station_id: StationId,
+    pub window_id: WindowId,
+    pub frequency_hz: f64,
+    pub center_frequency_hz: f64,
+}
+
 /// Global pause state for the entire application
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GlobalPauseState {
     /// Application is active (scanning, audio playing)
     Active,
@@ -11,8 +22,8 @@ pub enum GlobalPauseState {
     Paused {
         /// Whether there were active scans before pausing
         had_active_scans: bool,
-        /// Whether audio was playing before pausing
-        had_active_audio: bool,
+        /// Stations that were playing before pausing
+        playing_stations: Vec<PlayingStationInfo>,
     },
 }
 
@@ -30,22 +41,19 @@ mod tests {
 
         let paused = GlobalPauseState::Paused {
             had_active_scans: true,
-            had_active_audio: false,
+            playing_stations: vec![],
         };
-        assert!(matches!(
-            paused,
-            GlobalPauseState::Paused {
-                had_active_scans: true,
-                had_active_audio: false
-            }
-        ));
+        assert!(matches!(paused, GlobalPauseState::Paused {
+            had_active_scans: true,
+            ..
+        }));
     }
 
     #[test]
     fn test_global_pause_state_paused_to_active() {
         let _state = GlobalPauseState::Paused {
             had_active_scans: true,
-            had_active_audio: true,
+            playing_stations: vec![],
         };
         let active = GlobalPauseState::Active;
         assert!(matches!(active, GlobalPauseState::Active));
@@ -66,17 +74,14 @@ mod tests {
             let mut state = resource.lock().unwrap();
             *state = GlobalPauseState::Paused {
                 had_active_scans: false,
-                had_active_audio: true,
+                playing_stations: vec![],
             };
         }
 
         let state = resource.lock().unwrap();
-        assert!(matches!(
-            *state,
-            GlobalPauseState::Paused {
-                had_active_scans: false,
-                had_active_audio: true
-            }
-        ));
+        assert!(matches!(*state, GlobalPauseState::Paused {
+            had_active_scans: false,
+            ..
+        }));
     }
 }

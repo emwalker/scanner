@@ -1,8 +1,9 @@
 //! Benchmark datasets with known peak locations for testing
 
+use tracing::debug;
+
 use super::signal_generation::{PeakTestSignalGenerator, TestSignal};
 use crate::core::types::Result;
-use tracing::debug;
 
 /// Benchmark dataset containing predefined test scenarios with known peak locations
 #[derive(Debug, Clone)]

@@ -1,8 +1,8 @@
 //! Console rendering for fallback text modes
 
-use crate::ui::tui::model::{CandidateStatus, Model};
-use std::fs::OpenOptions;
-use std::io::Write;
+use std::{fs::OpenOptions, io::Write};
+
+use crate::ui::tui::model::{AnalysisStatus, Model, PlaybackState};
 
 /// Console renderer for text and simple TUI modes
 pub struct ConsoleRenderer;
@@ -41,15 +41,27 @@ impl ConsoleRenderer {
     /// Calculate how many lines the current display uses
     pub fn calculate_display_lines(model: &Model) -> usize {
         if model.is_empty() {
-            return 2; // "Waiting for candidates..." + separator
+            return 2; // "Waiting for signals..." + separator
+        }
+
+        let rows = model.build_signal_rows();
+
+        if rows.is_empty() {
+            return 2;
         }
 
         let mut lines = 0;
-        for window in model.windows.values() {
-            lines += 1; // Window header
-            lines += window.candidates.len(); // Candidate lines
-            lines += 1; // Empty line between windows
+        let mut current_window_id: Option<usize> = None;
+
+        for row in &rows {
+            if Some(row.window_id) != current_window_id {
+                lines += 1; // Window header
+                current_window_id = Some(row.window_id);
+            }
+            lines += 1; // Candidate line
         }
+
+        lines += current_window_id.is_some() as usize; // Empty line after last window
         lines += 1; // Final separator
         lines
     }
@@ -57,94 +69,109 @@ impl ConsoleRenderer {
     /// Print progress in a TUI-like style with ANSI escape codes
     pub fn print_tui_style_progress(model: &Model) {
         if model.is_empty() {
-            Self::tty_println("Waiting for candidates...");
+            Self::tty_println("Waiting for signals...");
             Self::tty_println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             return;
         }
 
-        // Display windows in order (only windows that should be shown)
-        for (&window_id, window) in &model.windows {
-            if !window.should_display() {
-                continue;
+        let rows = model.build_signal_rows();
+
+        if rows.is_empty() {
+            Self::tty_println("Waiting for signals...");
+            Self::tty_println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            return;
+        }
+
+        let mut current_window_id: Option<usize> = None;
+
+        for signal in &rows {
+            if Some(signal.window_id) != current_window_id {
+                if current_window_id.is_some() {
+                    Self::tty_println(""); // Empty line between windows
+                }
+                Self::tty_println(&format!("\x1B[1;37m{:03}\x1B[0m", signal.window_id)); // Bold white
+                current_window_id = Some(signal.window_id);
             }
-            Self::tty_println(&format!("\x1B[1;37mWindow {}\x1B[0m", window_id)); // Bold white
-            let is_current_window = window_id == model.current_window;
-            let displayable_candidates =
-                window.displayable_candidates(is_current_window, model.selection_mode());
-            for candidate in displayable_candidates {
-                let freq_mhz = candidate.frequency_hz / 1e6;
-                let progress_percent = (candidate.completion * 100.0) as u8;
-                let status = candidate.status.to_string();
+            let freq_mhz = signal.frequency_hz / 1e6;
+            let progress_percent = (signal.completion * 100.0) as u8;
+            let status = signal.status.to_string();
 
-                // Create colored progress bar
-                let progress_bar = if candidate.completion >= 1.0 {
-                    "\x1B[42m████████████████████████\x1B[0m".to_string() // Green background
-                } else {
-                    let filled = (candidate.completion * 24.0) as usize;
-                    let empty = 24 - filled;
+            // Create colored progress bar
+            let progress_bar = if signal.completion >= 1.0 {
+                "\x1B[42m████████████████████████\x1B[0m".to_string() // Green background
+            } else {
+                let filled = (signal.completion * 24.0) as usize;
+                let empty = 24 - filled;
+                format!(
+                    "\x1B[44m{}\x1B[100m{}\x1B[0m",
+                    "█".repeat(filled),
+                    "░".repeat(empty)
+                )
+            };
+
+            // Color status based on analysis state (use playback state for playing/completed)
+            let status_display = if signal.playback_state == PlaybackState::Playing {
+                "Playing"
+            } else if signal.playback_state == PlaybackState::Completed {
+                "Completed"
+            } else {
+                status
+            };
+
+            let colored_status = match (&signal.status, &signal.playback_state) {
+                (_, PlaybackState::Playing) => format!("\x1B[35m{}\x1B[0m", status_display), /* Magenta */
+                (_, PlaybackState::Completed) => format!("\x1B[32m{}\x1B[0m", status_display), /* Green */
+                (AnalysisStatus::Detected, _) => format!("\x1B[33m{}\x1B[0m", status_display), /* Yellow */
+                (AnalysisStatus::Analyzing, _) => format!("\x1B[36m{}\x1B[0m", status_display), /* Cyan */
+                (AnalysisStatus::Rejected, _) => format!("\x1B[2;31m{}\x1B[0m", status_display), /* Faint red */
+                (AnalysisStatus::Signal, _) => format!("\x1B[34m{}\x1B[0m", status_display), /* Blue */
+                (AnalysisStatus::Error, _) => format!("\x1B[31m{}\x1B[0m", status_display),  // Red
+            };
+
+            // Include audio quality for signal or rejected signals
+            let display_line = if let Some(audio_quality) = &signal.audio_quality {
+                if signal.status == AnalysisStatus::Rejected
+                    || signal.status == AnalysisStatus::Signal
+                {
+                    let colored_quality_text = match audio_quality {
+                        crate::audio::quality::AudioQuality::Good => "\x1B[1;32mGood\x1B[0m", /* Bold green */
+                        crate::audio::quality::AudioQuality::Moderate => "\x1B[32mModerate\x1B[0m", /* Green without bold */
+                        crate::audio::quality::AudioQuality::Poor => {
+                            "\x1B[38;2;255;165;0mPoor\x1B[0m"
+                        } /* Yellow orange */
+                        crate::audio::quality::AudioQuality::NoAudio => {
+                            "\x1B[38;2;255;165;0mNo audio\x1B[0m"
+                        } /* Yellow orange */
+                        crate::audio::quality::AudioQuality::Static => {
+                            "\x1B[38;2;255;165;0mStatic\x1B[0m"
+                        } /* Yellow orange */
+                        crate::audio::quality::AudioQuality::Unknown => "Unknown", /* No special
+                                                                                    * color */
+                    };
                     format!(
-                        "\x1B[44m{}\x1B[100m{}\x1B[0m",
-                        "█".repeat(filled),
-                        "░".repeat(empty)
+                        "{} {:.1} MHz [{}] {}% • {}",
+                        progress_bar,
+                        freq_mhz,
+                        colored_status,
+                        progress_percent,
+                        colored_quality_text
                     )
-                };
-
-                // Color status based on type
-                let colored_status = match candidate.status {
-                    CandidateStatus::Detected => format!("\x1B[33m{}\x1B[0m", status), // Yellow
-                    CandidateStatus::Analyzing => format!("\x1B[36m{}\x1B[0m", status), // Cyan
-                    CandidateStatus::Rejected => format!("\x1B[2;31m{}\x1B[0m", status), // Faint red (dim red)
-                    CandidateStatus::Signal => format!("\x1B[34m{}\x1B[0m", status),     // Blue
-                    CandidateStatus::Playing => format!("\x1B[35m{}\x1B[0m", status),    // Magenta
-                    CandidateStatus::Completed => format!("\x1B[32m{}\x1B[0m", status),  // Green
-                };
-
-                // Include audio quality for completed or rejected candidates
-                let display_line = if let Some(audio_quality) = &candidate.audio_quality {
-                    if candidate.status == CandidateStatus::Completed
-                        || candidate.status == CandidateStatus::Rejected
-                    {
-                        let colored_quality_text = match audio_quality {
-                            crate::audio::quality::AudioQuality::Good => "\x1B[1;32mGood\x1B[0m", // Bold green
-                            crate::audio::quality::AudioQuality::Moderate => {
-                                "\x1B[32mModerate\x1B[0m"
-                            } // Green without bold
-                            crate::audio::quality::AudioQuality::Poor => {
-                                "\x1B[38;2;255;165;0mPoor\x1B[0m"
-                            } // Yellow orange
-                            crate::audio::quality::AudioQuality::NoAudio => {
-                                "\x1B[38;2;255;165;0mNo Audio\x1B[0m"
-                            } // Yellow orange
-                            crate::audio::quality::AudioQuality::Static => {
-                                "\x1B[38;2;255;165;0mStatic\x1B[0m"
-                            } // Yellow orange
-                            crate::audio::quality::AudioQuality::Unknown => "Unknown", // No special color
-                        };
-                        format!(
-                            "{} {:.1} MHz [{}] {}% • {}",
-                            progress_bar,
-                            freq_mhz,
-                            colored_status,
-                            progress_percent,
-                            colored_quality_text
-                        )
-                    } else {
-                        format!(
-                            "{} {:.1} MHz [{}] {}%",
-                            progress_bar, freq_mhz, colored_status, progress_percent
-                        )
-                    }
                 } else {
                     format!(
                         "{} {:.1} MHz [{}] {}%",
                         progress_bar, freq_mhz, colored_status, progress_percent
                     )
-                };
+                }
+            } else {
+                format!(
+                    "{} {:.1} MHz [{}] {}%",
+                    progress_bar, freq_mhz, colored_status, progress_percent
+                )
+            };
 
-                Self::tty_println(&display_line);
-            }
-            Self::tty_println(""); // Empty line between windows
+            Self::tty_println(&display_line);
         }
+
         Self::tty_println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     }
 
@@ -156,77 +183,77 @@ impl ConsoleRenderer {
 
         Self::tty_println("\n━━━ Progress Update ━━━");
 
-        // Display windows in order (only windows that should be shown)
-        for (&window_id, window) in &model.windows {
-            if !window.should_display() {
-                continue;
+        let rows = model.build_signal_rows();
+
+        let mut current_window_id: Option<usize> = None;
+
+        for signal in &rows {
+            if Some(signal.window_id) != current_window_id {
+                if current_window_id.is_some() {
+                    Self::tty_println(""); // Empty line between windows
+                }
+                Self::tty_println(&format!("{:03}", signal.window_id));
+                current_window_id = Some(signal.window_id);
             }
-            Self::tty_println(&format!("Window {}", window_id));
-            let is_current_window = window_id == model.current_window;
-            let displayable_candidates =
-                window.displayable_candidates(is_current_window, model.selection_mode());
-            for candidate in displayable_candidates {
-                let freq_mhz = candidate.frequency_hz / 1e6;
-                let progress_percent = (candidate.completion * 100.0) as u8;
-                let status = candidate.status.to_string();
+            let freq_mhz = signal.frequency_hz / 1e6;
+            let progress_percent = (signal.completion * 100.0) as u8;
+            let status = signal.status.to_string();
 
-                let progress_bar = if candidate.completion >= 1.0 {
-                    "████████████████████████".to_string()
-                } else {
-                    let filled = (candidate.completion * 24.0) as usize;
-                    let empty = 24 - filled;
-                    format!("{}{}", "█".repeat(filled), "░".repeat(empty))
-                };
+            let progress_bar = if signal.completion >= 1.0 {
+                "████████████████████████".to_string()
+            } else {
+                let filled = (signal.completion * 24.0) as usize;
+                let empty = 24 - filled;
+                format!("{}{}", "█".repeat(filled), "░".repeat(empty))
+            };
 
-                // Include audio quality for completed or rejected candidates
-                let display_line = if let Some(audio_quality) = &candidate.audio_quality {
-                    if candidate.status == CandidateStatus::Completed
-                        || candidate.status == CandidateStatus::Rejected
-                    {
-                        let colored_quality_text = match audio_quality {
-                            crate::audio::quality::AudioQuality::Good => "\x1B[1;32mGood\x1B[0m", // Bold green
-                            crate::audio::quality::AudioQuality::Moderate => {
-                                "\x1B[32mModerate\x1B[0m"
-                            } // Green without bold
-                            crate::audio::quality::AudioQuality::Poor => {
-                                "\x1B[38;2;255;165;0mPoor\x1B[0m"
-                            } // Yellow orange
-                            crate::audio::quality::AudioQuality::NoAudio => {
-                                "\x1B[38;2;255;165;0mNo Audio\x1B[0m"
-                            } // Yellow orange
-                            crate::audio::quality::AudioQuality::Static => {
-                                "\x1B[38;2;255;165;0mStatic\x1B[0m"
-                            } // Yellow orange
-                            crate::audio::quality::AudioQuality::Unknown => "Unknown", // No special color
-                        };
-                        format!(
-                            "{} {:.1} MHz [{}] {}% • {}",
-                            progress_bar, freq_mhz, status, progress_percent, colored_quality_text
-                        )
-                    } else {
-                        format!(
-                            "{} {:.1} MHz [{}] {}%",
-                            progress_bar, freq_mhz, status, progress_percent
-                        )
-                    }
+            // Include audio quality for signal or rejected signals
+            let display_line = if let Some(audio_quality) = &signal.audio_quality {
+                if signal.status == AnalysisStatus::Rejected
+                    || signal.status == AnalysisStatus::Signal
+                {
+                    let colored_quality_text = match audio_quality {
+                        crate::audio::quality::AudioQuality::Good => "\x1B[1;32mGood\x1B[0m", /* Bold green */
+                        crate::audio::quality::AudioQuality::Moderate => "\x1B[32mModerate\x1B[0m", /* Green without bold */
+                        crate::audio::quality::AudioQuality::Poor => {
+                            "\x1B[38;2;255;165;0mPoor\x1B[0m"
+                        } /* Yellow orange */
+                        crate::audio::quality::AudioQuality::NoAudio => {
+                            "\x1B[38;2;255;165;0mNo audio\x1B[0m"
+                        } /* Yellow orange */
+                        crate::audio::quality::AudioQuality::Static => {
+                            "\x1B[38;2;255;165;0mStatic\x1B[0m"
+                        } /* Yellow orange */
+                        crate::audio::quality::AudioQuality::Unknown => "Unknown", /* No special
+                                                                                    * color */
+                    };
+                    format!(
+                        "{} {:.1} MHz [{}] {}% • {}",
+                        progress_bar, freq_mhz, status, progress_percent, colored_quality_text
+                    )
                 } else {
                     format!(
                         "{} {:.1} MHz [{}] {}%",
                         progress_bar, freq_mhz, status, progress_percent
                     )
-                };
+                }
+            } else {
+                format!(
+                    "{} {:.1} MHz [{}] {}%",
+                    progress_bar, freq_mhz, status, progress_percent
+                )
+            };
 
-                Self::tty_println(&display_line);
-            }
-            Self::tty_println(""); // Empty line between windows
+            Self::tty_println(&display_line);
         }
+
         Self::tty_println("━━━━━━━━━━━━━━━━━━━━━━━");
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::ui::tui::model::CandidateStatus;
+    use crate::ui::tui::model::AnalysisStatus;
 
     #[test]
     fn test_console_fallback_formats_unchanged() {
@@ -272,23 +299,21 @@ mod tests {
     #[test]
     fn test_console_ansi_colors_unchanged() {
         let ansi_colors = vec![
-            (CandidateStatus::Detected, "\x1B[33m"),   // Yellow
-            (CandidateStatus::Analyzing, "\x1B[36m"),  // Cyan
-            (CandidateStatus::Rejected, "\x1B[2;31m"), // Faint red (dim red)
-            (CandidateStatus::Signal, "\x1B[34m"),     // Blue
-            (CandidateStatus::Playing, "\x1B[35m"),    // Magenta
-            (CandidateStatus::Completed, "\x1B[32m"),  // Green
+            (AnalysisStatus::Detected, "\x1B[33m"),   // Yellow
+            (AnalysisStatus::Analyzing, "\x1B[36m"),  // Cyan
+            (AnalysisStatus::Rejected, "\x1B[2;31m"), // Faint red (dim red)
+            (AnalysisStatus::Signal, "\x1B[34m"),     // Blue
+            (AnalysisStatus::Error, "\x1B[31m"),      // Red
         ];
 
         for (status, expected_code) in ansi_colors {
             let status_str = status.to_string();
             let colored_status = match status {
-                CandidateStatus::Detected => format!("\x1B[33m{}\x1B[0m", status_str),
-                CandidateStatus::Analyzing => format!("\x1B[36m{}\x1B[0m", status_str),
-                CandidateStatus::Rejected => format!("\x1B[2;31m{}\x1B[0m", status_str),
-                CandidateStatus::Signal => format!("\x1B[34m{}\x1B[0m", status_str),
-                CandidateStatus::Playing => format!("\x1B[35m{}\x1B[0m", status_str),
-                CandidateStatus::Completed => format!("\x1B[32m{}\x1B[0m", status_str),
+                AnalysisStatus::Detected => format!("\x1B[33m{}\x1B[0m", status_str),
+                AnalysisStatus::Analyzing => format!("\x1B[36m{}\x1B[0m", status_str),
+                AnalysisStatus::Rejected => format!("\x1B[2;31m{}\x1B[0m", status_str),
+                AnalysisStatus::Signal => format!("\x1B[34m{}\x1B[0m", status_str),
+                AnalysisStatus::Error => format!("\x1B[31m{}\x1B[0m", status_str),
             };
 
             assert!(colored_status.starts_with(expected_code));
@@ -296,7 +321,7 @@ mod tests {
         }
 
         let window_id = 1;
-        let window_header = format!("\x1B[1;37mWindow {}\x1B[0m", window_id);
-        assert_eq!(window_header, "\x1B[1;37mWindow 1\x1B[0m");
+        let window_header = format!("\x1B[1;37m{:03}\x1B[0m", window_id);
+        assert_eq!(window_header, "\x1B[1;37m001\x1B[0m");
     }
 }

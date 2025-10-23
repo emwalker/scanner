@@ -44,7 +44,8 @@ impl FmFilterConfig {
         let channel_bandwidth = (usable_bandwidth * 0.95) as f32; // 95% of usable bandwidth
         let transition_width = (usable_bandwidth * 0.4) as f32; // Very wide transition for minimal taps
 
-        // Higher decimation for detection since we don't need high sample rates for squelch analysis
+        // Higher decimation for detection since we don't need high sample rates for squelch
+        // analysis
         let decimation = match sample_rate {
             sr if sr <= 1_000_000.0 => 8, // 1 MHz → ~125 kHz (increased decimation)
             sr if sr <= 2_000_000.0 => 15, // 2 MHz → 133 kHz (increased decimation)

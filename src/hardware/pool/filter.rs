@@ -1,9 +1,10 @@
 //! Pool filtering and tuning mode controls
 
-use crate::hardware;
-use crate::hardware::pool::types::TunerId;
 use std::collections::HashSet;
+
 use tracing::debug;
+
+use crate::{hardware, hardware::pool::types::TunerId};
 
 /// Controls which tuners are available for allocation
 ///
@@ -16,6 +17,8 @@ pub struct PoolFilter {
     backend: Option<hardware::types::Backend>,
     driver: Option<String>,
     mode: Option<TuningMode>,
+    device_mode: Option<String>,
+    channel: Option<usize>,
     specific_tuners: Option<HashSet<TunerId>>,
 }
 
@@ -33,8 +36,10 @@ impl PoolFilter {
     ///
     /// # Examples
     /// ```
-    /// use scanner::hardware::pool::{PoolFilter, TuningMode};
-    /// use scanner::hardware::types::Backend;
+    /// use scanner::hardware::{
+    ///     pool::{PoolFilter, TuningMode},
+    ///     types::Backend,
+    /// };
     ///
     /// // Allow only sdrplay devices in single-tuner mode
     /// let filter = PoolFilter::new()
@@ -49,6 +54,8 @@ impl PoolFilter {
             backend: None,
             driver: None,
             mode: None,
+            device_mode: None,
+            channel: None,
             specific_tuners: None,
         }
     }
@@ -71,6 +78,18 @@ impl PoolFilter {
         self
     }
 
+    /// Constrain to specific device mode (e.g., "ST", "DT", "MA" for RSPduo)
+    pub fn with_device_mode(mut self, device_mode: impl Into<String>) -> Self {
+        self.device_mode = Some(device_mode.into());
+        self
+    }
+
+    /// Constrain to specific channel index (e.g., 0 for first tuner, 1 for second tuner)
+    pub fn with_channel(mut self, channel: usize) -> Self {
+        self.channel = Some(channel);
+        self
+    }
+
     /// Constrain to specific tuner IDs (most restrictive)
     pub fn with_tuners(mut self, tuners: Vec<TunerId>) -> Self {
         self.specific_tuners = Some(tuners.into_iter().collect());
@@ -88,6 +107,7 @@ impl PoolFilter {
         tuner_id: &TunerId,
         backend: &hardware::types::Backend,
         allocated_count: usize,
+        mode: &str,
     ) -> bool {
         // Check specific tuners first (most restrictive)
         if let Some(allowed) = &self.specific_tuners {
@@ -128,6 +148,32 @@ impl PoolFilter {
                         return false;
                     }
                 }
+            }
+
+            // Check channel index (only if specific tuners not set)
+            if let Some(allowed_channel) = self.channel
+                && tuner_id.channel_index != allowed_channel
+            {
+                debug!(
+                    tuner_id = ?tuner_id,
+                    channel = tuner_id.channel_index,
+                    allowed_channel = allowed_channel,
+                    "Filter rejected: channel mismatch"
+                );
+                return false;
+            }
+
+            // Check device mode (only if specific tuners not set)
+            if let Some(allowed_mode) = &self.device_mode
+                && mode != allowed_mode
+            {
+                debug!(
+                    tuner_id = ?tuner_id,
+                    mode = mode,
+                    allowed_mode = allowed_mode,
+                    "Filter rejected: device mode mismatch"
+                );
+                return false;
             }
         }
 

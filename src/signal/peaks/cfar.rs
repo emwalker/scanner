@@ -75,9 +75,11 @@ pub fn extract_peaks_with_cfar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::quality::AudioAnalyzer;
-    use crate::core::types::ScanningConfig;
-    use crate::testing::signal_generation::{PeakTestSignalGenerator, TestSignal};
+    use crate::{
+        audio::quality::AudioAnalyzer,
+        core::types::ScanningConfig,
+        testing::signal_generation::{PeakTestSignalGenerator, TestSignal},
+    };
 
     /// Test that CFAR threshold adapts correctly to noise level changes
     #[test]
@@ -277,7 +279,8 @@ mod tests {
 
         assert!(
             cfar_vs_baseline_clean <= fixed_threshold_degradation,
-            "CFAR should show less performance degradation due to interference than fixed threshold"
+            "CFAR should show less performance degradation due to interference than fixed \
+             threshold"
         );
     }
 

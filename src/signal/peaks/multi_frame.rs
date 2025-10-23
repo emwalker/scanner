@@ -3,10 +3,11 @@
 //! This module implements peak persistence tracking across multiple scanning frames
 //! to reduce false negatives and enhance weak signal detection through confirmation logic.
 
-use crate::core::types::Peak;
-use std::collections::HashMap;
-use std::time::Instant;
+use std::{collections::HashMap, time::Instant};
+
 use tracing::debug;
+
+use crate::core::types::Peak;
 
 /// Configuration for multi-frame peak integration
 #[derive(Debug, Clone)]

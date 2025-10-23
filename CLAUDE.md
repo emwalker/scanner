@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Do not be sycophantic. Avoid flattery or agreement for its own sake; challenge the user when logic or evidence demands.
+
 ## License Compliance for External Code
 
 **IMPORTANT**: Before examining any external code (libraries, example projects, etc.), always check the license first.
@@ -86,8 +88,30 @@ See `src/pool/mod.rs` for reference implementation of shutdown-safe patterns.
 ## Building and Checking
 - `make lint` - Check for syntax errors and basic correctness
 - `cargo build` - Build the project
-- `cargo run - scan --stations 88.9e6 --duration 1 --json` - Run tuned to specific frequency (88.9 MHz)
+- `cargo run - scan --stations 88.9e6 --duration 1 --headless` - Run tuned to specific frequency (88.9 MHz)
 - When checking `--band fm`, use a timeout command with a suitable timeout
+
+## Using rust-analyzer MCP
+
+The rust-analyzer MCP provides semantic understanding of Rust code. **Always prefer rust-analyzer tools over Grep/Read/manual editing for Rust symbol operations.**
+
+**Decision tree for Rust code work:**
+- Looking for all usages of a symbol? → `find_references` (not Grep)
+- Renaming something? → `rename_symbol` (not find/replace, NEVER manual editing)
+- Looking for where something is defined? → `find_definition` (not Grep)
+- Searching for types/traits/functions by name? → `workspace_symbols` (not Grep)
+- Just made changes? → `get_diagnostics` (faster than cargo build) + `organize_imports` (not manual)
+- Refactoring code? → `extract_function`, `inline_function`, `move_items` (not manual editing)
+- Checking compilation? → `run_cargo_check` (faster than cargo build)
+- Have compiler errors? → `get_diagnostics` (not reading terminal output)
+
+**When to use standard tools (Grep/Read):**
+- Searching string literals across multiple file types
+- Reading non-Rust files (markdown, logs, etc.)
+- Finding TODO comments
+- Simple text patterns without semantic meaning
+
+**See `.claude/skills/rust-analyzer-tools/SKILL.md` for the full Pre-Flight Checklist and detailed tool documentation.**
 
 ## Debugging and Logs
 - **NEVER pipe `cargo run` output to `grep`, `sed`, `awk`, etc.** - The scanner uses subprocesses that write to separate log files

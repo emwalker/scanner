@@ -1,6 +1,9 @@
+use std::{
+    fs::File,
+    io::{BufReader, Read},
+};
+
 use crate::core::types::Result;
-use std::fs::File;
-use std::io::{BufReader, Read};
 
 /// File-based audio source for testing squelch functionality
 pub struct AudioFileSource {

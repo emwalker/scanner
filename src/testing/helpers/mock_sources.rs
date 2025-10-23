@@ -1,8 +1,10 @@
+use std::f32::consts::PI;
+
+use rustradio::Complex;
+use tracing::debug;
+
 use super::trait_def::SampleSource;
 use crate::core::types::Result;
-use rustradio::Complex;
-use std::f32::consts::PI;
-use tracing::debug;
 
 /// Mock sample source for testing that generates a simple sine wave
 pub struct MockSampleSource {

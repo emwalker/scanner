@@ -1,7 +1,9 @@
 //! Pause signal for immediate cancellation of background operations
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// Shared pause signal for immediate cancellation of background operations
 #[derive(Debug, Clone)]

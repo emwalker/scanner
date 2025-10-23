@@ -1,7 +1,8 @@
 //! Dune theme implementations - authentic cinematic desert survival aesthetic
 
-use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 use ratatui::style::Color;
+
+use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 
 /// Dune dark theme - muted desert survival with holographic light sheets
 pub struct DuneDarkTheme;
@@ -112,6 +113,14 @@ impl ColorScheme for DuneDarkTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(180, 170, 140) // Sandy quality
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(139, 90, 43)
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(230, 220, 200)
     }
 }
 
@@ -295,6 +304,14 @@ impl ColorScheme for DuneLightTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(180, 80, 40) // Deep orange
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(120, 80, 40)
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(255, 250, 240)
     }
 }
 

@@ -3,6 +3,11 @@
 //! Uses proptest-state-machine to generate random sequences of tuner state transitions
 //! and verify invariants hold across all possible event sequences.
 
+use std::collections::HashMap;
+
+use proptest::prelude::*;
+use proptest_state_machine::{ReferenceStateMachine, StateMachineTest};
+
 use super::helpers::create_test_pool_status;
 use crate::{
     hardware::{DeviceId, DeviceInfo, pool::TunerId},
@@ -11,9 +16,6 @@ use crate::{
         tui::model::{Model, TunerState},
     },
 };
-use proptest::prelude::*;
-use proptest_state_machine::{ReferenceStateMachine, StateMachineTest};
-use std::collections::HashMap;
 
 /// Reference state tracking expected tuner states
 #[derive(Clone, Debug)]
@@ -182,8 +184,8 @@ impl ReferenceStateMachine for TunerStateReference {
 struct TunerStateMachineTest;
 
 impl StateMachineTest for TunerStateMachineTest {
-    type SystemUnderTest = Model;
     type Reference = TunerStateReference;
+    type SystemUnderTest = Model;
 
     fn init_test(ref_state: &RefState) -> Self::SystemUnderTest {
         let mut model = Model::default();
@@ -199,6 +201,7 @@ impl StateMachineTest for TunerStateMachineTest {
                         id: crate::hardware::pool::TunerId::new(device_id.clone(), 0),
                         label: format!("Test Device {}", id),
                         mode: String::new(),
+                        antenna: None,
                     }],
                 };
                 model.add_device(device_info);
@@ -237,6 +240,7 @@ impl StateMachineTest for TunerStateMachineTest {
                         id: crate::hardware::pool::TunerId::new(device_id.clone(), 0),
                         label: format!("Test Device {}", id),
                         mode: String::new(),
+                        antenna: None,
                     }],
                 };
                 state.add_device(device_info);
@@ -298,7 +302,8 @@ impl StateMachineTest for TunerStateMachineTest {
                 assert_eq!(
                     display_state.status_label,
                     expected_label,
-                    "Tuner {} should have label '{}' but has '{}'. Reference: {:?}, Model state: {:?}",
+                    "Tuner {} should have label '{}' but has '{}'. Reference: {:?}, Model state: \
+                     {:?}",
                     id,
                     expected_label,
                     display_state.status_label,

@@ -44,9 +44,11 @@ pub fn extract_peaks_from_magnitudes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::quality::AudioAnalyzer;
-    use crate::core::types::ScanningConfig;
-    use crate::testing::signal_generation::{PeakTestSignalGenerator, TestSignal};
+    use crate::{
+        audio::quality::AudioAnalyzer,
+        core::types::ScanningConfig,
+        testing::signal_generation::{PeakTestSignalGenerator, TestSignal},
+    };
 
     /// Test basic peak extraction functionality
     #[test]

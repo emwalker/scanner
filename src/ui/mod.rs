@@ -1,8 +1,11 @@
 //! User interface components and event types
 
 pub mod display;
+pub mod format;
 pub mod tracking;
 pub mod tui;
+
+pub use format::{frequency_hz_label, frequency_hz_tabular};
 
 /// Events that can be sent to the TUI for display
 #[derive(Debug, Clone)]

@@ -1,14 +1,15 @@
 //! Header rendering for the TUI interface
 
-use crate::ui::tui::{
-    model::Model,
-    themes::{SharedText, Theme},
-};
 use ratatui::{
     Frame,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
+};
+
+use crate::ui::tui::{
+    model::Model,
+    themes::{SharedText, Theme},
 };
 
 /// Render the application header
@@ -17,23 +18,23 @@ pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, 
     let subtitle_text = theme.subtitle();
 
     // Calculate statistics
-    let total_candidates = model
+    let total_signals = model
         .windows
         .values()
-        .map(|w| w.candidates.len())
+        .map(|w| w.signals.len())
         .sum::<usize>();
 
     let stations_found = model
         .windows
         .values()
-        .flat_map(|w| &w.candidates)
+        .flat_map(|w| &w.signals)
         .filter(|c| {
-            matches!(
-                c.status,
-                crate::ui::tui::model::CandidateStatus::Signal
-                    | crate::ui::tui::model::CandidateStatus::Playing
-                    | crate::ui::tui::model::CandidateStatus::Completed
-            )
+            matches!(c.status, crate::ui::tui::model::AnalysisStatus::Signal)
+                || matches!(
+                    c.playback_state,
+                    crate::ui::tui::model::PlaybackState::Playing
+                        | crate::ui::tui::model::PlaybackState::Completed
+                )
         })
         .count();
 
@@ -63,8 +64,8 @@ pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, 
     // Create stats text with colored stations count
     let stats_text = format!(
         "{}: {} | {}: {}",
-        SharedText::candidates_label(),
-        total_candidates,
+        SharedText::signals_label(),
+        total_signals,
         SharedText::stations_label(),
         stations_found
     );
@@ -82,8 +83,8 @@ pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, 
             format!("{}{}", title_text, " ".repeat(title_padding)),
             Style::default().add_modifier(Modifier::BOLD),
         ),
-        Span::raw(format!("{}: ", SharedText::candidates_label())),
-        Span::raw(total_candidates.to_string()),
+        Span::raw(format!("{}: ", SharedText::signals_label())),
+        Span::raw(total_signals.to_string()),
         Span::raw(format!(" | {}: ", SharedText::stations_label())),
         Span::styled(
             stations_found.to_string(),
@@ -113,19 +114,16 @@ mod tests {
     #[test]
     fn test_header_format_unchanged() {
         let title_text = "Radio Scanner";
-        let subtitle_text = "Monitoring broadcast spectrum • FM • 88–108 MHz";
+        let subtitle_text = "";
 
         assert_eq!(title_text, "Radio Scanner");
-        assert_eq!(
-            subtitle_text,
-            "Monitoring broadcast spectrum • FM • 88–108 MHz"
-        );
+        assert_eq!(subtitle_text, "");
 
-        let total_candidates = 5;
+        let total_signals = 5;
         let stations_found = 2;
         let stats_text = format!(
             "Candidates: {} | Signals: {}",
-            total_candidates, stations_found
+            total_signals, stations_found
         );
         assert_eq!(stats_text, "Candidates: 5 | Signals: 2");
 

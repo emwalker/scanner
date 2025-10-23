@@ -1,5 +1,6 @@
-use crate::signal;
 use std::time::SystemTime;
+
+use crate::signal;
 
 #[derive(Debug, Clone)]
 pub struct Peak {
@@ -29,7 +30,8 @@ pub struct Signal {
     pub detected_at: std::time::SystemTime,
     /// Duration of analysis period that led to detection
     pub analysis_duration_ms: u32,
-    /// Center frequency used by SDR during detection (needed for audio processing offset calculation)
+    /// Center frequency used by SDR during detection (needed for audio processing offset
+    /// calculation)
     pub detection_center_freq: f64,
     /// Audio quality assessment
     pub audio_quality: crate::audio::quality::AudioQuality,
@@ -68,18 +70,17 @@ impl Signal {
 impl Candidate {
     pub fn frequency_hz(&self) -> f64 {
         match self {
-            Candidate::Fm(candidate) => candidate.frequency_hz,
+            Candidate::Fm(signal) => signal.frequency_hz,
         }
     }
 
     pub fn analyze(
         &self,
         sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
-        signal_tx: std::sync::mpsc::SyncSender<Signal>,
         context: &crate::pipeline::AnalysisContext,
     ) -> crate::core::errors::Result<()> {
         match self {
-            Candidate::Fm(candidate) => candidate.analyze(sdr_rx, signal_tx, context),
+            Candidate::Fm(signal) => signal.analyze(sdr_rx, context),
         }
     }
 }

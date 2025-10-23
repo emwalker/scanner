@@ -1,7 +1,9 @@
-use super::model::{Classifier, SerializableModel};
-use smartcore::ensemble::random_forest_classifier::RandomForestClassifier;
-use smartcore::linalg::basic::matrix::DenseMatrix;
+use smartcore::{
+    ensemble::random_forest_classifier::RandomForestClassifier, linalg::basic::matrix::DenseMatrix,
+};
 use tracing::debug;
+
+use super::model::{Classifier, SerializableModel};
 
 impl Classifier {
     /// Train the ML model on training data

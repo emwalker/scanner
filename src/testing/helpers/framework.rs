@@ -1,6 +1,7 @@
+use tracing::debug;
+
 use super::fixtures::load_iq_fixture;
 use crate::core::types::{Format, ScanningConfig};
-use tracing::debug;
 
 /// Test helper for isolating peak detection with known I/Q signals
 pub fn test_peak_detection_isolated(
@@ -99,7 +100,7 @@ pub struct FrequencyTranslationResult {
 #[derive(Debug)]
 pub struct PipelineTestResult {
     pub peak_result: TestPeakResult,
-    pub candidates: Vec<crate::core::types::Candidate>,
+    pub signals: Vec<crate::core::types::Candidate>,
     pub translation_results: Vec<FrequencyTranslationResult>,
     pub target_found: bool,
     pub scanning_mode: ScanningMode,

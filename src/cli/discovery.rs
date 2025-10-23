@@ -1,35 +1,77 @@
-use crate::core::types::Result;
-use crate::discovery::{self, DiscoveryMode};
-use crate::hardware::pool::Pool;
-use crate::shutdown::ShutdownCoordinator;
-use crate::ui::TuiEvent;
-use std::sync::Arc;
-use std::sync::mpsc;
-use std::thread;
+use std::{
+    sync::{Arc, mpsc},
+    thread,
+};
+
 use tracing::{debug, info};
+
+use crate::{
+    core::types::Result,
+    discovery::{self, DiscoveryMode},
+    hardware::pool::Pool,
+    shutdown::ShutdownCoordinator,
+    ui::TuiEvent,
+};
+
+pub enum OutputMode {
+    Tui(mpsc::Sender<TuiEvent>),
+    Headless,
+}
+
+impl OutputMode {
+    pub fn send_tuner_added(&self, device_info: &crate::hardware::DeviceInfo) {
+        match self {
+            OutputMode::Tui(sender) => {
+                let event = TuiEvent::TunerAdded(device_info.clone());
+                let _ = sender.send(event);
+            }
+            OutputMode::Headless => {}
+        }
+    }
+
+    pub fn send_tuner_removed(&self, device_id: &crate::hardware::DeviceId) {
+        match self {
+            OutputMode::Tui(sender) => {
+                let event = TuiEvent::TunerRemoved(device_id.clone());
+                let _ = sender.send(event);
+            }
+            OutputMode::Headless => {}
+        }
+    }
+}
 
 pub struct DiscoverySetup {
     pub discovery_handle: thread::JoinHandle<()>,
     pub discovery_forwarder: thread::JoinHandle<()>,
+    pub discovery_rx: mpsc::Receiver<crate::discovery::Event>,
 }
 
 /// Start discovery service that monitors for device add/remove events
 pub fn start_discovery_service(
-    tui_event_sender: mpsc::Sender<TuiEvent>,
+    output_mode: OutputMode,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
     scheduler: Arc<crate::task::TaskScheduler>,
     pool: Arc<Pool>,
+    tuner_entities: Arc<std::sync::Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>>,
+    device_entities: Arc<std::sync::Mutex<crate::ecs::EntityWorld<crate::ecs::DeviceEntity>>>,
 ) -> Result<DiscoverySetup> {
     let backends = vec![
         crate::hardware::types::Backend::Usb,
         crate::hardware::types::Backend::Soapy,
     ];
-    let mut discovery_service = discovery::create(backends, DiscoveryMode::Auto, scheduler, pool);
+    let mut discovery_service = discovery::create(
+        backends,
+        DiscoveryMode::Auto,
+        scheduler,
+        pool,
+        tuner_entities,
+        device_entities,
+    );
 
     let (discovery_sender, discovery_receiver) = mpsc::channel();
+    let (discovery_tx, discovery_rx) = mpsc::channel();
 
     let discovery_forwarder = {
-        let tui_sender = tui_event_sender.clone();
         let shutdown = shutdown_coordinator.clone();
 
         thread::spawn(move || {
@@ -46,18 +88,18 @@ pub fn start_discovery_service(
 
                         match &event {
                             discovery::Event::Added(device_info) => {
-                                debug!(device_id = ?device_info.id, "Forwarding TunerAdded event to TUI");
-                                let tui_event = TuiEvent::TunerAdded(device_info.clone());
-                                if tui_sender.send(tui_event).is_err() {
-                                    debug!("Failed to send TunerAdded to TUI (channel closed)");
+                                debug!(device_id = ?device_info.id, "Forwarding TunerAdded event");
+                                output_mode.send_tuner_added(device_info);
+                                if discovery_tx.send(event.clone()).is_err() {
+                                    debug!("Failed to send discovery event (channel closed)");
                                     return;
                                 }
                             }
                             discovery::Event::Removed(device_id) => {
-                                debug!(device_id = ?device_id, "Forwarding TunerRemoved event to TUI");
-                                let tui_event = TuiEvent::TunerRemoved(device_id.clone());
-                                if tui_sender.send(tui_event).is_err() {
-                                    debug!("Failed to send TunerRemoved to TUI (channel closed)");
+                                debug!(device_id = ?device_id, "Forwarding TunerRemoved event");
+                                output_mode.send_tuner_removed(device_id);
+                                if discovery_tx.send(event.clone()).is_err() {
+                                    debug!("Failed to send discovery event (channel closed)");
                                     return;
                                 }
                             }
@@ -80,5 +122,6 @@ pub fn start_discovery_service(
     Ok(DiscoverySetup {
         discovery_handle,
         discovery_forwarder,
+        discovery_rx,
     })
 }

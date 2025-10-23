@@ -28,19 +28,15 @@ pub mod sample_source;
 // Re-export commonly used types
 pub use backend::Backend;
 pub use device::DeviceTrait;
-pub use streaming::{ActualConfig, StreamingDevice};
-pub use types::{Capabilities, DeviceError, DeviceErrorKind, DeviceId, DeviceInfo};
-
 // Re-export backend implementations
 pub use mock::Mock;
-pub use soapy::Soapy;
-pub use usb::Usb;
-
-#[cfg(feature = "seify")]
-pub use seify::Seify;
-
 #[cfg(feature = "rtlsdr")]
 pub use rtlsdr::RtlSdr;
-
 // Re-export legacy sample source types
 pub use sample_source::SampleSource;
+#[cfg(feature = "seify")]
+pub use seify::Seify;
+pub use soapy::Soapy;
+pub use streaming::{ActualConfig, StreamingDevice};
+pub use types::{Capabilities, DeviceError, DeviceErrorKind, DeviceId, DeviceInfo};
+pub use usb::Usb;

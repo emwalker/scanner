@@ -1,21 +1,37 @@
 //! Tests for task module
 
-use crate::core::types::ScanningConfig;
-use crate::hardware::pool::{Pool, PoolFilter};
-use crate::hardware::types::Backend;
-use crate::shutdown::ShutdownCoordinator;
-use crate::task::{AudioTask, DeviceEnumerationTask, Task, TaskScheduler};
-use std::sync::Arc;
-use std::sync::mpsc;
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex, mpsc},
+    time::Duration,
+};
+
 use tokio_util::sync::CancellationToken;
+
+use crate::{
+    hardware::{
+        pool::{Pool, PoolFilter},
+        types::Backend,
+    },
+    shutdown::ShutdownCoordinator,
+    task::{DeviceEnumerationTask, Task, TaskScheduler},
+};
 
 #[test]
 fn test_device_enumeration_task_mock() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
+    let pool = Arc::new(Pool::new_unfiltered());
     let (discovery_tx, discovery_rx) = mpsc::channel();
 
-    let mut task = DeviceEnumerationTask::new(Backend::Mock, pool.clone(), discovery_tx);
+    let tuner_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+    let device_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+
+    let mut task = DeviceEnumerationTask::with_shared_entities(
+        Backend::Mock,
+        pool.clone(),
+        discovery_tx,
+        None,
+        tuner_entities.clone(),
+        device_entities.clone(),
+    );
 
     let cancel = CancellationToken::new();
     let result = task.run(cancel);
@@ -31,14 +47,31 @@ fn test_device_enumeration_task_mock() {
     }
 
     assert!(device_count >= 2, "Should discover at least 2 mock devices");
+
+    // Verify entities were created
+    let devices = device_entities.lock().unwrap();
+    assert!(
+        devices.len() >= 2,
+        "Should have created at least 2 device entities"
+    );
 }
 
 #[test]
 fn test_device_enumeration_task_shutdown() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
+    let pool = Arc::new(Pool::new_unfiltered());
     let (discovery_tx, _discovery_rx) = mpsc::channel();
 
-    let mut task = DeviceEnumerationTask::new(Backend::Mock, pool.clone(), discovery_tx);
+    let tuner_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+    let device_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+
+    let mut task = DeviceEnumerationTask::with_shared_entities(
+        Backend::Mock,
+        pool.clone(),
+        discovery_tx,
+        None,
+        tuner_entities,
+        device_entities,
+    );
 
     let cancel = CancellationToken::new();
     cancel.cancel();
@@ -49,11 +82,20 @@ fn test_device_enumeration_task_shutdown() {
 
 #[test]
 fn test_device_enumeration_task_unknown_backend() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
+    let pool = Arc::new(Pool::new_unfiltered());
     let (discovery_tx, _discovery_rx) = mpsc::channel();
 
-    let mut task =
-        DeviceEnumerationTask::new(Backend::Unknown("test".to_string()), pool, discovery_tx);
+    let tuner_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+    let device_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+
+    let mut task = DeviceEnumerationTask::with_shared_entities(
+        Backend::Unknown("test".to_string()),
+        pool,
+        discovery_tx,
+        None,
+        tuner_entities,
+        device_entities,
+    );
 
     let cancel = CancellationToken::new();
     let result = task.run(cancel);
@@ -63,10 +105,20 @@ fn test_device_enumeration_task_unknown_backend() {
 
 #[test]
 fn test_device_enumeration_task_usb_backend() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
+    let pool = Arc::new(Pool::new_unfiltered());
     let (discovery_tx, _discovery_rx) = mpsc::channel();
 
-    let mut task = DeviceEnumerationTask::new(Backend::Usb, pool, discovery_tx);
+    let tuner_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+    let device_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+
+    let mut task = DeviceEnumerationTask::with_shared_entities(
+        Backend::Usb,
+        pool,
+        discovery_tx,
+        None,
+        tuner_entities,
+        device_entities,
+    );
 
     let cancel = CancellationToken::new();
     let result = task.run(cancel);
@@ -76,12 +128,22 @@ fn test_device_enumeration_task_usb_backend() {
 
 #[test]
 fn test_scheduler_device_enumeration() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
+    let pool = Arc::new(Pool::new_unfiltered());
     let shutdown = Arc::new(ShutdownCoordinator::new());
     let scheduler = TaskScheduler::new(pool.clone(), shutdown);
 
+    let tuner_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+    let device_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+
     let (tx, rx) = mpsc::channel();
-    let task = DeviceEnumerationTask::new(Backend::Mock, pool, tx);
+    let task = DeviceEnumerationTask::with_shared_entities(
+        Backend::Mock,
+        pool,
+        tx,
+        None,
+        tuner_entities.clone(),
+        device_entities.clone(),
+    );
 
     let handle = scheduler.submit(Task::DeviceEnumeration(task)).unwrap();
 
@@ -101,15 +163,25 @@ fn test_scheduler_device_enumeration() {
 
 #[test]
 fn test_scheduler_status() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
+    let pool = Arc::new(Pool::new_unfiltered());
     let shutdown = Arc::new(ShutdownCoordinator::new());
     let scheduler = TaskScheduler::new(pool.clone(), shutdown);
 
     let initial_count = scheduler.status().len();
     assert_eq!(initial_count, 0, "Should start with no running tasks");
 
+    let tuner_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+    let device_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+
     let (tx, _rx) = mpsc::channel();
-    let task = DeviceEnumerationTask::new(Backend::Mock, pool, tx);
+    let task = DeviceEnumerationTask::with_shared_entities(
+        Backend::Mock,
+        pool,
+        tx,
+        None,
+        tuner_entities,
+        device_entities,
+    );
 
     let _handle = scheduler.submit(Task::DeviceEnumeration(task)).unwrap();
 
@@ -127,12 +199,22 @@ fn test_scheduler_status() {
 
 #[test]
 fn test_scheduler_stop_task() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
+    let pool = Arc::new(Pool::new_unfiltered());
     let shutdown = Arc::new(ShutdownCoordinator::new());
     let scheduler = TaskScheduler::new(pool.clone(), shutdown);
 
+    let tuner_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+    let device_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+
     let (tx, _rx) = mpsc::channel();
-    let task = DeviceEnumerationTask::new(Backend::Mock, pool, tx);
+    let task = DeviceEnumerationTask::with_shared_entities(
+        Backend::Mock,
+        pool,
+        tx,
+        None,
+        tuner_entities,
+        device_entities,
+    );
 
     let handle = scheduler.submit(Task::DeviceEnumeration(task)).unwrap();
 
@@ -166,16 +248,33 @@ fn test_scheduler_stop_task() {
 
 #[test]
 fn test_scheduler_shutdown() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
+    let pool = Arc::new(Pool::new_unfiltered());
     let shutdown = Arc::new(ShutdownCoordinator::new());
     let scheduler = TaskScheduler::new(pool.clone(), shutdown);
 
+    let tuner_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+    let device_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+
     let (tx1, _rx1) = mpsc::channel();
-    let task1 = DeviceEnumerationTask::new(Backend::Mock, pool.clone(), tx1);
+    let task1 = DeviceEnumerationTask::with_shared_entities(
+        Backend::Mock,
+        pool.clone(),
+        tx1,
+        None,
+        tuner_entities.clone(),
+        device_entities.clone(),
+    );
     scheduler.submit(Task::DeviceEnumeration(task1)).unwrap();
 
     let (tx2, _rx2) = mpsc::channel();
-    let task2 = DeviceEnumerationTask::new(Backend::Mock, pool, tx2);
+    let task2 = DeviceEnumerationTask::with_shared_entities(
+        Backend::Mock,
+        pool,
+        tx2,
+        None,
+        tuner_entities,
+        device_entities,
+    );
     scheduler.submit(Task::DeviceEnumeration(task2)).unwrap();
 
     std::thread::sleep(Duration::from_millis(10));
@@ -192,31 +291,23 @@ fn test_scheduler_shutdown() {
 }
 
 #[test]
-fn test_audio_task_basic() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
-    let shutdown = Arc::new(ShutdownCoordinator::new());
-    let config = ScanningConfig::default();
-
-    let mut task = AudioTask::new(88_900_000.0, config, pool.clone(), shutdown.clone());
-
-    let cancel = CancellationToken::new();
-    cancel.cancel();
-
-    let result = task.run(cancel);
-    assert!(
-        result.is_ok(),
-        "AudioTask should handle immediate cancellation gracefully"
-    );
-}
-
-#[test]
 fn test_shutdown_timeout() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
+    let pool = Arc::new(Pool::new_unfiltered());
     let shutdown = Arc::new(ShutdownCoordinator::new());
     let scheduler = TaskScheduler::new(pool.clone(), shutdown.clone());
 
+    let tuner_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+    let device_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+
     let (tx, _rx) = mpsc::channel();
-    let task = DeviceEnumerationTask::new(Backend::Mock, pool.clone(), tx);
+    let task = DeviceEnumerationTask::with_shared_entities(
+        Backend::Mock,
+        pool.clone(),
+        tx,
+        None,
+        tuner_entities,
+        device_entities,
+    );
     let _handle = scheduler.submit(Task::DeviceEnumeration(task)).unwrap();
 
     std::thread::sleep(Duration::from_millis(50));
@@ -231,13 +322,22 @@ fn test_shutdown_timeout() {
 
 #[test]
 fn test_error_reporting() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
+    let pool = Arc::new(Pool::new_unfiltered());
     let shutdown = Arc::new(ShutdownCoordinator::new());
     let scheduler = TaskScheduler::new(pool.clone(), shutdown);
 
+    let tuner_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+    let device_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+
     let (discovery_tx, _discovery_rx) = mpsc::channel();
-    let task =
-        DeviceEnumerationTask::new(Backend::Unknown("invalid".to_string()), pool, discovery_tx);
+    let task = DeviceEnumerationTask::with_shared_entities(
+        Backend::Unknown("invalid".to_string()),
+        pool,
+        discovery_tx,
+        None,
+        tuner_entities,
+        device_entities,
+    );
     let handle = scheduler.submit(Task::DeviceEnumeration(task)).unwrap();
 
     std::thread::sleep(Duration::from_millis(200));
@@ -308,7 +408,15 @@ fn test_task_continuation_pattern() {
 
 #[test]
 fn test_integration_pool_scheduler_discovery() {
-    let pool = Arc::new(Pool::new(PoolFilter::new(), None));
+    let tuner_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+    let device_entities = Arc::new(Mutex::new(crate::ecs::EntityWorld::new()));
+
+    let pool = Arc::new(Pool::with_entity_worlds(
+        PoolFilter::new(),
+        None,
+        tuner_entities.clone(),
+        device_entities.clone(),
+    ));
     let shutdown = Arc::new(ShutdownCoordinator::new());
     let scheduler = TaskScheduler::new(pool.clone(), shutdown.clone());
 
@@ -319,7 +427,14 @@ fn test_integration_pool_scheduler_discovery() {
     );
 
     let (discovery_tx, discovery_rx) = mpsc::channel();
-    let enum_task = DeviceEnumerationTask::new(Backend::Mock, pool.clone(), discovery_tx);
+    let enum_task = DeviceEnumerationTask::with_shared_entities(
+        Backend::Mock,
+        pool.clone(),
+        discovery_tx,
+        None,
+        tuner_entities,
+        device_entities,
+    );
 
     let _enum_handle = scheduler
         .submit(Task::DeviceEnumeration(enum_task))

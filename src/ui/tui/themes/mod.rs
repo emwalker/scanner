@@ -14,11 +14,11 @@ impl SharedText {
     }
 
     pub fn subtitle() -> &'static str {
-        "FM • 88–108 MHz"
+        ""
     }
 
-    pub fn candidates_label() -> &'static str {
-        "Candidates"
+    pub fn signals_label() -> &'static str {
+        "Signals"
     }
 
     pub fn stations_label() -> &'static str {
@@ -38,15 +38,19 @@ impl SharedText {
     }
 
     pub fn status_signal() -> &'static str {
-        "Queued"
+        "Signal"
     }
 
     pub fn status_playing() -> &'static str {
-        "Listening"
+        "Playing"
     }
 
     pub fn status_completed() -> &'static str {
         "Signal"
+    }
+
+    pub fn status_error() -> &'static str {
+        "Error"
     }
 
     pub fn quality_good() -> &'static str {
@@ -62,7 +66,7 @@ impl SharedText {
     }
 
     pub fn quality_no_audio() -> &'static str {
-        "no-audio"
+        "no audio"
     }
 
     pub fn quality_static() -> &'static str {
@@ -105,14 +109,21 @@ pub trait ColorScheme {
     fn instructions_dim(&self) -> Color;
     fn window_header(&self) -> Color;
 
-    // Selection highlight color
+    // Selection highlight colors
     fn selection_highlight(&self) -> Color;
+    fn selection_bg(&self) -> Color {
+        Color::Rgb(40, 40, 60)
+    }
 
     // Active playing/tuning highlight colors
     fn active_highlight_bg(&self) -> Color;
     fn active_highlight_fg(&self) -> Color;
     fn active_highlight_status(&self) -> Color;
     fn active_highlight_quality(&self) -> Color;
+
+    // Selected row colors (for focused table navigation)
+    fn selected_row_bg(&self) -> Color;
+    fn selected_row_fg(&self) -> Color;
 }
 
 /// Symbol set trait defining all Unicode symbols used in the UI
@@ -171,6 +182,9 @@ pub trait TextStyle {
     }
     fn status_completed_text(&self) -> &'static str {
         SharedText::status_completed()
+    }
+    fn status_error_text(&self) -> &'static str {
+        SharedText::status_error()
     }
 
     // Audio quality text
@@ -389,5 +403,21 @@ impl ThemeName {
             ThemeName::CaladanDark => ThemeName::CaladanLight,
             ThemeName::CaladanLight => ThemeName::BasicDark,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::tui::themes::minimal::DarkTheme;
+
+    #[test]
+    fn test_theme_has_selection_colors() {
+        let theme = DarkTheme;
+        let bg = theme.selected_row_bg();
+        let fg = theme.selected_row_fg();
+
+        assert_ne!(bg, Color::Reset);
+        assert_ne!(fg, Color::Reset);
     }
 }

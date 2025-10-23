@@ -1,10 +1,13 @@
 //! Statistical validation tools for measuring variance reduction
 
-use super::benchmark_datasets::{BenchmarkTestResult, test_peak_detection_against_benchmarks};
-use super::signal_generation::create_fm_band_test_scenario;
-use super::variance_measurement::{VarianceMeasurement, VarianceStats};
-use crate::core::types::Result;
 use tracing::debug;
+
+use super::{
+    benchmark_datasets::{BenchmarkTestResult, test_peak_detection_against_benchmarks},
+    signal_generation::create_fm_band_test_scenario,
+    variance_measurement::{VarianceMeasurement, VarianceStats},
+};
+use crate::core::types::Result;
 
 /// Run statistical validation to compare baseline vs improved peak detection
 pub fn validate_variance_reduction(

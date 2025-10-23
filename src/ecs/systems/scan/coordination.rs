@@ -1,8 +1,14 @@
 //! Scan coordination system
 
-use crate::core::types::Result;
-use crate::ecs::system::{System, SystemContext};
 use tracing::debug;
+
+use crate::{
+    core::types::Result,
+    ecs::{
+        entity::Entity,
+        system::{System, SystemContext},
+    },
+};
 
 /// System that coordinates scan operations
 ///
@@ -31,22 +37,23 @@ impl System for CoordinationSystem {
     }
 
     fn run(&mut self, context: &mut SystemContext) -> Result<()> {
-        let scan_entities = match &context.scan_entities {
+        let task_entities = match &context.task_entities {
             Some(entities) => entities.clone(),
             None => {
-                debug!("No scan entities in context");
+                debug!("No task entities in context");
                 return Ok(());
             }
         };
 
-        let mut entities = scan_entities.write().unwrap();
+        let mut tasks = task_entities.write().unwrap();
 
-        for scan in entities.iter_mut() {
-            scan.should_pause = false;
-            scan.should_complete = false;
+        for task in tasks.iter_mut() {
+            if !task.is_scan() {
+                continue;
+            }
 
-            if scan.is_completed() {
-                scan.should_complete = true;
+            if task.state.is_completed() {
+                debug!(task_id = %task.id(), "Task marked for completion");
             }
         }
 
@@ -56,23 +63,17 @@ impl System for CoordinationSystem {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ecs::components::scan::{ScanConfigComponent, ScanType};
-    use crate::ecs::{EntityWorld, ScanEntity};
     use std::sync::{Arc, RwLock};
 
-    fn create_test_scan(freq_min: f64, freq_max: f64) -> ScanEntity {
-        let config = ScanConfigComponent::new(
-            ScanType::Band,
-            freq_min,
-            freq_max,
-            1.0e6,
-            2.0e6,
-            40.0,
-            0.5,
+    use super::*;
+    use crate::ecs::{EntityWorld, ScanTaskData, TaskEntity, TaskId, components::task::TaskResult};
+
+    fn create_test_task(task_num: usize) -> TaskEntity {
+        TaskEntity::new_scan_with_defaults(
+            TaskId::new(format!("scan_{}", task_num)),
+            ScanTaskData::Placeholder,
             10,
-        );
-        ScanEntity::new(config)
+        )
     }
 
     #[test]
@@ -85,15 +86,24 @@ mod tests {
     }
 
     #[test]
-    fn test_coordination_system_with_active_scans() {
+    fn test_coordination_system_with_no_task_entities() {
+        let mut system = CoordinationSystem::new();
+        let mut context = SystemContext::new();
+
+        let result = system.run(&mut context);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_coordination_system_with_active_tasks() {
         let mut system = CoordinationSystem::new();
 
         let mut world = EntityWorld::new();
-        world.insert(create_test_scan(88.0e6, 108.0e6));
-        world.insert(create_test_scan(144.0e6, 148.0e6));
+        world.insert(create_test_task(1));
+        world.insert(create_test_task(2));
 
         let context_entities = Arc::new(RwLock::new(world));
-        let mut context = SystemContext::new().with_scan_entities(context_entities.clone());
+        let mut context = SystemContext::new().with_task_entities(context_entities.clone());
 
         let result = system.run(&mut context);
         assert!(result.is_ok());
@@ -103,31 +113,33 @@ mod tests {
     }
 
     #[test]
-    fn test_coordination_system_counts_scan_states() {
+    fn test_coordination_system_with_task_states() {
         let mut system = CoordinationSystem::new();
 
         let mut world = EntityWorld::new();
-        let mut scan1 = create_test_scan(88.0e6, 108.0e6);
-        let mut scan2 = create_test_scan(144.0e6, 148.0e6);
-        let mut scan3 = create_test_scan(420.0e6, 450.0e6);
+        let mut task1 = create_test_task(1);
+        let mut task2 = create_test_task(2);
+        let mut task3 = create_test_task(3);
 
-        scan1.progress.pause(5);
-        scan2.progress.mark_complete();
-        scan3.progress.start_window(0);
+        task1.state.start().unwrap();
+        task2.state.complete(TaskResult::Success).unwrap();
+        task3.state.start().unwrap();
 
-        world.insert(scan1);
-        world.insert(scan2);
-        world.insert(scan3);
+        world.insert(task1);
+        world.insert(task2);
+        world.insert(task3);
 
         let context_entities = Arc::new(RwLock::new(world));
-        let mut context = SystemContext::new().with_scan_entities(context_entities.clone());
+        let mut context = SystemContext::new().with_task_entities(context_entities.clone());
 
         let result = system.run(&mut context);
         assert!(result.is_ok());
 
         let entities = context_entities.read().unwrap();
-        assert_eq!(entities.iter().filter(|e| e.is_paused()).count(), 1);
-        assert_eq!(entities.iter().filter(|e| e.is_completed()).count(), 1);
-        assert_eq!(entities.iter().filter(|e| e.is_scanning()).count(), 1);
+        assert_eq!(entities.iter().filter(|e| e.is_scan()).count(), 3);
+        assert_eq!(
+            entities.iter().filter(|e| e.state.is_completed()).count(),
+            1
+        );
     }
 }

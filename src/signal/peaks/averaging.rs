@@ -114,9 +114,11 @@ pub fn apply_exponential_smoothing(
 
 #[cfg(test)]
 mod tests {
-    use crate::audio::quality::AudioAnalyzer;
-    use crate::core::types::ScanningConfig;
-    use crate::testing::signal_generation::{PeakTestSignalGenerator, TestSignal};
+    use crate::{
+        audio::quality::AudioAnalyzer,
+        core::types::ScanningConfig,
+        testing::signal_generation::{PeakTestSignalGenerator, TestSignal},
+    };
 
     /// Test that exponential smoothing reduces noise across consecutive FFT frames
     #[test]
@@ -246,7 +248,8 @@ mod tests {
 
         // Both methods should detect the same target signal
         println!(
-            "Exponential smoothing test executed successfully - target signal detected by both methods"
+            "Exponential smoothing test executed successfully - target signal detected by both \
+             methods"
         );
     }
 

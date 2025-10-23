@@ -1,11 +1,23 @@
-//! Tuner pool with RAII-based resource management
+//! Tuner allocation and filtering
 //!
-//! This module provides dynamic tuner inventory management for SDR devices.
+//! The Pool is an **allocation mechanism only**. Its sole responsibility is tracking
+//! which tuners are available vs allocated, and deciding which tuner to allocate based
+//! on requirements and filters.
+//!
+//! **Device discovery is the authoritative source for tuners.** The discovery service
+//! enumerates hardware and populates tuner entities via DeviceEnumerationTask. The pool
+//! references these entities (via Arc<Mutex<EntityWorld>>) but does not create or own them.
+//!
+//! **Ownership model:**
+//! - Scan level (src/cli/scan.rs) creates and owns EntityWorlds
+//! - Discovery (src/task/enumeration.rs) writes to EntityWorlds (adds/removes devices)
+//! - Pool (src/hardware/pool) reads from EntityWorlds (queries for allocation)
+//!
 //! Key features:
-//! - RAII guarantees: tuners automatically return to pool when dropped
-//! - Multi-tuner devices: exposes all tuners (e.g., RSPduo has 2 tuners)
+//! - RAII guarantees: tuners automatically return when dropped
 //! - Capability matching: allocates best tuner for each task
-//! - Controlled rollout: PoolFilter enables safe transition to multi-tuner operation
+//! - PoolFilter: constrains which tuners can be allocated (driver, mode, channel)
+//! - Subprocess management: spawns/reuses worker processes per device
 
 mod filter;
 mod lifecycle;
@@ -14,6 +26,7 @@ mod segment;
 mod state;
 mod subprocess;
 mod subprocess_source;
+pub mod test_utils;
 mod tuner;
 mod types;
 
@@ -30,14 +43,14 @@ pub trait SegmentTrait: Send {
 
 pub use filter::{PoolFilter, TuningMode};
 pub use provider::TunerProvider;
-pub use segment::Segment;
+pub use segment::{Segment, detect_peaks_with_temp_graph};
 pub use state::Pool;
 pub use subprocess::SubprocessHandle;
 pub use subprocess_source::SubprocessSource;
 pub use tuner::Tuner;
 pub use types::{
-    AddDeviceResult, AllocationInfo, DeviceEntry, PoolStatus, TaskPriority, TaskRequirements,
-    TunerActivity, TunerEntry, TunerId, TunerState, TunerStatus,
+    AllocationInfo, DeviceEntry, PoolStatus, TaskPriority, TaskRequirements, TunerActivity,
+    TunerEntry, TunerId, TunerState, TunerStatus,
 };
 
 #[cfg(test)]

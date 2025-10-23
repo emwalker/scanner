@@ -2,6 +2,7 @@ use std::{
     collections::HashSet,
     sync::{LazyLock, RwLock},
 };
+
 use tracing::debug;
 
 /// Global set of processed frequencies (rounded to nearest kHz) to avoid duplicate analysis

@@ -1,11 +1,16 @@
 //! Core pool state structures
 
-use crate::ecs::Entity;
-use crate::hardware::pool::filter::PoolFilter;
-use crate::hardware::pool::types::PoolStatus;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+
 use tracing::{debug, info};
+
+use crate::{
+    ecs::Entity,
+    hardware::pool::{filter::PoolFilter, types::PoolStatus},
+};
 
 /// Callback invoked when tuner state changes
 pub type StateChangeCallback = Arc<Mutex<Vec<Box<dyn Fn(PoolStatus) + Send + Sync>>>>;
@@ -33,13 +38,17 @@ pub enum PoolState {
 
 /// Internal state (needed for Arc<Mutex<>> pattern)
 ///
-/// NOTE: This used to hold devices HashMap, but that has been migrated to hardware_entities.
+/// NOTE: This used to hold devices HashMap, but that has been migrated to device_entities.
 /// We keep this struct for now in case we need to add back shared state in the future.
 pub struct PoolInner {
-    // Currently empty - devices migrated to hardware_entities
+    // Currently empty - devices migrated to device_entities
 }
 
-/// Dynamic inventory of available tuners
+/// Tuner allocation manager
+///
+/// Queries tuner entities for allocation decisions. Does not own or create entities -
+/// references externally-owned EntityWorlds provided at construction. Discovery service
+/// is responsible for populating entities; Pool is responsible for allocation logic only.
 pub struct Pool {
     /// Current lifecycle state
     pub(crate) state: Mutex<PoolState>,
@@ -62,13 +71,34 @@ pub struct Pool {
     /// ECS tuner entities (authoritative source of tuner state)
     pub(crate) tuner_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>>,
 
-    /// ECS hardware entities (authoritative source of device-level state)
-    pub(crate) hardware_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::HardwareEntity>>>,
+    /// ECS device entities (authoritative source of device-level state)
+    pub(crate) device_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::DeviceEntity>>>,
 }
 
 impl Pool {
     /// Create new pool with filter and optional parent log file
+    ///
+    /// Deprecated: Use `Pool::with_entity_worlds()` to provide externally-owned entities
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use Pool::with_entity_worlds() to provide externally-owned entities"
+    )]
     pub fn new(filter: PoolFilter, parent_log_file: Option<String>) -> Self {
+        Self::with_entity_worlds(
+            filter,
+            parent_log_file,
+            Arc::new(Mutex::new(crate::ecs::EntityWorld::new())),
+            Arc::new(Mutex::new(crate::ecs::EntityWorld::new())),
+        )
+    }
+
+    /// Create pool with shared EntityWorlds (external ownership)
+    pub fn with_entity_worlds(
+        filter: PoolFilter,
+        parent_log_file: Option<String>,
+        tuner_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>>,
+        device_entities: Arc<Mutex<crate::ecs::EntityWorld<crate::ecs::DeviceEntity>>>,
+    ) -> Self {
         let inner = PoolInner {};
 
         Self {
@@ -78,14 +108,19 @@ impl Pool {
             shutdown_mode: Arc::new(AtomicBool::new(false)),
             on_state_change: Arc::new(Mutex::new(Vec::new())),
             parent_log_file,
-            tuner_entities: Arc::new(Mutex::new(crate::ecs::EntityWorld::new())),
-            hardware_entities: Arc::new(Mutex::new(crate::ecs::EntityWorld::new())),
+            tuner_entities,
+            device_entities,
         }
     }
 
     /// Create new pool allowing all tuners (convenience method)
     pub fn new_unfiltered() -> Self {
-        Self::new(PoolFilter::allow_all(), None)
+        Self::with_entity_worlds(
+            PoolFilter::allow_all(),
+            None,
+            Arc::new(Mutex::new(crate::ecs::EntityWorld::new())),
+            Arc::new(Mutex::new(crate::ecs::EntityWorld::new())),
+        )
     }
 
     /// Get parent log file path for worker log derivation
@@ -107,9 +142,9 @@ impl Pool {
         self.shutdown_mode.store(true, Ordering::SeqCst);
         info!("Pool entered shutdown mode");
 
-        // Shutdown subprocesses from hardware_entities
-        if let Ok(mut hardware_entities) = self.hardware_entities.try_lock() {
-            let subprocess_count = hardware_entities
+        // Shutdown subprocesses from device_entities
+        if let Ok(mut device_entities) = self.device_entities.try_lock() {
+            let subprocess_count = device_entities
                 .iter()
                 .filter(|e| e.connection.subprocess.is_some())
                 .count();
@@ -117,11 +152,11 @@ impl Pool {
             if subprocess_count > 0 {
                 debug!(
                     subprocess_count = subprocess_count,
-                    "Shutting down device subprocesses from hardware entities"
+                    "Shutting down device subprocesses from device entities"
                 );
             }
 
-            for entity in hardware_entities.iter_mut() {
+            for entity in device_entities.iter_mut() {
                 let device_id = entity.id().clone();
                 if let Some(subprocess) = &mut entity.connection.subprocess {
                     debug!(device_id = ?device_id, "Shutting down subprocess");
@@ -168,6 +203,17 @@ impl Pool {
             for callback in callbacks.iter() {
                 callback(status.clone());
             }
+        }
+    }
+
+    /// Get antenna name for a tuner
+    pub fn antenna_for_tuner(&self, tuner_id: &crate::hardware::pool::TunerId) -> Option<String> {
+        if let Ok(entities) = self.tuner_entities.try_lock() {
+            entities
+                .get(tuner_id)
+                .and_then(|entity| entity.device.antenna.clone())
+        } else {
+            None
         }
     }
 }

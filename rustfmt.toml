@@ -1,0 +1,45 @@
+# Rustfmt configuration
+# Requires nightly rustfmt: cargo +nightly fmt
+
+# Enable unstable features
+unstable_features = true
+
+# Import organization - moves qualified names to top-level imports
+# Merges imports from the same crate (e.g., use std::{sync::Arc, collections::HashMap})
+imports_granularity = "Crate"
+
+# Group imports: stdlib, external crates, internal crates
+group_imports = "StdExternalCrate"
+
+# Format string literals where possible
+format_strings = true
+
+# Normalize comments to use `//` instead of block comments where possible
+normalize_comments = true
+
+# Normalize doc comments to use `///` instead of `//!` where appropriate
+normalize_doc_attributes = true
+
+# Wrap comments at 100 characters
+comment_width = 100
+wrap_comments = true
+
+# Consistent formatting for function signatures
+# Put function arguments on separate lines when they don't fit
+fn_params_layout = "Tall"
+
+# Format code in doc comments
+format_code_in_doc_comments = true
+
+# Reorder impl items: types, consts, then methods
+reorder_impl_items = true
+
+# Use field initialization shorthand when possible (e.g., `Point { x, y }` instead of `Point { x: x, y: y }`)
+use_field_init_shorthand = true
+
+# Put single-expression statements on a single line
+overflow_delimited_expr = true
+
+# Format macro definitions
+format_macro_matchers = true
+format_macro_bodies = true

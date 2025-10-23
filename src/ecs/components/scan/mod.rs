@@ -18,6 +18,17 @@ impl ScanId {
     pub fn value(&self) -> u64 {
         self.0
     }
+
+    /// Create ScanId from TaskId
+    pub fn from_task_id(task_id: &crate::ecs::TaskId) -> Self {
+        let id_str = &task_id.0;
+        if let Some(scan_num) = id_str.strip_prefix("scan_")
+            && let Ok(num) = scan_num.parse::<u64>()
+        {
+            return Self(num);
+        }
+        Self(0)
+    }
 }
 
 impl Default for ScanId {
@@ -38,24 +49,31 @@ pub enum ScanType {
 mod config;
 mod lifecycle;
 mod pause_request;
+mod pending_request;
 mod progress;
 mod results;
 mod resume_request;
+mod tuner;
 mod window_allocation;
-mod window_task;
+mod window_worker;
 
 pub use config::ScanConfigComponent;
 pub use lifecycle::ScanLifecycleComponent;
 pub use pause_request::PauseRequestComponent;
+pub use pending_request::PendingScanRequest;
 pub use progress::{PreviousPauseState, ScanPauseState, ScanProgressComponent};
 pub use results::ScanResultsComponent;
 pub use resume_request::ResumeRequestComponent;
+pub use tuner::ScanTunerComponent;
 pub use window_allocation::WindowAllocationRequest;
-pub use window_task::{CandidateData, WindowTaskComponent, WindowTaskResult};
+pub use window_worker::{
+    SignalData, WindowWorkerComponent, WindowWorkerOutcome, WindowWorkerResult,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecs::components::WindowId;
 
     #[test]
     fn test_scan_id_generation() {
@@ -83,14 +101,15 @@ mod tests {
     fn test_scan_config_total_windows() {
         let config =
             ScanConfigComponent::new(ScanType::Band, 88.0e6, 98.0e6, 1.0e6, 2.4e6, 40.0, 1.0, 3);
-        assert_eq!(config.total_windows(), 10);
+        // Range 88-98 MHz with 1 MHz steps: 11 windows (88, 89, ..., 98)
+        assert_eq!(config.total_windows(), 11);
     }
 
     #[test]
     fn test_scan_progress_initialization() {
         let progress = ScanProgressComponent::new(10);
         assert_eq!(progress.total_windows, 10);
-        assert_eq!(progress.current_window, 0);
+        assert_eq!(progress.current_window, None);
         assert_eq!(progress.windows_completed, 0);
         assert!(progress.is_pending());
         assert!(!progress.is_scanning());
@@ -101,9 +120,14 @@ mod tests {
     #[test]
     fn test_scan_progress_window_operations() {
         let mut progress = ScanProgressComponent::new(10);
+        let task_id = crate::ecs::TaskId::new("test".to_string());
 
-        progress.start_window(0);
-        assert_eq!(progress.current_window, 0);
+        let window_id = WindowId::new(task_id, 0);
+        progress.start_window(window_id);
+        assert_eq!(
+            progress.current_window.as_ref().map(|w| w.window_index),
+            Some(0)
+        );
         assert!(progress.is_scanning());
 
         progress.complete_window();
@@ -113,13 +137,15 @@ mod tests {
     #[test]
     fn test_scan_progress_pause_resume() {
         let mut progress = ScanProgressComponent::new(10);
+        let task_id = crate::ecs::TaskId::new("test".to_string());
+        let window_id = WindowId::new(task_id, 5);
 
-        progress.pause(5);
+        progress.pause(window_id.clone());
         assert!(progress.is_paused());
         assert!(!progress.is_scanning());
         assert!(matches!(
-            progress.state,
-            ScanPauseState::PausedAtWindow { window_index: 5 }
+            &progress.state,
+            ScanPauseState::PausedAtWindow { window_id: w } if w == &window_id
         ));
 
         progress.resume();
@@ -130,13 +156,15 @@ mod tests {
     #[test]
     fn test_scan_progress_listening() {
         let mut progress = ScanProgressComponent::new(10);
+        let task_id = crate::ecs::TaskId::new("test".to_string());
+        let window_id = WindowId::new(task_id, 3);
 
-        progress.start_listening(3);
+        progress.start_listening(window_id.clone());
         assert!(progress.is_listening());
         assert!(progress.is_paused());
         assert!(!progress.is_scanning());
 
-        progress.stop_listening(3);
+        progress.stop_listening(window_id);
         assert!(!progress.is_listening());
         assert!(progress.is_paused());
     }
@@ -171,26 +199,26 @@ mod tests {
     #[test]
     fn test_scan_results_initialization() {
         let results = ScanResultsComponent::new();
-        assert_eq!(results.candidates_found, 0);
-        assert_eq!(results.candidates_rejected, 0);
+        assert_eq!(results.signals_found, 0);
+        assert_eq!(results.signals_rejected, 0);
         assert_eq!(results.stations_discovered, 0);
-        assert_eq!(results.total_candidates(), 0);
+        assert_eq!(results.total_signals(), 0);
     }
 
     #[test]
-    fn test_scan_results_add_candidate() {
+    fn test_scan_results_add_signal() {
         let mut results = ScanResultsComponent::new();
-        results.add_candidate();
-        assert_eq!(results.candidates_found, 1);
-        assert_eq!(results.total_candidates(), 1);
+        results.add_signal();
+        assert_eq!(results.signals_found, 1);
+        assert_eq!(results.total_signals(), 1);
     }
 
     #[test]
-    fn test_scan_results_reject_candidate() {
+    fn test_scan_results_reject_signal() {
         let mut results = ScanResultsComponent::new();
-        results.reject_candidate();
-        assert_eq!(results.candidates_rejected, 1);
-        assert_eq!(results.total_candidates(), 1);
+        results.reject_signal();
+        assert_eq!(results.signals_rejected, 1);
+        assert_eq!(results.total_signals(), 1);
     }
 
     #[test]
@@ -201,12 +229,12 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_results_total_candidates() {
+    fn test_scan_results_total_signals() {
         let mut results = ScanResultsComponent::new();
-        results.add_candidate();
-        results.add_candidate();
-        results.reject_candidate();
-        assert_eq!(results.total_candidates(), 3);
+        results.add_signal();
+        results.add_signal();
+        results.reject_signal();
+        assert_eq!(results.total_signals(), 3);
     }
 
     #[test]

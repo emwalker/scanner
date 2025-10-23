@@ -4,15 +4,19 @@
 //! sources of complex samples, enabling both real SDR hardware and mock data
 //! for testing.
 
-use crate::core::types::Result;
-use rustradio::Complex;
 #[cfg(test)]
 use std::f32::consts::PI;
-use std::fs::File;
-use std::io::{BufReader, Read};
+use std::{
+    fs::File,
+    io::{BufReader, Read},
+};
+
+use rustradio::Complex;
 use tokio::sync::broadcast::error::TryRecvError;
 #[cfg(test)]
 use tracing::debug;
+
+use crate::core::types::Result;
 
 /// Abstraction for sources of I/Q samples
 pub trait SampleSource {
@@ -155,7 +159,8 @@ impl FileSampleSource {
     pub fn new(file_path: &str, sample_rate: f64, center_frequency: f64) -> Result<Self> {
         let file = File::open(file_path)?;
 
-        // Get file size to estimate number of samples (8 bytes per complex sample: f32 real + f32 imag)
+        // Get file size to estimate number of samples (8 bytes per complex sample: f32 real + f32
+        // imag)
         let file_size = file.metadata()?.len() as usize;
         let samples_remaining = file_size / 8; // 2 f32s per complex sample
 
@@ -232,7 +237,8 @@ impl SampleSource for FileSampleSource {
 }
 
 /// Adapter to make SDR broadcast receiver compatible with SampleSource trait
-/// This allows the unified peak detection code to work with both testing sources and real SDR streams
+/// This allows the unified peak detection code to work with both testing sources and real SDR
+/// streams
 pub struct SdrStreamSource {
     sdr_rx: tokio::sync::broadcast::Receiver<rustradio::Complex>,
     sample_rate: f64,
@@ -263,8 +269,7 @@ impl SampleSource for SdrStreamSource {
         &mut self,
         buffer: &mut [rustradio::Complex],
     ) -> crate::core::types::Result<usize> {
-        use std::thread;
-        use std::time::Duration;
+        use std::{thread, time::Duration};
 
         let mut samples_read = 0;
         for slot in buffer.iter_mut() {

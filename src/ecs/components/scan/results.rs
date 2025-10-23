@@ -3,11 +3,11 @@
 /// Component tracking scan results
 #[derive(Debug, Clone)]
 pub struct ScanResultsComponent {
-    /// Number of signal candidates found
-    pub candidates_found: usize,
+    /// Number of signals found
+    pub signals_found: usize,
 
-    /// Number of candidates rejected
-    pub candidates_rejected: usize,
+    /// Number of signals rejected
+    pub signals_rejected: usize,
 
     /// Number of stations discovered
     pub stations_discovered: usize,
@@ -17,20 +17,20 @@ impl ScanResultsComponent {
     /// Create a new results component
     pub fn new() -> Self {
         Self {
-            candidates_found: 0,
-            candidates_rejected: 0,
+            signals_found: 0,
+            signals_rejected: 0,
             stations_discovered: 0,
         }
     }
 
-    /// Record a candidate found
-    pub fn add_candidate(&mut self) {
-        self.candidates_found += 1;
+    /// Record a signal found
+    pub fn add_signal(&mut self) {
+        self.signals_found += 1;
     }
 
-    /// Record a candidate rejected
-    pub fn reject_candidate(&mut self) {
-        self.candidates_rejected += 1;
+    /// Record a signal rejected
+    pub fn reject_signal(&mut self) {
+        self.signals_rejected += 1;
     }
 
     /// Record a station discovered
@@ -38,9 +38,9 @@ impl ScanResultsComponent {
         self.stations_discovered += 1;
     }
 
-    /// Get total candidates processed
-    pub fn total_candidates(&self) -> usize {
-        self.candidates_found + self.candidates_rejected
+    /// Get total signals processed
+    pub fn total_signals(&self) -> usize {
+        self.signals_found + self.signals_rejected
     }
 }
 

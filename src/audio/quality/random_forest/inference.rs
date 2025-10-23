@@ -1,6 +1,7 @@
-use super::model::Classifier;
 use smartcore::linalg::basic::matrix::DenseMatrix;
 use tracing::debug;
+
+use super::model::Classifier;
 
 impl crate::audio::quality::Classifier for Classifier {
     fn analyze(

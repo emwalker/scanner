@@ -1,7 +1,8 @@
 //! Imperial theme - Refined opulence of 10,000 years of civilization
 
-use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 use ratatui::style::Color;
+
+use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 
 /// Imperial dark theme - understated luxury
 pub struct DarkTheme;
@@ -109,6 +110,14 @@ impl ColorScheme for DarkTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(255, 200, 255) // Bright magenta
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(120, 0, 0)
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(240, 230, 220)
     }
 }
 
@@ -284,6 +293,14 @@ impl ColorScheme for LightTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(255, 200, 100) // Light gold
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(100, 0, 0)
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(255, 255, 255)
     }
 }
 

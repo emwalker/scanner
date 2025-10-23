@@ -9,13 +9,11 @@
 //! - Per-task cancellation
 //! - Device enumeration tasks
 
-mod audio;
 mod enumeration;
 mod scheduler;
 mod types;
 
 // Public exports
-pub use audio::AudioTask;
 pub use enumeration::DeviceEnumerationTask;
 pub use scheduler::TaskScheduler;
 pub use types::{

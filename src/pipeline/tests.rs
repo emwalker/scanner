@@ -1,10 +1,13 @@
+use std::sync::mpsc;
+
+use tokio::sync::broadcast;
+
 use super::*;
 use crate::{
     audio::quality::AudioAnalyzer,
     core::types::{ScanningConfig, Signal, TEST_FREQUENCY_HZ},
+    ecs::{TaskId, WindowId},
 };
-use std::sync::mpsc;
-use tokio::sync::broadcast;
 
 fn create_test_config() -> ScanningConfig {
     let mut config = ScanningConfig::default();
@@ -48,19 +51,21 @@ fn test_weak_peak_exits_early() {
     let config = create_test_config();
     let sdr_rx = create_mock_sdr_stream();
     let center_freq = TEST_FREQUENCY_HZ;
-    let (signal_tx, signal_rx) = mpsc::sync_channel::<Signal>(10);
+    let (signal_tx, signal_rx) = mpsc::channel::<Signal>();
 
-    let candidate_entities = None;
     let context = AnalysisContext {
         config: &config,
         center_freq,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: center_freq,
-            window_id: 1,
-        },
-        candidate_entities: &candidate_entities,
+        window_id: WindowId::new(TaskId::new("test-scan"), 1),
     };
-    let result = process_peak_to_signal(TEST_FREQUENCY_HZ, sdr_rx, signal_tx, &context);
+    let sdr_rx_refining = sdr_rx.resubscribe();
+    let result = process_peak_to_signal(
+        TEST_FREQUENCY_HZ,
+        sdr_rx_refining,
+        sdr_rx,
+        signal_tx,
+        &context,
+    );
 
     assert!(result.is_ok(), "Weak peak processing should succeed");
 
@@ -75,19 +80,21 @@ fn test_strong_peak_produces_signal() {
     let config = create_test_config();
     let sdr_rx = create_mock_strong_sdr_stream();
     let center_freq = TEST_FREQUENCY_HZ;
-    let (signal_tx, _signal_rx) = mpsc::sync_channel::<Signal>(10);
+    let (signal_tx, _signal_rx) = mpsc::channel::<Signal>();
 
-    let candidate_entities = None;
     let context = AnalysisContext {
         config: &config,
         center_freq,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: center_freq,
-            window_id: 1,
-        },
-        candidate_entities: &candidate_entities,
+        window_id: WindowId::new(TaskId::new("test-scan"), 1),
     };
-    let result = process_peak_to_signal(TEST_FREQUENCY_HZ + 100_000.0, sdr_rx, signal_tx, &context);
+    let sdr_rx_refining = sdr_rx.resubscribe();
+    let result = process_peak_to_signal(
+        TEST_FREQUENCY_HZ + 100_000.0,
+        sdr_rx_refining,
+        sdr_rx,
+        signal_tx,
+        &context,
+    );
 
     assert!(result.is_ok(), "Strong peak processing should succeed");
 }
@@ -97,19 +104,21 @@ fn test_pipeline_with_frequency_tracking_disabled() {
     let config = create_test_config();
     let sdr_rx = create_mock_sdr_stream();
     let center_freq = TEST_FREQUENCY_HZ;
-    let (signal_tx, _signal_rx) = mpsc::sync_channel::<Signal>(10);
+    let (signal_tx, _signal_rx) = mpsc::channel::<Signal>();
 
-    let candidate_entities = None;
     let context = AnalysisContext {
         config: &config,
         center_freq,
-        metadata: crate::scanning::window::WindowMetadata {
-            center_frequency_hz: center_freq,
-            window_id: 1,
-        },
-        candidate_entities: &candidate_entities,
+        window_id: WindowId::new(TaskId::new("test-scan"), 1),
     };
-    let result = process_peak_to_signal(TEST_FREQUENCY_HZ + 50_000.0, sdr_rx, signal_tx, &context);
+    let sdr_rx_refining = sdr_rx.resubscribe();
+    let result = process_peak_to_signal(
+        TEST_FREQUENCY_HZ + 50_000.0,
+        sdr_rx_refining,
+        sdr_rx,
+        signal_tx,
+        &context,
+    );
 
     assert!(
         result.is_ok(),

@@ -1,9 +1,10 @@
 //! Common types for SDR backend abstraction
 
-use crate::core::types::Result;
+use std::{fmt, str::FromStr};
+
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::str::FromStr;
+
+use crate::core::types::Result;
 
 /// Tuner information within a device
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -14,6 +15,8 @@ pub struct TunerInfo {
     pub label: String,
     /// Mode identifier (e.g., "ST", "DT", "MA")
     pub mode: String,
+    /// Antenna name (e.g., "Tuner 1 50 ohm", "Tuner 2 50 ohm")
+    pub antenna: Option<String>,
 }
 
 /// Device information returned by enumeration

@@ -1,7 +1,10 @@
+use std::{
+    fs::File,
+    io::{self, Write},
+    path::Path,
+};
+
 use hound::{SampleFormat, WavReader};
-use std::fs::File;
-use std::io::{self, Write};
-use std::path::Path;
 use tracing::debug;
 
 /// Load WAV file and return audio samples as normalized f32 values

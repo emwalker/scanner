@@ -1,48 +1,11 @@
 //! Types for tuner pool management
 
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
+
 use crate::hardware;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
-
-/// Result of attempting to add a device to the pool
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AddDeviceResult {
-    /// Device was successfully added to pool
-    Added {
-        device_id: hardware::DeviceId,
-        tuner_count: usize,
-    },
-    /// Device was rejected by pool filter
-    FilteredOut {
-        device_id: hardware::DeviceId,
-        reason: String,
-    },
-    /// Pool is in shutdown mode
-    ShutdownMode,
-    /// Pool lock could not be acquired
-    PoolBusy,
-}
-
-impl AddDeviceResult {
-    /// Returns true if the result is Added
-    pub fn is_ok(&self) -> bool {
-        matches!(self, AddDeviceResult::Added { .. })
-    }
-
-    /// Returns true if the result is not Added
-    pub fn is_err(&self) -> bool {
-        !self.is_ok()
-    }
-
-    /// Unwrap for tests - panics if not Added
-    #[cfg(test)]
-    pub fn unwrap(self) {
-        match self {
-            AddDeviceResult::Added { .. } => {}
-            other => panic!("Expected Added, got {:?}", other),
-        }
-    }
-}
 
 /// Tuner identifier: composite of device ID + channel index
 ///
@@ -95,6 +58,9 @@ pub struct TunerEntry {
     /// Channel index (0 for first tuner, 1 for second, etc.)
     pub channel_index: usize,
 
+    /// Device mode (e.g., "ST", "DT" for RSPduo)
+    pub mode: String,
+
     /// Tuner-specific capabilities (may differ from device-level)
     pub capabilities: hardware::Capabilities,
 }
@@ -105,6 +71,7 @@ pub struct AllocationInfo {
     pub task_id: Option<String>,
     pub backend: hardware::types::Backend,
     pub model: String,
+    pub mode: String,
     pub activity: TunerActivity,
 }
 

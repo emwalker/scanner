@@ -1,9 +1,11 @@
 //! Device trait for individual SDR devices
 
+use std::any::Any;
+
+use rustradio::Complex;
+
 use super::{Capabilities, DeviceId};
 use crate::core::types::Result;
-use rustradio::Complex;
-use std::any::Any;
 
 /// Individual device abstraction (backend-agnostic)
 ///
@@ -32,10 +34,9 @@ use std::any::Any;
 ///
 /// let mut graph = Graph::new();
 /// let stream = device.add_source_to_graph(
-///     &mut graph,
-///     88.9e6,  // 88.9 MHz
-///     2.4e6,   // 2.4 MHz sample rate
-///     20.0,    // 20 dB gain
+///     &mut graph, 88.9e6, // 88.9 MHz
+///     2.4e6,  // 2.4 MHz sample rate
+///     20.0,   // 20 dB gain
 /// )?;
 /// # Ok::<(), scanner::core::types::ScannerError>(())
 /// ```

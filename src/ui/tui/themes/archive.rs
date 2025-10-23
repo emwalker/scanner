@@ -1,7 +1,8 @@
 //! Archive theme - Imperial diplomatic protocol and administrative record-keeping
 
-use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 use ratatui::style::Color;
+
+use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 
 /// Archive dark theme - bureaucratic documentation terminal
 pub struct ArchiveDarkTheme;
@@ -109,6 +110,14 @@ impl ColorScheme for ArchiveDarkTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(200, 180, 150) // Warm parchment
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(85, 75, 70) // Deep archive ink (secondary)
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(220, 200, 180) // Light parchment
     }
 }
 
@@ -284,6 +293,14 @@ impl ColorScheme for ArchiveLightTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(80, 70, 55) // Darker brown
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(70, 60, 50) // Deep filing gray (secondary)
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(255, 250, 245) // Almost white for contrast
     }
 }
 

@@ -1,9 +1,22 @@
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use rustradio::blocks::NullSink;
-use rustradio::graph::GraphRunner;
-use scanner::hardware::mock::MockDevice;
-use scanner::hardware::pool::{Pool, TaskPriority, TaskRequirements, TunerActivity};
-use std::time::Duration;
+use rustradio::{blocks::NullSink, graph::GraphRunner};
+use scanner::{
+    ecs::{EntityWorld, test_helpers::create_test_device_and_tuners},
+    hardware,
+    hardware::{
+        DeviceTrait,
+        mock::MockDevice,
+        pool::{
+            Pool, PoolFilter, TaskPriority, TaskRequirements, TunerActivity,
+            test_utils::add_test_device_to_pool,
+        },
+    },
+};
 
 fn bench_data_streaming_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("ipc_data_throughput");
@@ -19,7 +32,15 @@ fn bench_data_streaming_throughput(c: &mut Criterion) {
                 b.iter(|| {
                     let pool = Pool::new_unfiltered();
                     let device = Box::new(MockDevice::new("mock", "throughput001", false));
-                    pool.add_device(device, scanner::hardware::types::Backend::Mock);
+                    let device_id = device.id().clone();
+                    let caps = device.capabilities().clone();
+                    add_test_device_to_pool(
+                        &pool,
+                        device_id,
+                        caps,
+                        hardware::types::Backend::Mock,
+                        None,
+                    );
 
                     let requirements = TaskRequirements {
                         frequency_hz: 88.9e6,
@@ -73,7 +94,15 @@ fn bench_sample_rate_handling(c: &mut Criterion) {
                 b.iter(|| {
                     let pool = Pool::new_unfiltered();
                     let device = Box::new(MockDevice::new("mock", "samplerate001", false));
-                    pool.add_device(device, scanner::hardware::types::Backend::Mock);
+                    let device_id = device.id().clone();
+                    let caps = device.capabilities().clone();
+                    add_test_device_to_pool(
+                        &pool,
+                        device_id,
+                        caps,
+                        hardware::types::Backend::Mock,
+                        None,
+                    );
 
                     let requirements = TaskRequirements {
                         frequency_hz: 88.9e6,
@@ -120,16 +149,38 @@ fn bench_concurrent_channels(c: &mut Criterion) {
 
     group.bench_function("two_channels_concurrent", |b| {
         b.iter(|| {
-            let pool = Pool::new_unfiltered();
+            let tuner_entities = Arc::new(Mutex::new(EntityWorld::new()));
+            let device_entities = Arc::new(Mutex::new(EntityWorld::new()));
+
+            let pool = Pool::with_entity_worlds(
+                PoolFilter::allow_all(),
+                None,
+                tuner_entities.clone(),
+                device_entities.clone(),
+            );
 
             let mut caps = scanner::hardware::Capabilities::for_mock("mock", "dual001");
             caps.channels = 2;
 
-            pool.add_device_metadata(
+            let (device, tuners) = create_test_device_and_tuners(
                 caps.device_id.clone(),
                 caps,
                 scanner::hardware::types::Backend::Mock,
+                None,
+                vec![],
             );
+
+            {
+                let mut devices = device_entities.lock().unwrap();
+                devices.insert(device);
+            }
+
+            {
+                let mut tuner_world = tuner_entities.lock().unwrap();
+                for tuner in tuners {
+                    tuner_world.insert(tuner);
+                }
+            }
 
             let requirements = TaskRequirements {
                 frequency_hz: 88.9e6,

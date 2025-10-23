@@ -1,11 +1,16 @@
 //! Tuner allocation system
 
-use crate::core::types::{Result, ScannerError};
-use crate::ecs::Entity;
-use crate::ecs::components::Priority;
-use crate::ecs::system::{System, SystemContext};
-use crate::hardware::pool::TunerId;
 use tracing::debug;
+
+use crate::{
+    core::types::{Result, ScannerError},
+    ecs::{
+        Entity,
+        components::Priority,
+        system::{System, SystemContext},
+    },
+    hardware::pool::TunerId,
+};
 
 /// System that handles tuner allocation based on priorities and constraints
 ///
@@ -61,11 +66,22 @@ impl System for AllocationSystem {
 
     #[allow(clippy::cognitive_complexity)]
     fn run(&mut self, context: &mut SystemContext) -> Result<()> {
+        debug!("AllocationSystem: Starting run");
+
         // First, collect allocation requests from WindowEntity allocation components
         if let Some(ref window_entities) = context.window_entities
             && let Ok(windows) = window_entities.read()
         {
+            debug!(
+                window_count = windows.len(),
+                "AllocationSystem: Checking window entities"
+            );
             for window in windows.iter() {
+                debug!(
+                    window_id = %window.id(),
+                    allocation_state = ?window.allocation,
+                    "AllocationSystem: Examining window"
+                );
                 if let crate::ecs::components::window::WindowAllocationComponent::Requested {
                     requirements,
                     activity,
@@ -95,14 +111,34 @@ impl System for AllocationSystem {
                             filter: None,
                             allocated_count: 0,
                         });
+                    } else {
+                        debug!(
+                            requester_id = %requester_id,
+                            "AllocationSystem: Request already pending"
+                        );
                     }
                 }
             }
+        } else {
+            debug!("AllocationSystem: No window entities available");
         }
 
         if self.pending_requests.is_empty() {
+            debug!("AllocationSystem: No pending requests, exiting early");
             return Ok(());
         }
+
+        debug!(
+            pending_count = self.pending_requests.len(),
+            "AllocationSystem: Processing pending requests"
+        );
+
+        let pool = match &context.pool {
+            Some(pool) => pool,
+            None => {
+                return Err(ScannerError::Custom("No pool in context".to_string()));
+            }
+        };
 
         let tuner_entities = match &context.tuner_entities {
             Some(entities) => entities.clone(),
@@ -116,25 +152,48 @@ impl System for AllocationSystem {
         let mut successfully_allocated = Vec::new();
 
         for request in &self.pending_requests {
+            debug!(
+                requester_id = %request.requester_id,
+                frequency_hz = request.frequency_hz,
+                for_audio = request.for_audio,
+                "AllocationSystem: Processing allocation request"
+            );
             let tuner_id = {
+                // Get filtered available tuners from Pool
+                let pool_status = pool.status();
+                let available_tuner_ids: Vec<TunerId> = pool_status
+                    .tuners
+                    .iter()
+                    .filter(|t| t.state == crate::hardware::pool::TunerState::Available)
+                    .map(|t| t.id.clone())
+                    .collect();
+
+                debug!(
+                    available_count = available_tuner_ids.len(),
+                    "AllocationSystem: Found available tuners from pool"
+                );
+
                 let entities = match tuner_entities.try_lock() {
                     Ok(entities) => entities,
-                    Err(_) => return Ok(()),
+                    Err(_) => {
+                        debug!("AllocationSystem: Failed to lock tuner entities");
+                        return Ok(());
+                    }
                 };
                 let mut best_tuner: Option<TunerId> = None;
 
-                for entity in entities.iter() {
-                    if !entity.is_available() {
-                        continue;
-                    }
+                // Only consider tuners that passed the Pool filter
+                for tuner_id in &available_tuner_ids {
+                    let entity = match entities.get(tuner_id) {
+                        Some(e) => e,
+                        None => {
+                            debug!(tuner_id = ?tuner_id, "AllocationSystem: Tuner not found in entities");
+                            continue;
+                        }
+                    };
 
-                    if let Some(ref filter) = request.filter
-                        && !filter.is_allowed(
-                            entity.id(),
-                            &entity.device.backend,
-                            request.allocated_count,
-                        )
-                    {
+                    if !entity.is_available() {
+                        debug!(tuner_id = ?tuner_id, "AllocationSystem: Tuner not available in entity");
                         continue;
                     }
 
@@ -145,6 +204,7 @@ impl System for AllocationSystem {
                     };
 
                     if !allows_activity {
+                        debug!(tuner_id = ?tuner_id, for_audio = request.for_audio, "AllocationSystem: Activity not allowed by priorities");
                         continue;
                     }
 
@@ -152,6 +212,7 @@ impl System for AllocationSystem {
                         .constraints
                         .allows_frequency_and_rate(request.frequency_hz, request.sample_rate_hz)
                     {
+                        debug!(tuner_id = ?tuner_id, "AllocationSystem: Frequency/rate not allowed by constraints");
                         continue;
                     }
 
@@ -160,6 +221,7 @@ impl System for AllocationSystem {
                         .capabilities
                         .supports_frequency(request.frequency_hz)
                     {
+                        debug!(tuner_id = ?tuner_id, "AllocationSystem: Frequency not supported by capabilities");
                         continue;
                     }
 
@@ -168,11 +230,17 @@ impl System for AllocationSystem {
                         .capabilities
                         .supports_sample_rate(request.sample_rate_hz)
                     {
+                        debug!(tuner_id = ?tuner_id, "AllocationSystem: Sample rate not supported by capabilities");
                         continue;
                     }
 
-                    best_tuner = Some(entity.id().clone());
+                    debug!(tuner_id = ?tuner_id, "AllocationSystem: Found suitable tuner");
+                    best_tuner = Some(tuner_id.clone());
                     break;
+                }
+
+                if best_tuner.is_none() {
+                    debug!("AllocationSystem: No suitable tuner found for request");
                 }
 
                 best_tuner
@@ -239,11 +307,16 @@ impl System for AllocationSystem {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ecs::EntityWorld;
-    use crate::ecs::TunerEntity;
-    use crate::hardware::{Capabilities, DeviceId};
     use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::{
+        ecs::{DeviceEntity, EntityWorld, TunerEntity},
+        hardware::{
+            Capabilities, DeviceId,
+            pool::{Pool, PoolFilter},
+        },
+    };
 
     fn create_test_entity(device_serial: &str, channel: usize) -> TunerEntity {
         let device_id = DeviceId::from_serial("sdrplay", device_serial);
@@ -254,7 +327,20 @@ mod tests {
             channel,
             capabilities,
             crate::hardware::types::Backend::Soapy,
+            format!("Test Tuner {}", channel),
+            None,
+            "FM".to_string(),
         )
+    }
+
+    fn create_test_pool(tuner_entities: Arc<Mutex<EntityWorld<TunerEntity>>>) -> Arc<Pool> {
+        let device_entities = Arc::new(Mutex::new(EntityWorld::<DeviceEntity>::new()));
+        Arc::new(Pool::with_entity_worlds(
+            PoolFilter::allow_all(),
+            None,
+            tuner_entities,
+            device_entities,
+        ))
     }
 
     #[test]
@@ -265,7 +351,10 @@ mod tests {
         world.insert(create_test_entity("12345", 0));
 
         let context_entities = Arc::new(Mutex::new(world));
-        let mut context = SystemContext::new().with_tuner_entities(context_entities);
+        let pool = create_test_pool(context_entities.clone());
+        let mut context = SystemContext::new()
+            .with_tuner_entities(context_entities)
+            .with_pool(pool);
 
         let result = system.run(&mut context);
         assert!(result.is_ok());
@@ -280,7 +369,10 @@ mod tests {
         world.insert(create_test_entity("12345", 1));
 
         let context_entities = Arc::new(Mutex::new(world));
-        let mut context = SystemContext::new().with_tuner_entities(context_entities.clone());
+        let pool = create_test_pool(context_entities.clone());
+        let mut context = SystemContext::new()
+            .with_tuner_entities(context_entities.clone())
+            .with_pool(pool);
 
         system.request_allocation(AllocationRequest {
             requester_id: "scan_1".to_string(),
@@ -315,7 +407,10 @@ mod tests {
         world.insert(create_test_entity("12345", 1));
 
         let context_entities = Arc::new(Mutex::new(world));
-        let mut context = SystemContext::new().with_tuner_entities(context_entities.clone());
+        let pool = create_test_pool(context_entities.clone());
+        let mut context = SystemContext::new()
+            .with_tuner_entities(context_entities.clone())
+            .with_pool(pool);
 
         system.request_allocation(AllocationRequest {
             requester_id: "scan_1".to_string(),
@@ -358,7 +453,10 @@ mod tests {
         world.insert(entity);
 
         let context_entities = Arc::new(Mutex::new(world));
-        let mut context = SystemContext::new().with_tuner_entities(context_entities.clone());
+        let pool = create_test_pool(context_entities.clone());
+        let mut context = SystemContext::new()
+            .with_tuner_entities(context_entities.clone())
+            .with_pool(pool);
 
         system.request_allocation(AllocationRequest {
             requester_id: "scan_1".to_string(),
@@ -394,7 +492,10 @@ mod tests {
         world.insert(entity);
 
         let context_entities = Arc::new(Mutex::new(world));
-        let mut context = SystemContext::new().with_tuner_entities(context_entities.clone());
+        let pool = create_test_pool(context_entities.clone());
+        let mut context = SystemContext::new()
+            .with_tuner_entities(context_entities.clone())
+            .with_pool(pool);
 
         system.request_allocation(AllocationRequest {
             requester_id: "scan_1".to_string(),

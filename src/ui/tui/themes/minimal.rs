@@ -1,7 +1,8 @@
 //! Minimal theme - High-contrast clean monitoring interface
 
-use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 use ratatui::style::Color;
+
+use super::{ColorScheme, SymbolSet, TextStyle, Theme};
 
 /// Dark theme - clean high-contrast display
 pub struct DarkTheme;
@@ -109,6 +110,14 @@ impl ColorScheme for DarkTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(200, 200, 200) // Light gray
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(50, 80, 120) // Deep blue selection
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(240, 245, 250) // Bright white text
     }
 }
 
@@ -284,6 +293,14 @@ impl ColorScheme for LightTheme {
 
     fn active_highlight_quality(&self) -> Color {
         Color::Rgb(220, 220, 220) // Very light gray
+    }
+
+    fn selected_row_bg(&self) -> Color {
+        Color::Rgb(40, 80, 140) // Bright blue selection
+    }
+
+    fn selected_row_fg(&self) -> Color {
+        Color::Rgb(255, 255, 255) // Pure white text
     }
 }
 

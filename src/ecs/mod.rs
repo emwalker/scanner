@@ -17,6 +17,9 @@ pub mod queue;
 pub mod resources;
 pub mod systems;
 
+// Test helpers module - available for both unit and integration tests
+pub mod test_helpers;
+
 mod coordinator;
 mod entity;
 mod schedule;
@@ -25,8 +28,11 @@ mod world;
 
 pub use coordinator::Coordinator;
 pub use entity::Entity;
-pub use queue::{PauseRequest, PauseRequestQueue};
-pub use resources::{GlobalPauseResource, GlobalPauseState};
+pub use queue::{
+    PauseAndTuneRequest, PauseRequestQueue, TunerAllocationQueue, TunerAllocationRequest,
+    TunerRequester,
+};
+pub use resources::{GlobalPauseResource, GlobalPauseState, PlayingStationInfo};
 pub use schedule::Scheduler;
 pub use system::{Resource, System, SystemContext};
 pub use world::EntityWorld;
@@ -35,19 +41,19 @@ pub use world::EntityWorld;
 pub type Entities<T> = std::sync::Arc<std::sync::RwLock<EntityWorld<T>>>;
 
 // Re-export commonly used types for convenience
-pub use components::scan::WindowAllocationRequest;
 pub use components::{
     AllocationComponent, AllocationState, AudioAllocationComponent, AudioId,
-    AudioPlaybackComponent, AudioTuningComponent, CandidateId, CandidateInfoComponent,
-    CandidateLifecycleComponent, CandidateProgressComponent, CandidateState, ConstraintComponent,
-    DeviceComponent, HardwareConnectionComponent, HardwareConnectionState, HardwareInfoComponent,
-    HardwareLifecycleComponent, Priority, PriorityComponent, ScanConfigComponent, ScanId,
+    AudioPlaybackComponent, AudioTuningComponent, ConstraintComponent, DeviceComponent,
+    DeviceConnectionComponent, DeviceConnectionState, DeviceInfoComponent,
+    DeviceLifecycleComponent, Priority, PriorityComponent, ScanConfigComponent, ScanId,
     ScanLifecycleComponent, ScanPauseState, ScanProgressComponent, ScanResultsComponent, ScanType,
-    SegmentComponent, StationDiscoveryComponent, StationHistoryComponent, StationId,
+    SegmentComponent, SignalId, StationDiscoveryComponent, StationHistoryComponent, StationId,
     StationInfoComponent, StationPlaybackComponent, StationPlaybackState, StatusComponent,
-    WindowAllocationComponent, WindowId, WindowProgressComponent, WindowProgressState,
+    TaskProgressComponent, TaskResult, TaskResultComponent, TaskResultValue, TaskState,
+    TaskStateComponent, TuneState, WindowAllocationComponent, WindowId, WindowProgressComponent,
+    WindowProgressState, scan::WindowAllocationRequest,
 };
 pub use entities::{
-    AudioEntity, CandidateEntity, HardwareEntity, ScanEntity, StationEntity, TunerEntity,
-    WindowEntity,
+    AudioEntity, DeviceEntity, ScanEntity, ScanTaskData, SignalEntity, StationEntity,
+    TaskComponents, TaskEntity, TaskId, TaskKind, TunerEntity, WindowEntity,
 };

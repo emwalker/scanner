@@ -1,26 +1,24 @@
-use crate::core::types::{Result, ScanningConfig};
-use crate::ecs::{CandidateEntity, Entities, ScanId, StationEntity};
-use crate::hardware::pool::SegmentTrait;
-use crate::pause_signal::PauseSignal;
-use crate::scanning::window::config::WindowMetadata;
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
+//! DEPRECATED: Window processing functions
+//!
+//! This module contains logic that is being migrated to the ECS system.
+//! Phase 3 decomposed peak detection into PeakDetectionSystem and
+//! PeakCompletionSystem. The functions in this module will be gradually
+//! moved to pure functions in the signal processing module or removed
+//! entirely as the ECS migration completes.
+//!
+//! TODO Phase 3+: Delete this module once WindowProcessingSystem is fully
+//! migrated to ECS-based systems.
+
+#[allow(unused_imports)]
 use tracing::debug;
 
-pub(super) struct CandidateProcessingContext<'a> {
-    pub window_num: usize,
-    pub center_freq: f64,
-    pub config: &'a ScanningConfig,
-    pub metadata: WindowMetadata,
-    pub pause_signal: &'a Option<PauseSignal>,
-    pub station_entities: &'a Option<Entities<StationEntity>>,
-    #[allow(dead_code)]
-    pub candidate_entities: &'a Option<Entities<CandidateEntity>>,
-    pub scan_id: ScanId,
-}
+use crate::{
+    core::types::{Result, ScanningConfig},
+    hardware::pool::SegmentTrait,
+    pause_signal::PauseSignal,
+};
 
-pub(super) fn peaks(
+pub fn peaks(
     station_mode: bool,
     center_freq: f64,
     config: &ScanningConfig,
@@ -42,47 +40,21 @@ pub(super) fn peaks(
     }
 }
 
-pub(super) fn debug_peaks(
-    window_num: usize,
-    center_freq: f64,
-    config: &ScanningConfig,
-    peaks: &[crate::core::types::Peak],
-) {
-    if config.debug.pipeline {
-        debug!(
-            message = "Band scanning window analysis",
-            window_number = window_num,
-            window_center_mhz = center_freq / 1e6,
-            peaks_found = peaks.len()
-        );
-
-        for (peak_idx, peak) in peaks.iter().enumerate() {
-            debug!(
-                message = "Peak detected",
-                window_number = window_num,
-                peak_index = peak_idx,
-                frequency_mhz = peak.frequency_hz / 1e6,
-                magnitude = peak.magnitude
-            );
-        }
-    }
-}
-
-pub(super) fn candidates_from_peaks(
+pub fn signals_from_peaks(
     station_mode: bool,
     _window_num: usize,
     center_freq: f64,
     config: &ScanningConfig,
     peaks: &[crate::core::types::Peak],
 ) -> Vec<crate::core::types::Candidate> {
-    let mut candidates = Vec::new();
+    let mut signals = Vec::new();
 
     if station_mode {
         debug!(
-            "Station mode: Creating direct candidate for {:.1} MHz",
+            "Station mode: Creating direct signal for {:.1} MHz",
             center_freq / 1e6
         );
-        candidates.push(crate::core::types::Candidate::Fm(
+        signals.push(crate::core::types::Candidate::Fm(
             crate::signal::Candidate {
                 frequency_hz: center_freq,
                 signal_strength: "Strong".to_string(),
@@ -91,13 +63,13 @@ pub(super) fn candidates_from_peaks(
                 avg_magnitude: 1.0,
             },
         ));
-        return candidates;
+        return signals;
     }
 
-    for candidate in crate::signal::find_candidates(peaks, config, center_freq) {
-        let candidate_freq = candidate.frequency_hz();
+    for signal in crate::signal::find_signals(peaks, config, center_freq) {
+        let signal_freq = signal.frequency_hz();
 
-        let rounded_freq = (candidate_freq / 100000.0).round() * 100000.0;
+        let rounded_freq = (signal_freq / 100000.0).round() * 100000.0;
         let frequency_khz = (rounded_freq / 1000.0) as u64;
 
         let already_processed = {
@@ -115,141 +87,91 @@ pub(super) fn candidates_from_peaks(
 
         if already_processed {
             debug!(
-                candidate_frequency_mhz = candidate_freq / 1e6,
-                "Skipping candidate creation for already processed frequency"
+                signal_frequency_mhz = signal_freq / 1e6,
+                "Skipping signal creation for already processed frequency"
             );
             continue;
         }
 
         if config.debug.pipeline {
-            let frequency_offset = candidate_freq - center_freq;
+            let frequency_offset = signal_freq - center_freq;
             debug!(
-                message = "Candidate created",
-                candidate_frequency_mhz = candidate_freq / 1e6,
+                message = "Signal created",
+                signal_frequency_mhz = signal_freq / 1e6,
                 window_center_mhz = center_freq / 1e6,
                 frequency_offset_khz = frequency_offset / 1e3,
-                signal_strength = match &candidate {
-                    crate::core::types::Candidate::Fm(fm_candidate) =>
-                        &fm_candidate.signal_strength,
+                signal_strength = match &signal {
+                    crate::core::types::Candidate::Fm(signal) => &signal.signal_strength,
                 }
             );
         }
-        candidates.push(candidate);
-    }
-
-    candidates
-}
-
-pub(super) fn process_candidates(
-    ctx: &CandidateProcessingContext,
-    candidates: Vec<crate::core::types::Candidate>,
-    segment: &dyn SegmentTrait,
-    wait_for_threads_fn: impl FnOnce(Vec<thread::JoinHandle<Result<()>>>, Duration) -> usize,
-) -> Result<Vec<crate::core::types::Signal>> {
-    if candidates.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let candidate_count = candidates.len();
-    let mut candidate_threads = Vec::new();
-    let (signal_tx, signal_rx) = std::sync::mpsc::sync_channel::<crate::core::types::Signal>(100);
-
-    for candidate in candidates.into_iter() {
-        if ctx.config.debug.print_candidates {
-            tracing::info!(
-                "candidate found at {:.1} MHz",
-                candidate.frequency_hz() / 1e6
-            );
-            continue;
-        }
-
-        let freq = match &candidate {
-            crate::core::types::Candidate::Fm(fm_candidate) => fm_candidate.frequency_hz,
-        };
-
-        if let Some(candidate_entities) = ctx.candidate_entities {
-            use crate::ecs::CandidateId;
-            let id = CandidateId::new(freq, ctx.window_num);
-            if let Ok(mut entities) = candidate_entities.write()
-                && let Some(entity) = entities.get_mut(&id)
-            {
-                entity.start_analysis();
-            }
-        }
-
-        let sdr_rx = segment.audio_subscriber();
-        let signal_tx_clone = signal_tx.clone();
-        let config_clone = ctx.config.clone();
-        let center_freq = ctx.center_freq;
-        let pause_signal_clone = ctx.pause_signal.clone();
-        let metadata = ctx.metadata;
-        let candidate_entities_clone = ctx.candidate_entities.as_ref().map(Arc::clone);
-
-        let handle = thread::spawn(move || -> Result<()> {
-            if let Some(ref signal) = pause_signal_clone
-                && signal.is_paused()
-            {
-                debug!("Candidate thread exiting early due to pause signal");
-                return Ok(());
-            }
-
-            let context = crate::pipeline::AnalysisContext {
-                config: &config_clone,
-                center_freq,
-                metadata,
-                candidate_entities: &candidate_entities_clone,
-            };
-            candidate.analyze(sdr_rx, signal_tx_clone, &context)
-        });
-        candidate_threads.push(handle);
-    }
-
-    drop(signal_tx);
-
-    let window_timeout = Duration::from_secs(60);
-    let threads_completed = wait_for_threads_fn(candidate_threads, window_timeout);
-
-    debug!(
-        "Window {} at {:.1} MHz: {}/{} candidates completed processing",
-        ctx.window_num,
-        ctx.center_freq / 1e6,
-        threads_completed,
-        candidate_count
-    );
-
-    let mut signals = Vec::new();
-    while let Ok(signal) = signal_rx.try_recv() {
-        // Create StationEntity for discovered signal (pure ECS approach)
-        if let Some(station_entities) = ctx.station_entities {
-            let station = StationEntity::from_signal(&signal, ctx.scan_id, ctx.metadata);
-            if let Ok(mut entities) = station_entities.write() {
-                entities.insert(station);
-                debug!(
-                    frequency_mhz = signal.frequency_hz / 1e6,
-                    "Created StationEntity for discovered signal"
-                );
-            }
-        }
-
-        // Update CandidateEntity to Signal state
-        if let Some(candidate_entities) = ctx.candidate_entities {
-            use crate::ecs::CandidateId;
-            let id = CandidateId::new(signal.frequency_hz, ctx.window_num);
-            if let Ok(mut entities) = candidate_entities.write()
-                && let Some(entity) = entities.get_mut(&id)
-            {
-                entity.mark_as_signal(signal.audio_quality, Some(signal.signal_strength as f64));
-            }
-        }
-
         signals.push(signal);
     }
 
-    debug!(
-        "Window {} collected {} signals",
-        ctx.window_num,
-        signals.len()
-    );
+    signals
+}
 
-    Ok(signals)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_analysis_thread_returns_results() {
+        use crate::{audio::quality::AudioQuality, ecs::components::AnalysisResults};
+
+        let handle = std::thread::spawn(|| -> Result<AnalysisResults> {
+            Ok(AnalysisResults {
+                quality: AudioQuality::Good,
+                strength: 0.8,
+            })
+        });
+
+        let result = handle.join().unwrap();
+        assert!(result.is_ok());
+        let analysis = result.unwrap();
+        assert_eq!(analysis.quality, AudioQuality::Good);
+        assert_eq!(analysis.strength, 0.8);
+    }
+
+    #[test]
+    fn test_stores_handle_in_signal_entity() {
+        use std::sync::{Arc, RwLock};
+
+        use crate::{
+            audio::quality::AudioQuality,
+            ecs::{
+                Entity, EntityWorld, SignalEntity, TaskId, WindowId, components::AnalysisResults,
+            },
+        };
+
+        let signal_entities = Arc::new(RwLock::new(EntityWorld::new()));
+
+        let task_id = TaskId::new("test-scan");
+        let window_id = WindowId::new(task_id, 0);
+        let entity = SignalEntity::new(88.9e6, window_id);
+        let signal_id = entity.id().clone();
+        signal_entities.write().unwrap().insert(entity);
+
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+        let handle = std::thread::spawn(move || -> Result<AnalysisResults> {
+            let results = AnalysisResults {
+                quality: AudioQuality::Good,
+                strength: 0.8,
+            };
+            let _ = result_tx.send(results.clone());
+            Ok(results)
+        });
+
+        {
+            let mut entities = signal_entities.write().unwrap();
+            if let Some(signal) = entities.get_mut(&signal_id) {
+                signal.analysis.start_analysis(handle, result_rx);
+            }
+        }
+
+        let entities = signal_entities.read().unwrap();
+        let signal = entities.get(&signal_id).unwrap();
+        assert!(signal.analysis.is_in_progress());
+    }
 }

@@ -1,8 +1,12 @@
+use std::{
+    fs::File,
+    io::{BufReader, Read},
+};
+
+use rustradio::Complex;
+
 use super::trait_def::SampleSource;
 use crate::core::types::Result;
-use rustradio::Complex;
-use std::fs::File;
-use std::io::{BufReader, Read};
 
 /// File-based sample source for testing
 pub struct FileSampleSource {
@@ -18,7 +22,8 @@ impl FileSampleSource {
 
         let file = File::open(file_path)?;
 
-        // Get file size to estimate number of samples (8 bytes per complex sample: f32 real + f32 imag)
+        // Get file size to estimate number of samples (8 bytes per complex sample: f32 real + f32
+        // imag)
         let file_size = file.metadata()?.len() as usize;
         let samples_remaining = file_size / 8; // 2 f32s per complex sample
 

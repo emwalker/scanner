@@ -1,14 +1,22 @@
-use scanner::hardware::mock::MockDevice;
-use scanner::hardware::pool::{Pool, TaskPriority, TaskRequirements, TunerActivity};
-use std::thread;
-use std::time::Duration;
+use std::{thread, time::Duration};
+
+use scanner::hardware::pool::{
+    Pool, TaskPriority, TaskRequirements, TunerActivity, test_utils::add_test_device_to_pool,
+};
 
 #[test]
 fn test_no_zombie_processes_after_shutdown() {
     let pool = Pool::new_unfiltered();
 
-    let device = Box::new(MockDevice::new("mock", "zombie001", false));
-    pool.add_device(device, scanner::hardware::types::Backend::Mock);
+    let device_id = scanner::hardware::DeviceId::from_serial("mock", "zombie001");
+    let caps = scanner::hardware::Capabilities::for_mock("mock", "zombie001");
+    add_test_device_to_pool(
+        &pool,
+        device_id,
+        caps,
+        scanner::hardware::types::Backend::Mock,
+        None,
+    );
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -33,8 +41,15 @@ fn test_no_zombie_processes_after_shutdown() {
 fn test_socket_cleanup_after_shutdown() {
     let pool = Pool::new_unfiltered();
 
-    let device = Box::new(MockDevice::new("mock", "socket001", false));
-    pool.add_device(device, scanner::hardware::types::Backend::Mock);
+    let device_id = scanner::hardware::DeviceId::from_serial("mock", "socket001");
+    let caps = scanner::hardware::Capabilities::for_mock("mock", "socket001");
+    add_test_device_to_pool(
+        &pool,
+        device_id,
+        caps,
+        scanner::hardware::types::Backend::Mock,
+        None,
+    );
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -59,8 +74,15 @@ fn test_socket_cleanup_after_shutdown() {
 fn test_tuner_drop_non_blocking_during_shutdown() {
     let pool = std::sync::Arc::new(Pool::new_unfiltered());
 
-    let device = Box::new(MockDevice::new("mock", "nonblock001", false));
-    pool.add_device(device, scanner::hardware::types::Backend::Mock);
+    let device_id = scanner::hardware::DeviceId::from_serial("mock", "nonblock001");
+    let caps = scanner::hardware::Capabilities::for_mock("mock", "nonblock001");
+    add_test_device_to_pool(
+        &pool,
+        device_id,
+        caps,
+        scanner::hardware::types::Backend::Mock,
+        None,
+    );
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -90,8 +112,16 @@ fn test_shutdown_terminates_all_subprocesses() {
     let pool = Pool::new_unfiltered();
 
     for i in 0..3 {
-        let device = Box::new(MockDevice::new("mock", &format!("multi{:03}", i), false));
-        pool.add_device(device, scanner::hardware::types::Backend::Mock);
+        let serial = format!("multi{:03}", i);
+        let device_id = scanner::hardware::DeviceId::from_serial("mock", &serial);
+        let caps = scanner::hardware::Capabilities::for_mock("mock", &serial);
+        add_test_device_to_pool(
+            &pool,
+            device_id,
+            caps,
+            scanner::hardware::types::Backend::Mock,
+            None,
+        );
     }
 
     let requirements = TaskRequirements {

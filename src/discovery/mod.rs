@@ -8,13 +8,13 @@ mod udev_discovery;
 
 mod polling;
 
+use std::time::Duration;
+
 pub use enumerator::{DeviceEnumerator, MultiEnumerator, SourcePriority, SubprocessEnumerator};
 pub use service::{Event, Service};
 pub use tracker::DeviceTracker;
 
-use crate::core::types::Result;
-use crate::hardware;
-use std::time::Duration;
+use crate::{core::types::Result, hardware};
 
 pub enum DiscoveryMode {
     Auto,
@@ -28,17 +28,40 @@ pub fn create(
     mode: DiscoveryMode,
     scheduler: std::sync::Arc<crate::task::TaskScheduler>,
     pool: std::sync::Arc<crate::hardware::pool::Pool>,
+    tuner_entities: std::sync::Arc<
+        std::sync::Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>,
+    >,
+    device_entities: std::sync::Arc<
+        std::sync::Mutex<crate::ecs::EntityWorld<crate::ecs::DeviceEntity>>,
+    >,
 ) -> Box<dyn Service> {
     match mode {
-        DiscoveryMode::ForcePolling(interval) => {
-            Box::new(polling::Polling::new(scheduler, pool, backends, interval))
-        }
+        DiscoveryMode::ForcePolling(interval) => Box::new(polling::Polling::new(
+            scheduler,
+            pool,
+            backends,
+            interval,
+            tuner_entities,
+            device_entities,
+        )),
         #[cfg(target_os = "linux")]
-        DiscoveryMode::ForceUdev => Box::new(udev_discovery::Udev::new(scheduler, pool, backends)),
+        DiscoveryMode::ForceUdev => Box::new(udev_discovery::Udev::new(
+            scheduler,
+            pool,
+            backends,
+            tuner_entities,
+            device_entities,
+        )),
         DiscoveryMode::Auto => {
             #[cfg(target_os = "linux")]
             {
-                Box::new(udev_discovery::Udev::new(scheduler, pool, backends))
+                Box::new(udev_discovery::Udev::new(
+                    scheduler,
+                    pool,
+                    backends,
+                    tuner_entities,
+                    device_entities,
+                ))
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -47,6 +70,8 @@ pub fn create(
                     pool,
                     backends,
                     Duration::from_secs(3),
+                    tuner_entities,
+                    device_entities,
                 ))
             }
         }
@@ -61,8 +86,21 @@ pub fn create_for_testing(
     mode: DiscoveryMode,
     scheduler: std::sync::Arc<crate::task::TaskScheduler>,
     pool: std::sync::Arc<crate::hardware::pool::Pool>,
+    tuner_entities: std::sync::Arc<
+        std::sync::Mutex<crate::ecs::EntityWorld<crate::ecs::TunerEntity>>,
+    >,
+    device_entities: std::sync::Arc<
+        std::sync::Mutex<crate::ecs::EntityWorld<crate::ecs::DeviceEntity>>,
+    >,
 ) -> Box<dyn Service> {
-    create(backends, mode, scheduler, pool)
+    create(
+        backends,
+        mode,
+        scheduler,
+        pool,
+        tuner_entities,
+        device_entities,
+    )
 }
 
 /// Synchronously enumerate devices via subprocess worker matching an optional filter

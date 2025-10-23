@@ -1,5 +1,4 @@
 use crate::core::types::{self, Peak, Result, ScanningConfig};
-use std::sync::mpsc::SyncSender;
 
 pub mod candidates;
 pub mod deemph;
@@ -33,11 +32,23 @@ impl Candidate {
     pub fn analyze(
         &self,
         sdr_rx: tokio::sync::broadcast::Receiver<crate::broadcast::SamplePacket>,
-        signal_tx: SyncSender<crate::core::types::Signal>,
         context: &crate::pipeline::AnalysisContext,
     ) -> Result<()> {
+        // Create internal channel - signal_tx/signal_rx are now implementation details
+        let (signal_tx, _signal_rx) = std::sync::mpsc::channel();
+
+        // Create two receivers at same buffer position for pipeline
+        let sdr_rx_refining = sdr_rx.resubscribe();
+        let sdr_rx_detection = sdr_rx;
+
         // Delegate to the new testable pipeline function
-        crate::pipeline::process_peak_to_signal(self.frequency_hz, sdr_rx, signal_tx, context)
+        crate::pipeline::process_peak_to_signal(
+            self.frequency_hz,
+            sdr_rx_refining,
+            sdr_rx_detection,
+            signal_tx,
+            context,
+        )
     }
 }
 
@@ -66,10 +77,10 @@ pub fn collect_peaks(
     crate::signal::peaks::collect_peaks_from_source(config, &mut sdr_source)
 }
 
-pub fn find_candidates(
+pub fn find_signals(
     peaks: &[Peak],
     config: &ScanningConfig,
     center_freq: f64,
 ) -> Vec<types::Candidate> {
-    candidates::creation::find_candidates(peaks, config, center_freq)
+    candidates::creation::find_signals(peaks, config, center_freq)
 }

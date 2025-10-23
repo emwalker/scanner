@@ -1,7 +1,10 @@
-use rustradio::block::{Block, BlockEOF, BlockName, BlockRet};
-use rustradio::stream::{ReadStream, WriteStream};
-use rustradio::{Float, Result};
 use std::f32::consts::PI;
+
+use rustradio::{
+    Float, Result,
+    block::{Block, BlockEOF, BlockName, BlockRet},
+    stream::{ReadStream, WriteStream},
+};
 
 pub struct Deemphasis {
     input: ReadStream<Float>,

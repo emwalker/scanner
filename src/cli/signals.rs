@@ -1,8 +1,9 @@
-use crate::core::types::Result;
-use crate::hardware::soapy;
-use crate::shutdown::ShutdownCoordinator;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+use crate::{core::types::Result, hardware::soapy, shutdown::ShutdownCoordinator};
 
 pub fn setup_signal_handler(shutdown_coordinator: Arc<ShutdownCoordinator>) -> Result<()> {
     static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);

@@ -69,9 +69,11 @@ pub fn configure_overlap_processing(overlap_percent: f32) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::audio::quality::AudioAnalyzer;
-    use crate::core::types::{ScanningConfig, WindowType};
-    use crate::testing::signal_generation::{PeakTestSignalGenerator, TestSignal};
+    use crate::{
+        audio::quality::AudioAnalyzer,
+        core::types::{ScanningConfig, WindowType},
+        testing::signal_generation::{PeakTestSignalGenerator, TestSignal},
+    };
 
     /// Test that windowing reduces spectral leakage
     #[test]

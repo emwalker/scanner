@@ -3,8 +3,9 @@
 //! This module provides rule-based audio quality classification using handcrafted features
 //! and explicit decision rules.
 
-use crate::core::types::ScannerError;
 use tracing::debug;
+
+use crate::core::types::ScannerError;
 
 /// Rule-based audio quality classifier
 pub struct Classifier {

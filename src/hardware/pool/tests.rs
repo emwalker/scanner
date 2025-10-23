@@ -1,11 +1,17 @@
-use crate::hardware;
-use crate::hardware::pool::{
-    AddDeviceResult, Pool, PoolFilter, TaskPriority, TaskRequirements, TunerActivity, TunerId,
-    TunerState, TuningMode,
+use std::{
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
 };
-use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
+
+use crate::{
+    ecs::test_helpers::create_test_pool_with_entities,
+    hardware,
+    hardware::pool::{
+        Pool, PoolFilter, TaskPriority, TaskRequirements, TunerActivity, TunerId, TunerState,
+        TuningMode, test_utils, test_utils::add_test_device_to_pool,
+    },
+};
 
 fn create_mock_device(device_id: &hardware::DeviceId) -> Box<dyn hardware::DeviceTrait> {
     let (driver, serial) = match device_id {
@@ -15,15 +21,33 @@ fn create_mock_device(device_id: &hardware::DeviceId) -> Box<dyn hardware::Devic
     Box::new(hardware::mock::MockDevice::new(driver, serial, false))
 }
 
+/// Helper to add test device to pool using ECS test utilities
+fn add_mock_device_to_pool(pool: &Pool, device_id: hardware::DeviceId) {
+    let device = create_mock_device(&device_id);
+    let capabilities = device.capabilities().clone();
+    let result = add_test_device_to_pool(
+        pool,
+        device_id,
+        capabilities,
+        crate::hardware::types::Backend::Mock,
+        None,
+    );
+    match result {
+        test_utils::AddTestDeviceResult::Added { .. } => {}
+        test_utils::AddTestDeviceResult::FilteredOut { .. } => {
+            panic!("Device was filtered out unexpectedly")
+        }
+        test_utils::AddTestDeviceResult::PoolBusy => panic!("Pool was busy"),
+    }
+}
+
 #[test]
 fn test_pooled_tuner_drop_doesnt_block_when_pool_locked() {
     let pool = Pool::new_unfiltered();
     let pool_arc = pool.pool_ref.clone();
 
     let device_id = hardware::DeviceId::from_serial("mock", "test001");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -53,9 +77,7 @@ fn test_pooled_tuner_drop_during_shutdown() {
     let pool = Arc::new(Pool::new_unfiltered());
 
     let device_id = hardware::DeviceId::from_serial("mock", "test002");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -88,9 +110,7 @@ fn test_shutdown_mode() {
     let pool = Pool::new_unfiltered();
 
     let device_id = hardware::DeviceId::from_serial("mock", "test003");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -110,8 +130,6 @@ fn test_shutdown_mode() {
 
     drop(tuner);
 
-    thread::sleep(Duration::from_millis(10));
-
     let status_after = pool.status();
     assert_eq!(status_after.allocated_tuner_count, 0);
 }
@@ -121,9 +139,7 @@ fn test_shutdown_never_blocks() {
     let pool = Arc::new(Pool::new_unfiltered());
 
     let device_id = hardware::DeviceId::from_serial("mock", "test004");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let pool_arc = pool.pool_ref.clone();
     let _lock = pool_arc.lock().unwrap();
@@ -142,9 +158,7 @@ fn test_status_during_shutdown() {
     let pool = Pool::new_unfiltered();
 
     let device_id = hardware::DeviceId::from_serial("mock", "test005");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -173,9 +187,7 @@ fn test_status_never_blocks_when_pool_locked() {
     let pool = Arc::new(Pool::new_unfiltered());
 
     let device_id = hardware::DeviceId::from_serial("mock", "test006");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let pool_arc = pool.pool_ref.clone();
     let _lock = pool_arc.lock().unwrap();
@@ -183,8 +195,8 @@ fn test_status_never_blocks_when_pool_locked() {
     let pool_clone = Arc::clone(&pool);
     let handle = thread::spawn(move || {
         let status = pool_clone.status();
-        // After migrating to hardware_entities, status() can still get device count
-        // even when pool_ref is locked, since hardware_entities is a separate lock
+        // After migrating to device_entities, status() can still get device count
+        // even when pool_ref is locked, since device_entities is a separate lock
         assert_eq!(status.device_count, 1);
     });
 
@@ -197,9 +209,7 @@ fn test_acquire_rejected_during_shutdown() {
     let pool = Pool::new_unfiltered();
 
     let device_id = hardware::DeviceId::from_serial("mock", "test007");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -228,9 +238,7 @@ fn test_acquire_never_blocks_when_pool_locked() {
     let pool = Arc::new(Pool::new_unfiltered());
 
     let device_id = hardware::DeviceId::from_serial("mock", "test008");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -261,35 +269,11 @@ fn test_acquire_never_blocks_when_pool_locked() {
 }
 
 #[test]
-fn test_add_device_rejected_during_shutdown() {
-    let pool = Pool::new_unfiltered();
-
-    pool.shutdown();
-
-    let device_id = hardware::DeviceId::from_serial("mock", "test009");
-    let device = create_mock_device(&device_id);
-    let result = pool.add_device(device, crate::hardware::types::Backend::Mock);
-
-    assert!(
-        matches!(result, AddDeviceResult::ShutdownMode),
-        "Should return ShutdownMode"
-    );
-
-    let status = pool.status();
-    assert_eq!(
-        status.device_count, 0,
-        "Device should not be added during shutdown"
-    );
-}
-
-#[test]
 fn test_remove_device_rejected_during_shutdown() {
     let pool = Pool::new_unfiltered();
 
     let device_id = hardware::DeviceId::from_serial("mock", "test010");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     pool.shutdown();
 
@@ -301,51 +285,15 @@ fn test_remove_device_rejected_during_shutdown() {
 }
 
 #[test]
-fn test_add_device_never_blocks_when_entities_locked() {
-    use std::time::Duration;
-
-    let pool = Pool::new_unfiltered();
-    let entities_arc = pool.hardware_entities.clone();
-
-    // Hold the lock in this thread
-    let _lock = entities_arc.lock().unwrap();
-
-    // Try to add device from another thread
-    let handle = thread::spawn(move || {
-        let pool_in_thread = pool;
-        let start = Instant::now();
-        let device_id = hardware::DeviceId::from_serial("mock", "test011");
-        let device = create_mock_device(&device_id);
-        let result = pool_in_thread.add_device(device, crate::hardware::types::Backend::Mock);
-        let elapsed = start.elapsed();
-
-        assert!(
-            result.is_err(),
-            "Should return error when hardware entities are locked"
-        );
-        assert!(
-            elapsed < Duration::from_millis(100),
-            "Should return immediately, took {:?}",
-            elapsed
-        );
-    });
-
-    let result = handle.join();
-    assert!(result.is_ok());
-}
-
-#[test]
 fn test_remove_device_never_blocks_when_entities_locked() {
     use std::time::Duration;
 
     let pool = Pool::new_unfiltered();
 
     let device_id = hardware::DeviceId::from_serial("mock", "test012");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
-    let entities_arc = pool.hardware_entities.clone();
+    let entities_arc = pool.device_entities.clone();
     let _lock = entities_arc.lock().unwrap();
 
     let handle = thread::spawn(move || {
@@ -374,9 +322,7 @@ fn test_tuner_operations_rejected_during_shutdown() {
     let pool = Pool::new_unfiltered();
 
     let device_id = hardware::DeviceId::from_serial("mock", "test013");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -443,9 +389,7 @@ fn test_activity_tracking() {
     let pool = Pool::new_unfiltered();
 
     let device_id = hardware::DeviceId::from_serial("mock", "test014");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -487,21 +431,29 @@ fn test_activity_tracking() {
 
 #[test]
 fn test_filter_by_backend() {
-    let pool = Pool::new(
+    let (pool, _tuner_entities, _device_entities) = create_test_pool_with_entities(
         PoolFilter::new().with_backend(hardware::types::Backend::Mock),
         None,
     );
 
     let mock_id = hardware::DeviceId::from_serial("mock", "test015");
-    let mock_device = create_mock_device(&mock_id);
-    pool.add_device(mock_device, hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, mock_id.clone());
 
     let soapy_id = hardware::DeviceId::from_serial("sdrplay", "test016");
     let soapy_device = create_mock_device(&soapy_id);
+    let soapy_caps = soapy_device.capabilities().clone();
     // Different backend should be filtered out
-    let result = pool.add_device(soapy_device, hardware::types::Backend::Soapy);
-    assert!(matches!(result, AddDeviceResult::FilteredOut { .. }));
+    let result = add_test_device_to_pool(
+        &pool,
+        soapy_id,
+        soapy_caps,
+        hardware::types::Backend::Soapy,
+        None,
+    );
+    assert!(matches!(
+        result,
+        test_utils::AddTestDeviceResult::FilteredOut { .. }
+    ));
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -526,18 +478,27 @@ fn test_filter_by_backend() {
 
 #[test]
 fn test_filter_by_driver() {
-    let pool = Pool::new(PoolFilter::new().with_driver("mock"), None);
+    let (pool, _tuner_entities, _device_entities) =
+        create_test_pool_with_entities(PoolFilter::new().with_driver("mock"), None);
 
     let mock_id1 = hardware::DeviceId::from_serial("mock", "test017");
-    let mock_device1 = create_mock_device(&mock_id1);
-    pool.add_device(mock_device1, hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, mock_id1.clone());
 
     let mock_id2 = hardware::DeviceId::from_serial("mock", "test018");
-    let mock_device2 = create_mock_device(&mock_id2);
     // Same driver should NOT be filtered out
-    let result = pool.add_device(mock_device2, hardware::types::Backend::Mock);
-    assert!(matches!(result, AddDeviceResult::Added { .. }));
+    let device_for_caps = create_mock_device(&mock_id2);
+    let caps = device_for_caps.capabilities().clone();
+    let result = add_test_device_to_pool(
+        &pool,
+        mock_id2.clone(),
+        caps,
+        hardware::types::Backend::Mock,
+        None,
+    );
+    assert!(matches!(
+        result,
+        test_utils::AddTestDeviceResult::Added { .. }
+    ));
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -566,29 +527,33 @@ fn test_filter_allow_tuners() {
     let pool = Pool::new_unfiltered();
 
     let device1_id = hardware::DeviceId::from_serial("mock", "test019");
-    let device1 = create_mock_device(&device1_id);
-    pool.add_device(device1, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device1_id.clone());
 
     let device2_id = hardware::DeviceId::from_serial("mock", "test020");
-    let device2 = create_mock_device(&device2_id);
-    pool.add_device(device2, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device2_id.clone());
 
     drop(pool);
 
     let tuner1 = TunerId::new(device1_id.clone(), 0);
-    let pool_filtered = Pool::new(PoolFilter::new().with_tuners(vec![tuner1.clone()]), None);
+    let (pool_filtered, _tuner_entities, _device_entities) =
+        create_test_pool_with_entities(PoolFilter::new().with_tuners(vec![tuner1.clone()]), None);
 
-    let device1_again = create_mock_device(&device1_id);
-    pool_filtered
-        .add_device(device1_again, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool_filtered, device1_id.clone());
 
-    let device2_again = create_mock_device(&device2_id);
     // Device2 should be filtered out (only tuner1 is allowed)
-    let result = pool_filtered.add_device(device2_again, crate::hardware::types::Backend::Mock);
-    assert!(matches!(result, AddDeviceResult::FilteredOut { .. }));
+    let device_for_caps = create_mock_device(&device2_id);
+    let caps = device_for_caps.capabilities().clone();
+    let result = add_test_device_to_pool(
+        &pool_filtered,
+        device2_id.clone(),
+        caps,
+        hardware::types::Backend::Mock,
+        None,
+    );
+    assert!(matches!(
+        result,
+        test_utils::AddTestDeviceResult::FilteredOut { .. }
+    ));
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -605,12 +570,11 @@ fn test_filter_allow_tuners() {
 
 #[test]
 fn test_filter_single_tuner_mode() {
-    let pool = Pool::new(PoolFilter::new().with_mode(TuningMode::SingleTuner), None);
+    let (pool, _tuner_entities, _device_entities) =
+        create_test_pool_with_entities(PoolFilter::new().with_mode(TuningMode::SingleTuner), None);
 
     let device_id = hardware::DeviceId::from_serial("mock", "test021");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -639,7 +603,7 @@ fn test_filter_single_tuner_mode() {
 
 #[test]
 fn test_filter_combined_driver_and_mode() {
-    let pool = Pool::new(
+    let (pool, _tuner_entities, _device_entities) = create_test_pool_with_entities(
         PoolFilter::new()
             .with_driver("mock")
             .with_mode(TuningMode::SingleTuner),
@@ -647,9 +611,7 @@ fn test_filter_combined_driver_and_mode() {
     );
 
     let mock_id = hardware::DeviceId::from_serial("mock", "test022");
-    let mock_device = create_mock_device(&mock_id);
-    pool.add_device(mock_device, hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, mock_id.clone());
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -700,36 +662,11 @@ fn test_state_transitions() {
 }
 
 #[test]
-fn test_add_device_only_allowed_in_active_state() {
-    let pool = Pool::new_unfiltered();
-
-    let device1_id = hardware::DeviceId::from_serial("mock", "test024");
-    let device1 = create_mock_device(&device1_id);
-    let result1 = pool.add_device(device1, crate::hardware::types::Backend::Mock);
-    assert!(
-        matches!(result1, AddDeviceResult::Added { .. }),
-        "Should add device in Active state"
-    );
-
-    pool.shutdown();
-
-    let device2_id = hardware::DeviceId::from_serial("mock", "test025");
-    let device2 = create_mock_device(&device2_id);
-    let result2 = pool.add_device(device2, crate::hardware::types::Backend::Mock);
-    assert!(
-        matches!(result2, AddDeviceResult::ShutdownMode),
-        "Should not add device in ShuttingDown state"
-    );
-}
-
-#[test]
 fn test_acquire_only_allowed_in_active_state() {
     let pool = Pool::new_unfiltered();
 
     let device_id = hardware::DeviceId::from_serial("mock", "test026");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let requirements = TaskRequirements {
         frequency_hz: 88.9e6,
@@ -764,9 +701,7 @@ fn test_status_works_in_any_state() {
     let pool = Pool::new_unfiltered();
 
     let device_id = hardware::DeviceId::from_serial("mock", "test027");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let status1 = pool.status();
     assert_eq!(
@@ -790,9 +725,7 @@ fn regression_test_callbacks_fire_on_tuner_acquire_and_release() {
     let pool = Pool::new_unfiltered();
 
     let device_id = hardware::DeviceId::from_serial("mock", "test028");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let callback_count = Arc::new(Mutex::new(0));
     let callback_count_clone = Arc::clone(&callback_count);
@@ -850,9 +783,7 @@ fn regression_test_multiple_callbacks_all_fire() {
     let pool = Pool::new_unfiltered();
 
     let device_id = hardware::DeviceId::from_serial("mock", "test029");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, crate::hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let callback1_count = Arc::new(Mutex::new(0));
     let callback2_count = Arc::new(Mutex::new(0));
@@ -913,9 +844,7 @@ fn test_tuner_status_contains_id_and_state() {
     let pool = Pool::new_unfiltered();
 
     let device_id = hardware::DeviceId::from_serial("mock", "2301034E34:ST");
-    let device = create_mock_device(&device_id);
-    pool.add_device(device, hardware::types::Backend::Mock)
-        .unwrap();
+    add_mock_device_to_pool(&pool, device_id.clone());
 
     let status = pool.status();
     assert_eq!(status.tuners.len(), 1, "Should have one tuner");
@@ -950,9 +879,7 @@ mod ecs_sync_tests {
         let pool = Pool::new_unfiltered();
 
         let device_id = hardware::DeviceId::from_serial("mock", "test030");
-        let device = create_mock_device(&device_id);
-        pool.add_device(device, hardware::types::Backend::Mock)
-            .unwrap();
+        add_mock_device_to_pool(&pool, device_id.clone());
 
         let entities = pool.tuner_entities.lock().unwrap();
         assert_eq!(entities.len(), 1, "Should have one TunerEntity");
@@ -973,9 +900,7 @@ mod ecs_sync_tests {
         let pool = Pool::new_unfiltered();
 
         let device_id = hardware::DeviceId::from_serial("mock", "test031");
-        let device = create_mock_device(&device_id);
-        pool.add_device(device, hardware::types::Backend::Mock)
-            .unwrap();
+        add_mock_device_to_pool(&pool, device_id.clone());
 
         {
             let entities = pool.tuner_entities.lock().unwrap();
@@ -995,9 +920,7 @@ mod ecs_sync_tests {
         let pool = Pool::new_unfiltered();
 
         let device_id = hardware::DeviceId::from_serial("mock", "test032");
-        let device = create_mock_device(&device_id);
-        pool.add_device(device, hardware::types::Backend::Mock)
-            .unwrap();
+        add_mock_device_to_pool(&pool, device_id.clone());
 
         let tuner_id = TunerId::new(device_id, 0);
 
@@ -1036,9 +959,7 @@ mod ecs_sync_tests {
         let pool = Pool::new_unfiltered();
 
         let device_id = hardware::DeviceId::from_serial("mock", "test033");
-        let device = create_mock_device(&device_id);
-        pool.add_device(device, hardware::types::Backend::Mock)
-            .unwrap();
+        add_mock_device_to_pool(&pool, device_id.clone());
 
         let tuner_id = TunerId::new(device_id, 0);
 
@@ -1081,14 +1002,10 @@ mod ecs_sync_tests {
         let pool = Pool::new_unfiltered();
 
         let device1_id = hardware::DeviceId::from_serial("mock", "test034");
-        let device1 = create_mock_device(&device1_id);
-        pool.add_device(device1, hardware::types::Backend::Mock)
-            .unwrap();
+        add_mock_device_to_pool(&pool, device1_id.clone());
 
         let device2_id = hardware::DeviceId::from_serial("mock", "test035");
-        let device2 = create_mock_device(&device2_id);
-        pool.add_device(device2, hardware::types::Backend::Mock)
-            .unwrap();
+        add_mock_device_to_pool(&pool, device2_id.clone());
 
         {
             let entities = pool.tuner_entities.lock().unwrap();
@@ -1112,9 +1029,7 @@ mod ecs_sync_tests {
         let pool = Pool::new_unfiltered();
 
         let device_id = hardware::DeviceId::from_serial("mock", "test036");
-        let device = create_mock_device(&device_id);
-        pool.add_device(device, hardware::types::Backend::Mock)
-            .unwrap();
+        add_mock_device_to_pool(&pool, device_id.clone());
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -1137,9 +1052,7 @@ mod ecs_sync_tests {
         let pool = Pool::new_unfiltered();
 
         let device_id = hardware::DeviceId::from_serial("mock", "test037");
-        let device = create_mock_device(&device_id);
-        pool.add_device(device, hardware::types::Backend::Mock)
-            .unwrap();
+        add_mock_device_to_pool(&pool, device_id.clone());
 
         pool.shutdown();
 
@@ -1159,14 +1072,10 @@ mod ecs_sync_tests {
         let pool = Arc::new(Pool::new_unfiltered());
 
         let device1_id = hardware::DeviceId::from_serial("mock", "test038");
-        let device1 = create_mock_device(&device1_id);
-        pool.add_device(device1, hardware::types::Backend::Mock)
-            .unwrap();
+        add_mock_device_to_pool(&pool, device1_id.clone());
 
         let device2_id = hardware::DeviceId::from_serial("mock", "test039");
-        let device2 = create_mock_device(&device2_id);
-        pool.add_device(device2, hardware::types::Backend::Mock)
-            .unwrap();
+        add_mock_device_to_pool(&pool, device2_id.clone());
 
         let pool_clone1 = Arc::clone(&pool);
         let pool_clone2 = Arc::clone(&pool);
@@ -1215,14 +1124,10 @@ mod ecs_sync_tests {
         let pool = Pool::new_unfiltered();
 
         let device1_id = hardware::DeviceId::from_serial("mock", "test040");
-        let device1 = create_mock_device(&device1_id);
-        pool.add_device(device1, hardware::types::Backend::Mock)
-            .unwrap();
+        add_mock_device_to_pool(&pool, device1_id.clone());
 
         let device2_id = hardware::DeviceId::from_serial("mock", "test041");
-        let device2 = create_mock_device(&device2_id);
-        pool.add_device(device2, hardware::types::Backend::Mock)
-            .unwrap();
+        add_mock_device_to_pool(&pool, device2_id.clone());
 
         let requirements = TaskRequirements {
             frequency_hz: 88.9e6,
@@ -1290,5 +1195,279 @@ mod ecs_sync_tests {
                 "Both entities should be available after all tuners dropped"
             );
         }
+    }
+
+    #[test]
+    fn test_pool_status_applies_filter() {
+        let device1_id = hardware::DeviceId::from_serial("sdrplay", "2301034E34");
+        let device2_id = hardware::DeviceId::from_serial("rtlsdr", "00000001");
+
+        let (pool, _tuner_entities, _device_entities) =
+            create_test_pool_with_entities(PoolFilter::new().with_driver("sdrplay"), None);
+
+        add_mock_device_to_pool(&pool, device1_id.clone());
+
+        let device_for_caps = create_mock_device(&device2_id);
+        let caps = device_for_caps.capabilities().clone();
+        let result = add_test_device_to_pool(
+            &pool,
+            device2_id.clone(),
+            caps,
+            hardware::types::Backend::Soapy,
+            None,
+        );
+        assert!(matches!(
+            result,
+            test_utils::AddTestDeviceResult::FilteredOut { .. }
+        ));
+
+        let status = pool.status();
+
+        assert_eq!(
+            status.tuners.len(),
+            1,
+            "Status should only show filtered tuners"
+        );
+        assert!(
+            format!("{:?}", status.tuners[0].id.device_id).contains("sdrplay"),
+            "Status should only contain sdrplay tuner"
+        );
+    }
+
+    #[test]
+    fn test_pool_status_filters_by_channel() {
+        let device1_id = hardware::DeviceId::from_serial("mock", "dev001");
+        let device2_id = hardware::DeviceId::from_serial("mock", "dev002");
+
+        let (pool, _tuner_entities, _device_entities) = create_test_pool_with_entities(
+            PoolFilter::new().with_tuners(vec![TunerId::new(device2_id.clone(), 0)]),
+            None,
+        );
+
+        let device_for_caps = create_mock_device(&device1_id);
+        let caps = device_for_caps.capabilities().clone();
+        let result = add_test_device_to_pool(
+            &pool,
+            device1_id.clone(),
+            caps,
+            hardware::types::Backend::Mock,
+            None,
+        );
+        assert!(matches!(
+            result,
+            test_utils::AddTestDeviceResult::FilteredOut { .. }
+        ));
+
+        add_mock_device_to_pool(&pool, device2_id.clone());
+
+        let status = pool.status();
+
+        assert_eq!(
+            status.tuners.len(),
+            1,
+            "Status should only show filtered tuner"
+        );
+        assert_eq!(
+            status.tuners[0].id.device_id, device2_id,
+            "Filtered tuner should be from device2"
+        );
+    }
+
+    #[test]
+    fn test_allocation_uses_filtered_status() {
+        let device1_id = hardware::DeviceId::from_serial("sdrplay", "2301034E34");
+
+        let (pool, _tuner_entities, _device_entities) =
+            create_test_pool_with_entities(PoolFilter::new().with_driver("sdrplay"), None);
+
+        add_mock_device_to_pool(&pool, device1_id.clone());
+
+        let requirements = TaskRequirements {
+            frequency_hz: 88.9e6,
+            bandwidth_hz: 200e3,
+            required_sample_rate: 2.4e6,
+            priority: TaskPriority::Normal,
+        };
+
+        let tuner = pool
+            .try_acquire(&requirements, TunerActivity::Scanning)
+            .expect("Should allocate sdrplay tuner");
+
+        assert!(
+            format!("{:?}", tuner.id().device_id).contains("sdrplay"),
+            "Allocated tuner should be from allowed driver only"
+        );
+    }
+
+    #[test]
+    fn test_tuner_id_preserves_channel_index() {
+        let device1_id = hardware::DeviceId::from_serial("mock", "device1");
+        let device2_id = hardware::DeviceId::from_serial("mock", "device2");
+        let device3_id = hardware::DeviceId::from_serial("mock", "device3");
+
+        let pool = Pool::new_unfiltered();
+
+        add_mock_device_to_pool(&pool, device1_id.clone());
+        add_mock_device_to_pool(&pool, device2_id.clone());
+        add_mock_device_to_pool(&pool, device3_id.clone());
+
+        let status = pool.status();
+        assert_eq!(status.tuners.len(), 3, "Should have 3 tuners");
+
+        assert_eq!(status.tuners[0].id.channel_index, 0);
+        assert_eq!(status.tuners[1].id.channel_index, 0);
+        assert_eq!(status.tuners[2].id.channel_index, 0);
+
+        let requirements = TaskRequirements {
+            frequency_hz: 88.9e6,
+            bandwidth_hz: 200e3,
+            required_sample_rate: 2.4e6,
+            priority: TaskPriority::Normal,
+        };
+
+        let tuner0 = pool
+            .try_acquire(&requirements, TunerActivity::Scanning)
+            .expect("Should acquire first tuner");
+        assert_eq!(
+            tuner0.id().channel_index,
+            0,
+            "Each device has channel_index 0"
+        );
+
+        let tuner1 = pool
+            .try_acquire(&requirements, TunerActivity::Scanning)
+            .expect("Should acquire second tuner");
+        assert_eq!(
+            tuner1.id().channel_index,
+            0,
+            "Each device has channel_index 0"
+        );
+
+        let tuner2 = pool
+            .try_acquire(&requirements, TunerActivity::Scanning)
+            .expect("Should acquire third tuner");
+        assert_eq!(
+            tuner2.id().channel_index,
+            0,
+            "Each device has channel_index 0"
+        );
+
+        assert_ne!(
+            tuner0.id().device_id,
+            tuner1.id().device_id,
+            "Different tuners should have different device_ids"
+        );
+        assert_ne!(
+            tuner1.id().device_id,
+            tuner2.id().device_id,
+            "Different tuners should have different device_ids"
+        );
+    }
+
+    #[test]
+    fn regression_test_pool_status_does_not_cause_lock_contention() {
+        use std::sync::{
+            Barrier,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let pool = Arc::new(Pool::new_unfiltered());
+
+        let device_id = hardware::DeviceId::from_serial("mock", "test_contention");
+        add_mock_device_to_pool(&pool, device_id.clone());
+
+        let barrier = Arc::new(Barrier::new(2));
+        let contention_count = Arc::new(AtomicUsize::new(0));
+
+        let pool_clone = Arc::clone(&pool);
+        let barrier_clone = Arc::clone(&barrier);
+
+        let status_thread = thread::spawn(move || {
+            barrier_clone.wait();
+
+            for _ in 0..1000 {
+                let _status = pool_clone.status();
+            }
+        });
+
+        let contention_clone = Arc::clone(&contention_count);
+        let entities_thread = thread::spawn(move || {
+            barrier.wait();
+
+            for _ in 0..1000 {
+                if pool.device_entities.try_lock().is_err() {
+                    contention_clone.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        });
+
+        status_thread.join().unwrap();
+        entities_thread.join().unwrap();
+
+        let final_contention = contention_count.load(Ordering::SeqCst);
+        assert!(
+            final_contention < 150,
+            "Lock contention should be low (< 150 contentions out of 1000 attempts), got {}. \
+             pool.status() should only briefly lock device_entities to get count, not hold it \
+             during status build.",
+            final_contention
+        );
+    }
+
+    #[test]
+    fn regression_test_concurrent_status_and_device_entity_access_never_deadlocks() {
+        use std::sync::Barrier;
+
+        let pool = Arc::new(Pool::new_unfiltered());
+
+        let device_id = hardware::DeviceId::from_serial("mock", "test_no_deadlock");
+        add_mock_device_to_pool(&pool, device_id.clone());
+
+        let iterations = 1000;
+        let barrier = Arc::new(Barrier::new(3));
+
+        let pool1 = Arc::clone(&pool);
+        let barrier1 = Arc::clone(&barrier);
+        let thread1 = thread::spawn(move || {
+            barrier1.wait();
+            for _ in 0..iterations {
+                let _status = pool1.status();
+            }
+        });
+
+        let pool2 = Arc::clone(&pool);
+        let barrier2 = Arc::clone(&barrier);
+        let thread2 = thread::spawn(move || {
+            barrier2.wait();
+            for _ in 0..iterations {
+                if let Ok(entities) = pool2.device_entities.try_lock() {
+                    let _count = entities.len();
+                }
+            }
+        });
+
+        let pool3 = Arc::clone(&pool);
+        let barrier3 = Arc::clone(&barrier);
+        let thread3 = thread::spawn(move || {
+            barrier3.wait();
+            for _ in 0..iterations {
+                if let Ok(entities) = pool3.tuner_entities.try_lock() {
+                    let _count = entities.len();
+                }
+            }
+        });
+
+        let start = Instant::now();
+
+        thread1.join().unwrap();
+        thread2.join().unwrap();
+        thread3.join().unwrap();
+
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "All threads should complete without deadlock, took {:?}",
+            elapsed
+        );
     }
 }

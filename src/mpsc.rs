@@ -1,8 +1,10 @@
-use rustradio::Float;
-use rustradio::stream::ReadStream;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{SyncSender, TrySendError};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+    mpsc::{SyncSender, TrySendError},
+};
+
+use rustradio::{Float, stream::ReadStream};
 use tracing::debug;
 
 /// A batch of audio samples transmitted as a single unit
@@ -142,10 +144,14 @@ impl<A: AudioSink> rustradio::block::Block for MpscSink<A> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rustradio::block::{Block, BlockEOF};
-    use rustradio::stream::WriteStream;
     use std::sync::{Arc, Mutex};
+
+    use rustradio::{
+        block::{Block, BlockEOF},
+        stream::WriteStream,
+    };
+
+    use super::*;
 
     #[derive(Default, Clone)]
     struct MockAudioSink {
