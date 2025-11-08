@@ -139,7 +139,8 @@ mod tests {
 
         // Add SignalEntity in Transitioning state - this is what the TransitionSystem processes
         let mut signal_world = EntityWorld::new();
-        let mut signal_entity = crate::ecs::SignalEntity::new(88.9e6, window_id.clone());
+        let mut signal_entity =
+            crate::ecs::SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
         signal_entity.tune_state = TuneState::transitioning(window_id, 88.9e6);
         signal_world.insert(signal_entity);
 

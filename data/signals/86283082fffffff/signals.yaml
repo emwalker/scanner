@@ -1,0 +1,183 @@
+version: v1.0
+signals:
+  88900000:
+    frequency_hz: 88900000.0
+    signal_strength: 20.72501564025879
+    first_detected: 2025-11-10T04:39:08.932571933Z
+    last_detected: 2025-11-11T02:32:41.866615684Z
+    detection_count: 2
+    modulation: WFM
+    notes: KRFC
+  89300000:
+    frequency_hz: 89300000.0
+    signal_strength: 42.29594421386719
+    first_detected: 2025-11-10T04:39:04.649991371Z
+    last_detected: 2025-11-10T04:39:04.649992006Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  89500000:
+    frequency_hz: 89500000.0
+    signal_strength: 27.143339157104492
+    first_detected: 2025-11-10T04:16:52.053429487Z
+    last_detected: 2025-11-10T04:16:52.053430144Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  89700000:
+    frequency_hz: 89700000.0
+    signal_strength: 32.55976867675781
+    first_detected: 2025-11-10T04:39:16.070837208Z
+    last_detected: 2025-11-10T04:39:16.070838084Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  90100000:
+    frequency_hz: 90100000.0
+    signal_strength: 52.359397888183594
+    first_detected: 2025-11-10T04:16:44.467324501Z
+    last_detected: 2025-11-10T04:39:23.647983765Z
+    detection_count: 2
+    modulation: WFM
+    notes: null
+  91100000:
+    frequency_hz: 91100000.0
+    signal_strength: 54.10041046142578
+    first_detected: 2025-11-10T04:17:03.649859942Z
+    last_detected: 2025-11-10T04:39:34.526616967Z
+    detection_count: 2
+    modulation: WFM
+    notes: null
+  91500000:
+    frequency_hz: 91500000.0
+    signal_strength: 38.36552047729492
+    first_detected: 2025-11-10T04:16:52.054036765Z
+    last_detected: 2025-11-10T04:39:42.124380226Z
+    detection_count: 2
+    modulation: WFM
+    notes: null
+  92900000:
+    frequency_hz: 92900000.0
+    signal_strength: 33.26959991455078
+    first_detected: 2025-11-10T04:39:49.507658809Z
+    last_detected: 2025-11-10T04:39:49.507659441Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  93100000:
+    frequency_hz: 93100000.0
+    signal_strength: 44.367740631103516
+    first_detected: 2025-11-10T04:40:04.581259752Z
+    last_detected: 2025-11-10T04:40:04.581260536Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  93300000:
+    frequency_hz: 93300000.0
+    signal_strength: 33.96872329711914
+    first_detected: 2025-11-10T04:40:12.061986098Z
+    last_detected: 2025-11-10T04:40:12.061986761Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  93500000:
+    frequency_hz: 93500000.0
+    signal_strength: 42.4234619140625
+    first_detected: 2025-11-10T04:39:57.029564041Z
+    last_detected: 2025-11-10T04:39:57.029564793Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  93900000:
+    frequency_hz: 93900000.0
+    signal_strength: 33.20143508911133
+    first_detected: 2025-11-10T04:40:19.418555286Z
+    last_detected: 2025-11-10T04:40:19.418556563Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  94900000:
+    frequency_hz: 94900000.0
+    signal_strength: 60.101497650146484
+    first_detected: 2025-11-10T04:40:30.511954763Z
+    last_detected: 2025-11-10T04:40:30.511957366Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  95900000:
+    frequency_hz: 95900000.0
+    signal_strength: 61.11499786376953
+    first_detected: 2025-11-10T04:40:41.476027595Z
+    last_detected: 2025-11-10T04:40:41.476028745Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  96100000:
+    frequency_hz: 96100000.0
+    signal_strength: 57.51934051513672
+    first_detected: 2025-11-10T04:41:21.789283505Z
+    last_detected: 2025-11-10T04:41:21.789289900Z
+    detection_count: 1
+    modulation: WFM
+    notes: KSME / KISS FM
+  96300000:
+    frequency_hz: 96300000.0
+    signal_strength: 63.69387435913086
+    first_detected: 2025-11-10T04:40:57.085903568Z
+    last_detected: 2025-11-10T04:40:57.085905793Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  96700000:
+    frequency_hz: 96700000.0
+    signal_strength: 22.73740005493164
+    first_detected: 2025-11-10T04:41:16.222666424Z
+    last_detected: 2025-11-10T04:41:16.222667111Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  96900000:
+    frequency_hz: 96900000.0
+    signal_strength: 52.027809143066406
+    first_detected: 2025-11-10T04:40:41.355810286Z
+    last_detected: 2025-11-10T04:40:41.355811368Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  97100000:
+    frequency_hz: 97100000.0
+    signal_strength: 33.541114807128906
+    first_detected: 2025-11-10T04:41:04.525941831Z
+    last_detected: 2025-11-10T04:41:04.525942611Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  97900000:
+    frequency_hz: 97900000.0
+    signal_strength: 36.42112350463867
+    first_detected: 2025-11-10T04:41:04.648565007Z
+    last_detected: 2025-11-10T04:41:04.648566443Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+  98500000:
+    frequency_hz: 98500000.0
+    signal_strength: 51.66343307495117
+    first_detected: 2025-11-10T04:41:34.742378301Z
+    last_detected: 2025-11-10T04:41:34.742380881Z
+    detection_count: 1
+    modulation: WFM
+    notes: Country music
+  99100000:
+    frequency_hz: 99100000.0
+    signal_strength: 40.671199798583984
+    first_detected: 2025-11-10T04:41:34.857494358Z
+    last_detected: 2025-11-10T04:41:34.857495067Z
+    detection_count: 1
+    modulation: WFM
+    notes: null
+metadata:
+  h3_cell_id: 86283082fffffff
+  center_lat: 37.77351509723813
+  center_lon: -122.41827103692466
+  last_updated: 2025-11-11T02:32:41.867545889Z

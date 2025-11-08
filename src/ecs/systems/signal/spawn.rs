@@ -229,7 +229,10 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use super::*;
-    use crate::ecs::{EntityWorld, SignalEntity, TaskId, WindowId};
+    use crate::{
+        core::signals::ModulationType,
+        ecs::{EntityWorld, SignalEntity, TaskId, WindowId},
+    };
 
     #[test]
     fn test_spawn_system_ignores_entities_without_input() {
@@ -237,7 +240,7 @@ mod tests {
 
         let task_id = TaskId::new("test-scan");
         let window_id = WindowId::new(task_id, 0);
-        let entity = SignalEntity::new(88.9e6, window_id);
+        let entity = SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
         let mut world = EntityWorld::new();
         world.insert(entity);
 
@@ -320,7 +323,7 @@ mod tests {
             }
         });
 
-        let mut entity = SignalEntity::new(91.1e6, window_id.clone());
+        let mut entity = SignalEntity::new(91.1e6, window_id.clone(), ModulationType::WFM);
         let input = crate::ecs::components::AnalysisInputComponent::new(
             rx_refining,
             rx_detection,

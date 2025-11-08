@@ -76,6 +76,11 @@ num = { version = "0.4", features = ["serde"] }
 hound = "3.5"
 bincode = "1.3"
 chrono = { version = "0.4", features = ["serde"] }
+h3ron = "0.17"
+geo-types = "0.7"
+serde_yaml = "0.9"
+dirs = "5.0"
+serde-ordered-collections = "2.0.0"
 rand = "0.8.5"
 ratatui = "0.28"
 crossterm = "0.28"

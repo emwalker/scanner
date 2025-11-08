@@ -161,6 +161,7 @@ mod tests {
     use super::*;
     use crate::{
         audio::quality::AudioQuality,
+        core::signals::ModulationType,
         ecs::{EntityWorld, SignalEntity, TaskId, WindowEntity, WindowId},
         hardware::{DeviceId, pool::TunerId},
     };
@@ -280,7 +281,7 @@ mod tests {
         window.allocation.mark_all_spawned();
 
         // Create signal that completed with Good quality and was queued for playback
-        let mut signal = SignalEntity::new(88.9e6, window_id.clone());
+        let mut signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
         signal.analysis.confirm_analysis(AudioQuality::Good, 0.8);
         signal.info.set_audio_quality(Some(AudioQuality::Good));
         signal.info.set_signal_strength(Some(0.8));
@@ -361,13 +362,17 @@ mod tests {
 
             // 5 failed signals (Skipped due to Poor quality)
             for i in 0..5 {
-                let mut signal = SignalEntity::new(88.0e6 + (i as f64 * 0.1e6), window_id.clone());
+                let mut signal = SignalEntity::new(
+                    88.0e6 + (i as f64 * 0.1e6),
+                    window_id.clone(),
+                    ModulationType::WFM,
+                );
                 signal.analysis.reject_analysis(AudioQuality::Poor, 0.2);
                 signals.insert(signal);
             }
 
             // 1 completed signal (good quality, finished playing)
-            let mut signal = SignalEntity::new(88.9e6, window_id.clone());
+            let mut signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
             signal.analysis.confirm_analysis(AudioQuality::Good, 0.8);
             signals.insert(signal);
         }
@@ -437,7 +442,7 @@ mod tests {
         window.allocation.complete_analysis();
 
         // Queue signal for playback (simulating signal 96.9 from the bug report)
-        let signal_id = SignalId::new(96.9e6, window_id.clone());
+        let signal_id = SignalId::new(96.9e6, ModulationType::WFM);
         window.allocation.queue_for_playback(signal_id);
 
         // Verify pre-conditions

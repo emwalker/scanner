@@ -9,7 +9,7 @@ use crate::{
     core::types::Result,
     ecs::{
         Entity,
-        components::{AnalysisStatus, signal::PlaybackState, window::WindowId},
+        components::{AnalysisStatus, SignalId, signal::PlaybackState, window::WindowId},
         system::{System, SystemContext},
     },
     hardware::pool::{PoolStatus, TunerId},
@@ -22,7 +22,7 @@ use crate::{
 /// Signal data for TUI display
 #[derive(Debug, Clone)]
 pub struct SignalData {
-    pub signal_id: String,
+    pub signal_id: SignalId,
     pub frequency_hz: f64,
     pub status: AnalysisStatus,
     pub playback_state: PlaybackState,
@@ -265,7 +265,7 @@ impl System for UIUpdateSystem {
                 let transition_status = transition_statuses.get(&freq_key).cloned();
 
                 let signal_data = SignalData {
-                    signal_id: entity.id().as_str().to_string(),
+                    signal_id: entity.id().clone(),
                     frequency_hz: entity.frequency(),
                     status: entity.status(),
                     playback_state: entity.playback.state(),
@@ -357,13 +357,14 @@ mod tests {
         let window_id = WindowId::new(scan_id, 0);
 
         // Create confirmed SignalEntity (which shows up in stations list)
-        let mut signal1 = crate::ecs::SignalEntity::new(88.9e6, window_id.clone());
+        let mut signal1 =
+            crate::ecs::SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
         signal1
             .analysis
             .confirm_analysis(crate::audio::quality::AudioQuality::Good, 0.8);
         signal_world.insert(signal1);
 
-        let mut signal2 = crate::ecs::SignalEntity::new(95.5e6, window_id);
+        let mut signal2 = crate::ecs::SignalEntity::new(95.5e6, window_id, ModulationType::WFM);
         signal2
             .analysis
             .confirm_analysis(crate::audio::quality::AudioQuality::Good, 0.85);
@@ -387,7 +388,7 @@ mod tests {
         let window_id = WindowId::new(scan_id, 0);
 
         let mut signal_world = EntityWorld::new();
-        let mut signal = crate::ecs::SignalEntity::new(88.9e6, window_id);
+        let mut signal = crate::ecs::SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
         signal
             .analysis
             .confirm_analysis(crate::audio::quality::AudioQuality::Good, 0.8);
@@ -420,13 +421,14 @@ mod tests {
 
         let mut signal_world = EntityWorld::new();
 
-        let mut signal1 = crate::ecs::SignalEntity::new(88.9e6, window_id.clone());
+        let mut signal1 =
+            crate::ecs::SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
         signal1
             .analysis
             .confirm_analysis(crate::audio::quality::AudioQuality::Good, 0.8);
         signal_world.insert(signal1);
 
-        let mut signal2 = crate::ecs::SignalEntity::new(95.5e6, window_id);
+        let mut signal2 = crate::ecs::SignalEntity::new(95.5e6, window_id, ModulationType::WFM);
         signal2
             .analysis
             .confirm_analysis(crate::audio::quality::AudioQuality::Good, 0.85);

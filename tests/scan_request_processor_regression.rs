@@ -4,7 +4,7 @@
 //! to fix the regression where tune state transitions were not happening.
 
 use scanner::{
-    core::types::Result,
+    core::{signals::ModulationType, types::Result},
     ecs::{
         SignalEntity, TaskId,
         components::{station::TuneState, window::WindowId},
@@ -17,7 +17,7 @@ use scanner::{
 fn test_signal_entity_tune_transition_works() -> Result<()> {
     let task_id = TaskId::new("test-scan");
     let window_id = WindowId::new(task_id.clone(), 1);
-    let mut signal = SignalEntity::new(88.9e6, window_id.clone());
+    let mut signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
 
     // Confirm the signal so it can be tuned
     signal
@@ -55,7 +55,7 @@ fn test_signal_entity_tune_transition_works() -> Result<()> {
 fn test_signal_entity_rejects_unconfirmed_tune_requests() -> Result<()> {
     let task_id = TaskId::new("test-scan");
     let window_id = WindowId::new(task_id.clone(), 1);
-    let mut signal = SignalEntity::new(88.9e6, window_id.clone());
+    let mut signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
 
     // Signal is NOT confirmed - analysis is still not started
     assert!(!signal.analysis.is_confirmed());
@@ -85,7 +85,7 @@ fn test_signal_entity_rejects_unconfirmed_tune_requests() -> Result<()> {
 fn test_signal_entity_rejects_double_tune_requests() -> Result<()> {
     let task_id = TaskId::new("test-scan");
     let window_id = WindowId::new(task_id.clone(), 1);
-    let mut signal = SignalEntity::new(88.9e6, window_id.clone());
+    let mut signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
 
     // Confirm the signal
     signal

@@ -10,7 +10,7 @@ pub struct SharedText;
 
 impl SharedText {
     pub fn title() -> &'static str {
-        "SPECTRUM SCANNER"
+        "MONITOR"
     }
 
     pub fn subtitle() -> &'static str {

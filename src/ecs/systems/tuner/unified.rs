@@ -119,6 +119,7 @@ impl TunerAllocationSystem {
             request.requirements.frequency_hz,
             &config,
             shutdown_coordinator.token(),
+            context.global_pause_resource.clone(),
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -187,6 +188,7 @@ impl TunerAllocationSystem {
             request.requirements.frequency_hz,
             &config,
             shutdown_coordinator.token(),
+            context.global_pause_resource.clone(),
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -249,7 +251,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        core::config::ScanningConfig,
+        core::{config::ScanningConfig, signals::ModulationType},
         ecs::{
             Entity, EntityWorld, TaskId, TunerAllocationRequest, TunerRequester, WindowEntity,
             WindowId,
@@ -528,7 +530,8 @@ mod tests {
 
         // Create SignalEntity with RequestQueued state
         let window_id = WindowId::new(TaskId::new("test"), 0);
-        let mut signal_entity = crate::ecs::SignalEntity::new(88.9e6, window_id.clone());
+        let mut signal_entity =
+            crate::ecs::SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
 
         // Set signal to RequestQueued state
         let request = TuneRequestComponent::new(window_id.clone());

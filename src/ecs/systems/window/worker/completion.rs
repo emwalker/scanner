@@ -121,6 +121,7 @@ impl System for WindowWorkerCompletionSystem {
                                     let mut signal = crate::ecs::SignalEntity::new(
                                         signal_data.frequency_hz,
                                         window_id.clone(),
+                                        crate::core::signals::ModulationType::WFM,
                                     );
 
                                     // Set up analysis input with segment audio subscribers

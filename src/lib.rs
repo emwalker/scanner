@@ -11,6 +11,7 @@ pub mod logging;
 pub mod main_thread;
 pub mod mpsc;
 pub mod pause_signal;
+pub mod persistence;
 pub mod pipeline;
 pub mod scanning;
 pub mod shutdown;

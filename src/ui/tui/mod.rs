@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use chrono::Utc;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -18,9 +19,15 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::{
+    core::signals::ModulationType,
     ecs::{
         AudioEntity, Entities, Entity, SignalEntity, TaskComponents, TaskEntity,
         components::scan::PreviousPauseState,
+    },
+    persistence::{
+        location::{Location, LocationDetector, UserSettings},
+        storage::SignalStorage,
+        types::PersistedSignal,
     },
     ui::TuiEvent,
 };
@@ -30,12 +37,16 @@ pub mod layout;
 pub mod model;
 pub mod renderers;
 pub mod themes;
+pub mod widgets;
+
+#[cfg(test)]
+pub mod integration_tests;
 
 use layout::Layout;
 use model::{FocusState, Model};
 use renderers::{
-    activities::render_activities, console::ConsoleRenderer, header, instructions, task_progress,
-    tuners,
+    activities::render_activities, console::ConsoleRenderer, header, instructions, signals_table,
+    task_progress, tuners,
 };
 use themes::{Theme, ThemeName, create_theme};
 
@@ -54,9 +65,33 @@ pub struct TuiProgressDisplay {
     pause_request_queue: Option<crate::ecs::Resource<crate::ecs::PauseRequestQueue>>,
     last_audio_gen: u64,
     last_scan_gen: u64,
+    signal_storage: SignalStorage,
 }
 
 impl TuiProgressDisplay {
+    /// Get the proper signals storage path
+    /// Uses project-relative path that works regardless of working directory
+    fn get_signals_storage_path() -> std::path::PathBuf {
+        // Try to find the project root by looking for Cargo.toml
+        let mut current_dir =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+        // Walk up the directory tree to find Cargo.toml (project root)
+        loop {
+            if current_dir.join("Cargo.toml").exists() {
+                return current_dir.join("data").join("signals");
+            }
+            if let Some(parent) = current_dir.parent() {
+                current_dir = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+
+        // Fallback to relative path if we can't find project root
+        std::path::PathBuf::from("data").join("signals")
+    }
+
     /// Create new TUI progress display with default theme
     pub fn new(receiver: mpsc::Receiver<TuiEvent>, shutdown_token: CancellationToken) -> Self {
         let current_theme = ThemeName::CaladanDark;
@@ -75,6 +110,7 @@ impl TuiProgressDisplay {
             pause_request_queue: None,
             last_audio_gen: 0,
             last_scan_gen: 0,
+            signal_storage: SignalStorage::new(Self::get_signals_storage_path()),
         }
     }
 
@@ -99,6 +135,7 @@ impl TuiProgressDisplay {
             pause_request_queue: None,
             last_audio_gen: 0,
             last_scan_gen: 0,
+            signal_storage: SignalStorage::new(Self::get_signals_storage_path()),
         }
     }
 
@@ -127,6 +164,36 @@ impl TuiProgressDisplay {
     pub fn with_global_pause_resource(mut self, resource: crate::ecs::GlobalPauseResource) -> Self {
         self.model
             .set_global_pause_resource(std::sync::Arc::clone(&resource));
+        self
+    }
+
+    /// Load persistent signals from storage during TUI initialization
+    /// Following Elm Architecture - this updates Model state during startup
+    pub fn with_persistence(mut self) -> Self {
+        // Use a default location for now - could be enhanced to get actual user location
+        let default_location = crate::persistence::location::Location {
+            lat: 37.7749, // San Francisco default
+            lon: -122.4194,
+        };
+
+        debug!(
+            "Starting persistent signal loading with location: lat={}, lon={}",
+            default_location.lat, default_location.lon
+        );
+
+        match self
+            .model
+            .load_persistent_signals_from_storage(&self.signal_storage, default_location)
+        {
+            Ok(()) => {
+                debug!("Successfully loaded persistent signals from storage");
+            }
+            Err(e) => {
+                // Log error but don't fail TUI startup
+                debug!("Failed to load persistent signals: {}", e);
+            }
+        }
+
         self
     }
 
@@ -357,6 +424,9 @@ impl TuiProgressDisplay {
             AnalysisStatus, PlaybackState, SignalProgress, WindowProgress,
         };
 
+        // Collect signals that need auto-save to process after all window updates
+        let mut signals_to_auto_save: Vec<SignalProgress> = Vec::new();
+
         for (window_id, signal_data_list) in signals_by_window {
             let window_index = window_id.window_index;
             let window = self
@@ -401,22 +471,48 @@ impl TuiProgressDisplay {
                     window_id: window_index,
                     center_frequency_hz: signal_data.frequency_hz,
                     completion: signal_data.completion,
-                    status,
+                    status: status.clone(),
                     playback_state,
                     audio_quality,
                     signal_strength,
                     last_update: Instant::now(),
+                    notes: None,
                 };
 
-                if let Some(&index) = window.signal_lookup.get(&signal_data.signal_id) {
-                    window.signals[index] = signal_progress;
-                } else {
-                    let index = window.signals.len();
-                    window
-                        .signal_lookup
-                        .insert(signal_data.signal_id.clone(), index);
-                    window.signals.push(signal_progress);
+                // Check if this signal needs auto-save
+                let should_auto_save =
+                    if let Some(&index) = window.signal_lookup.get(&signal_data.signal_id) {
+                        // Signal exists - check if status changed to confirmed for auto-save
+                        let previous_status = window.signals[index].status.clone();
+                        let needs_save = previous_status != AnalysisStatus::Signal
+                            && status == AnalysisStatus::Signal;
+                        window.signals[index] = signal_progress.clone();
+                        needs_save
+                    } else {
+                        // New signal - auto-save immediately if already confirmed
+                        let needs_save = status == AnalysisStatus::Signal;
+                        let index = window.signals.len();
+                        window
+                            .signal_lookup
+                            .insert(signal_data.signal_id.clone(), index);
+                        window.signals.push(signal_progress.clone());
+                        needs_save
+                    };
+
+                if should_auto_save {
+                    signals_to_auto_save.push(signal_progress);
                 }
+            }
+        }
+
+        // Process auto-save candidates after all window updates are complete
+        for signal_progress in signals_to_auto_save {
+            if let Err(e) = self.auto_save_confirmed_signal(&signal_progress) {
+                tracing::warn!(
+                    "Auto-save failed for signal {}: {}",
+                    signal_progress.signal_id,
+                    e
+                );
             }
         }
     }
@@ -771,6 +867,464 @@ impl TuiProgressDisplay {
         false
     }
 
+    /// Handle keyboard input for modal, returns true if handled
+    fn handle_modal_input(&mut self, key: &event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                // Close modal with ESC
+                self.model.handle_modal_escape_key(key);
+                true
+            }
+            KeyCode::Char(_) => {
+                // Handle text input for notes
+                self.model.handle_modal_text_input(key);
+                true
+            }
+            KeyCode::Backspace => {
+                // Handle backspace in modal notes
+                self.handle_modal_backspace();
+                true
+            }
+            KeyCode::Enter => {
+                // Save notes and close modal
+                self.handle_modal_save_and_close();
+                true
+            }
+            _ => false, // Let other keys pass through
+        }
+    }
+
+    /// Handle backspace in modal notes input
+    fn handle_modal_backspace(&mut self) {
+        if let Some(modal) = &mut self.model.signal_detail_modal
+            && !modal.notes_input.is_empty()
+        {
+            modal.notes_input.pop();
+            modal.is_notes_dirty = true;
+            self.model.mark_dirty();
+        }
+    }
+
+    /// Save modal notes and close modal
+    fn handle_modal_save_and_close(&mut self) {
+        if let Some(modal) = &self.model.signal_detail_modal
+            && modal.is_notes_dirty
+        {
+            let frequency_hz = modal.frequency_hz;
+            let notes = modal.notes_input.clone();
+
+            // Save to persistence layer using frequency-based lookup (more stable than SignalId)
+            if let Err(e) = self.save_signal_notes_by_frequency(frequency_hz, &notes) {
+                debug!(frequency_hz = frequency_hz, error = %e, "Failed to save modal notes to persistence layer");
+            } else {
+                debug!(
+                    frequency_hz = frequency_hz,
+                    notes_length = notes.len(),
+                    "Modal notes saved for signal"
+                );
+            }
+        }
+
+        // Close the modal
+        self.model.close_signal_detail_modal();
+    }
+
+    /// Handle keyboard input for notes editing, returns true if handled
+    fn handle_notes_editing_keys(&mut self, key: &event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Enter => {
+                // Save notes
+                if let Some((signal_id, notes)) = self.model.save_editing_notes() {
+                    // Save to persistence layer
+                    if let Err(e) = self.save_signal_notes(&signal_id, &notes) {
+                        debug!(signal_id = %signal_id, error = %e, "Failed to save notes to persistence layer");
+                    } else {
+                        debug!(signal_id = %signal_id, notes_length = notes.len(), "Notes saved for signal");
+                    }
+                }
+                true
+            }
+            KeyCode::Esc => {
+                // Cancel editing
+                self.model.cancel_editing_notes();
+                true
+            }
+            KeyCode::Char(c) => {
+                // Add character to input
+                self.model.notes_input.handle_char(c);
+                true
+            }
+            KeyCode::Backspace => {
+                // Remove character
+                self.model.notes_input.handle_backspace();
+                true
+            }
+            KeyCode::Delete => {
+                // Delete character at cursor
+                self.model.notes_input.handle_delete();
+                true
+            }
+            KeyCode::Left => {
+                // Move cursor left
+                self.model.notes_input.move_cursor_left();
+                true
+            }
+            KeyCode::Right => {
+                // Move cursor right
+                self.model.notes_input.move_cursor_right();
+                true
+            }
+            KeyCode::Home => {
+                // Move cursor to start
+                self.model.notes_input.move_cursor_home();
+                true
+            }
+            KeyCode::End => {
+                // Move cursor to end
+                self.model.notes_input.move_cursor_end();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Save signal notes to persistence layer
+    fn save_signal_notes(
+        &mut self,
+        signal_id: &crate::ecs::components::SignalId,
+        notes: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Try to find signal in scan windows first, then persistent signals
+        let (frequency_hz, signal_strength) =
+            if let Some(signal_progress) = self.find_signal_by_id(signal_id) {
+                // Found in scan windows
+                (
+                    signal_progress.frequency_hz,
+                    signal_progress.signal_strength.unwrap_or(0.5),
+                )
+            } else {
+                // Try to find in persistent signals using the Model's unified approach
+                self.find_signal_info_from_persistent(signal_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "Signal not found in scan windows or persistent signals: {}",
+                            signal_id
+                        )
+                    })?
+            };
+
+        // Get current location (with fallback for now)
+        let fallback_location = Location {
+            lat: 37.7749, // San Francisco default
+            lon: -122.4194,
+        };
+        let location = LocationDetector::get_current_location(Some(fallback_location))?;
+
+        // Create persisted signal with current data
+        let persisted_signal = PersistedSignal {
+            frequency_hz,
+            signal_strength,
+            first_detected: Utc::now(),
+            last_detected: Utc::now(),
+            detection_count: 1,
+            modulation: ModulationType::WFM,
+            notes: if notes.is_empty() {
+                None
+            } else {
+                Some(notes.to_string())
+            },
+        };
+
+        // Save signal to storage
+        self.signal_storage
+            .save_signal(&persisted_signal, location)?;
+
+        // Also save user settings with updated location
+        let user_settings = crate::persistence::location::UserSettings {
+            version: "v1.0".to_string(),
+            last_known_location: Some(crate::persistence::location::CachedLocation {
+                lat: location.lat,
+                lon: location.lon,
+                timestamp: Utc::now(),
+            }),
+            preferences: crate::persistence::location::UserPreferences {
+                auto_save_interval_seconds: 30,
+            },
+        };
+
+        // Save user settings to ~/.scanner/settings.json
+        crate::persistence::location::LocationDetector::save_user_settings(&user_settings)?;
+
+        // ELM ARCHITECTURE FIX: Update Model state after storage save
+        // The bug was that we saved to storage but didn't update the Model,
+        // so the View continued showing stale data until app restart
+        self.update_persistent_signal_notes(frequency_hz, notes)?;
+
+        // ADDITIONAL FIX: Also update scan signal notes in model.windows if it exists
+        // This fixes the case where both scan and persistent signals exist for same frequency
+        self.update_scan_signal_notes(signal_id, notes)?;
+
+        Ok(())
+    }
+
+    /// Save signal notes by frequency (stable identifier for persistent signals)
+    /// This fixes the SignalId lookup bug by using frequency as the primary key
+    fn save_signal_notes_by_frequency(
+        &mut self,
+        frequency_hz: f64,
+        notes: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Find signal strength - try scan signals first, then persistent signals
+        let signal_strength = if let Some(signal_progress) =
+            self.find_signal_by_frequency_in_scan_windows(frequency_hz)
+        {
+            signal_progress.signal_strength.unwrap_or(0.5)
+        } else if let Some(persisted_signal) =
+            self.find_persistent_signal_by_frequency(frequency_hz)
+        {
+            persisted_signal.signal_strength
+        } else {
+            // Default signal strength for new persistent signals
+            0.5
+        };
+
+        // Get current location (with fallback for now)
+        let fallback_location = Location {
+            lat: 37.7749, // San Francisco default
+            lon: -122.4194,
+        };
+        let location = LocationDetector::get_current_location(Some(fallback_location))?;
+
+        // Create persisted signal with current data
+        let persisted_signal = PersistedSignal {
+            frequency_hz,
+            signal_strength,
+            first_detected: Utc::now(),
+            last_detected: Utc::now(),
+            detection_count: 1,
+            modulation: ModulationType::WFM,
+            notes: if notes.is_empty() {
+                None
+            } else {
+                Some(notes.to_string())
+            },
+        };
+
+        // Save signal to storage
+        self.signal_storage
+            .save_signal(&persisted_signal, location)?;
+
+        // Also save user settings with updated location
+        let user_settings = crate::persistence::location::UserSettings {
+            version: "v1.0".to_string(),
+            last_known_location: Some(crate::persistence::location::CachedLocation {
+                lat: location.lat,
+                lon: location.lon,
+                timestamp: Utc::now(),
+            }),
+            preferences: crate::persistence::location::UserPreferences {
+                auto_save_interval_seconds: 30,
+            },
+        };
+
+        // Save user settings to ~/.scanner/settings.json
+        crate::persistence::location::LocationDetector::save_user_settings(&user_settings)?;
+
+        // ELM ARCHITECTURE FIX: Update Model state after storage save
+        self.update_persistent_signal_notes(frequency_hz, notes)?;
+
+        Ok(())
+    }
+
+    /// Find signal by frequency in scan windows
+    fn find_signal_by_frequency_in_scan_windows(
+        &self,
+        frequency_hz: f64,
+    ) -> Option<&crate::ui::tui::model::types::SignalProgress> {
+        for window in self.model.windows.values() {
+            for signal in &window.signals {
+                if (signal.frequency_hz - frequency_hz).abs() < 1000.0 {
+                    return Some(signal);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find persistent signal by frequency
+    fn find_persistent_signal_by_frequency(&self, frequency_hz: f64) -> Option<&PersistedSignal> {
+        self.model
+            .persistent_signals
+            .iter()
+            .find(|s| (s.frequency_hz - frequency_hz).abs() < 1000.0)
+    }
+
+    /// Update persistent signal notes in the Model state (Elm Architecture pattern)
+    /// This ensures the View shows updated data immediately after Update
+    fn update_persistent_signal_notes(
+        &mut self,
+        frequency_hz: f64,
+        notes: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Find and update the persistent signal in the Model
+        for persistent_signal in &mut self.model.persistent_signals {
+            if (persistent_signal.frequency_hz - frequency_hz).abs() < 1.0 {
+                persistent_signal.notes = if notes.is_empty() {
+                    None
+                } else {
+                    Some(notes.to_string())
+                };
+                persistent_signal.last_detected = chrono::Utc::now();
+
+                debug!(
+                    frequency_hz = frequency_hz,
+                    notes_length = notes.len(),
+                    "Updated persistent signal notes in Model state"
+                );
+
+                // Mark UI as dirty to trigger re-render
+                self.model.mark_dirty();
+                return Ok(());
+            }
+        }
+
+        Err(format!(
+            "Persistent signal not found in Model for frequency: {} Hz",
+            frequency_hz
+        )
+        .into())
+    }
+
+    /// Update scan signal notes in model.windows (fixes UI update bug)
+    /// This ensures the View shows updated data immediately after Update
+    fn update_scan_signal_notes(
+        &mut self,
+        signal_id: &crate::ecs::components::SignalId,
+        notes: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Find and update the scan signal in model.windows
+        for window in &mut self.model.windows.values_mut() {
+            if let Some(index) = window.signal_lookup.get(signal_id)
+                && let Some(signal) = window.signals.get_mut(*index)
+            {
+                signal.notes = if notes.is_empty() {
+                    None
+                } else {
+                    Some(notes.to_string())
+                };
+
+                debug!(
+                    signal_id = %signal_id,
+                    frequency_hz = signal.frequency_hz,
+                    notes_length = notes.len(),
+                    "Updated scan signal notes in Model state"
+                );
+
+                // Mark UI as dirty to trigger re-render
+                self.model.mark_dirty();
+                return Ok(());
+            }
+        }
+
+        // Not finding the scan signal is OK - it might be a persistent-only signal
+        debug!(
+            signal_id = %signal_id,
+            "Scan signal not found in windows (might be persistent-only signal)"
+        );
+        Ok(())
+    }
+
+    /// Auto-save newly confirmed signals to persistence
+    fn auto_save_confirmed_signal(
+        &mut self,
+        signal_progress: &crate::ui::tui::model::types::SignalProgress,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let location = LocationDetector::get_current_location(Some(Location {
+            lat: 37.7749, // San Francisco default
+            lon: -122.4194,
+        }))?;
+
+        // Check if signal already exists in persistent storage to preserve metadata
+        let existing_signals = self.signal_storage.load_signals_for_location(location)?;
+        if let Some(existing) = existing_signals
+            .iter()
+            .find(|s| (s.frequency_hz - signal_progress.frequency_hz).abs() < 1000.0)
+        {
+            // Update existing signal: increment detection count, update last_detected, preserve
+            // user notes
+            let updated_signal = PersistedSignal {
+                frequency_hz: existing.frequency_hz,
+                signal_strength: existing
+                    .signal_strength
+                    .max(signal_progress.signal_strength.unwrap_or(0.5)),
+                first_detected: existing.first_detected, // Preserve original
+                last_detected: Utc::now(),               // Update to now
+                detection_count: existing.detection_count + 1, // Increment
+                modulation: existing.modulation.clone(), // Preserve
+                notes: existing.notes.clone(),           // Preserve user notes
+            };
+
+            self.signal_storage.save_signal(&updated_signal, location)?;
+        } else {
+            // New signal - auto-save with initial metadata
+            let new_signal = PersistedSignal {
+                frequency_hz: signal_progress.frequency_hz,
+                signal_strength: signal_progress.signal_strength.unwrap_or(0.5),
+                first_detected: Utc::now(),
+                last_detected: Utc::now(),
+                detection_count: 1,              // First detection
+                modulation: ModulationType::WFM, // Default modulation
+                notes: None,                     // No notes initially
+            };
+
+            self.signal_storage.save_signal(&new_signal, location)?;
+        }
+
+        // Save user settings after signal save (maintains existing behavior)
+        LocationDetector::save_user_settings(&UserSettings::default())?;
+
+        Ok(())
+    }
+
+    /// Look up signal by ID directly from model data
+    fn find_signal_by_id(
+        &self,
+        signal_id: &crate::ecs::components::SignalId,
+    ) -> Option<&crate::ui::tui::model::types::SignalProgress> {
+        for window in self.model.windows.values() {
+            if let Some(index) = window.signal_lookup.get(signal_id) {
+                return window.signals.get(*index);
+            }
+        }
+        None
+    }
+
+    /// Find signal info from persistent signals for save operations
+    fn find_signal_info_from_persistent(
+        &self,
+        signal_id: &crate::ecs::components::SignalId,
+    ) -> Option<(f64, f64)> {
+        // Search persistent signals by matching SignalId to frequency
+        for (freq_key, stored_signal_id) in &self.model.persistent_signal_ids {
+            if stored_signal_id == signal_id {
+                let frequency_hz = *freq_key as f64;
+                // Find the persistent signal with this frequency and return its info
+                if let Some(persisted_signal) = self
+                    .model
+                    .persistent_signals
+                    .iter()
+                    .find(|s| (s.frequency_hz - frequency_hz).abs() < 1000.0)
+                {
+                    return Some((
+                        persisted_signal.frequency_hz,
+                        persisted_signal.signal_strength,
+                    ));
+                }
+            }
+        }
+        None
+    }
+
     /// Process TUI events (progress updates and discovery)
     fn process_tui_events(&mut self, iterations: &mut u32) -> io::Result<()> {
         while let Ok(event) = self.receiver.try_recv() {
@@ -796,6 +1350,14 @@ impl TuiProgressDisplay {
                         return Ok(false);
                     }
 
+                    // Modal takes priority when open
+                    if self.model.should_handle_modal_input(&key) {
+                        let handled = self.handle_modal_input(&key);
+                        if handled {
+                            return Ok(false);
+                        }
+                    }
+
                     // Toggle theme selector
                     if matches!(key.code, KeyCode::Char('T')) {
                         let all_themes = themes::ThemeName::all();
@@ -811,6 +1373,23 @@ impl TuiProgressDisplay {
                     // Handle spacebar for global pause/resume
                     if matches!(key.code, KeyCode::Char(' ')) {
                         self.handle_spacebar_pause();
+                        return Ok(false);
+                    }
+
+                    // Handle notes editing
+                    if self.model.is_editing_notes() {
+                        let handled = self.handle_notes_editing_keys(&key);
+                        if handled {
+                            return Ok(false);
+                        }
+                    }
+
+                    // Open signal detail modal with ENTER key when focused on signals table
+                    if matches!(key.code, KeyCode::Enter)
+                        && !self.model.is_editing_notes()
+                        && matches!(self.model.focus_state, FocusState::SignalsTable(_))
+                    {
+                        self.model.handle_signal_table_enter_key(&key);
                         return Ok(false);
                     }
 
@@ -898,8 +1477,14 @@ impl TuiProgressDisplay {
         let theme_name = self.current_theme.to_string();
 
         let tuner_count = self.model.tuners.len();
-        let signal_count = self.model.displayable_signal_count();
-        let layout = Layout::new(f.area(), tuner_count, signal_count);
+        let confirmed_signals_count = self.model.confirmed_signal_count();
+        let total_signals_count = self.model.displayable_signal_count();
+        let layout = Layout::new(
+            f.area(),
+            tuner_count,
+            confirmed_signals_count,
+            total_signals_count,
+        );
 
         header::render_header(f, layout.header, &self.model, theme);
         render_activities(f, layout.activities, &mut self.model, theme);
@@ -923,6 +1508,7 @@ impl TuiProgressDisplay {
         }
 
         tuners::render_tuners(f, layout.tuners, &mut self.model, theme);
+        signals_table::render_signals_table(f, layout.signals_table, &mut self.model, theme);
 
         let all_themes: Vec<String> = themes::ThemeName::all()
             .iter()
@@ -936,6 +1522,11 @@ impl TuiProgressDisplay {
             &self.model,
             &all_themes,
         );
+
+        // Render modal on top of everything else if it's open
+        if self.model.should_render_modal() {
+            renderers::modal::render_signal_detail_modal(f, &self.model, theme);
+        }
     }
 
     /// Check if we're running in an interactive terminal
@@ -1076,7 +1667,7 @@ mod tests {
     use super::*;
     use crate::{
         audio::quality::AudioQuality,
-        core::types::{ModulationType, Signal},
+        core::{signals::ModulationType, types::Signal},
         ecs::{AudioEntity, EntityWorld},
     };
 

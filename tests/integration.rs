@@ -7,7 +7,10 @@ use std::{
 
 use scanner::{
     audio::quality::{AudioAnalyzer, AudioQuality},
-    core::types::{Format, ModulationType, Result, ScanningConfig, Signal},
+    core::{
+        signals::ModulationType,
+        types::{Format, Result, ScanningConfig, Signal},
+    },
     ecs::{
         Coordinator, Entity, EntityWorld, ScanTaskData, SignalEntity, TaskEntity, TaskId,
         WindowEntity, WindowId,
@@ -93,7 +96,7 @@ fn test_task_has_no_pause_request_initially() {
 fn test_signal_has_idle_tune_state_initially() {
     let task_id = TaskId::new("scan_1");
     let window_id = WindowId::new(task_id, 1);
-    let signal = SignalEntity::new(88.9e6, window_id);
+    let signal = SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
     assert!(signal.tune_state.is_idle());
 }
 
@@ -113,7 +116,7 @@ fn test_signal_tune_state_progression() {
 
     let task_id = TaskId::new("scan_1");
     let window_id = WindowId::new(task_id, 1);
-    let mut signal_entity = SignalEntity::new(88.9e6, window_id.clone());
+    let mut signal_entity = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
 
     assert!(signal_entity.tune_state.is_idle());
 
@@ -174,7 +177,7 @@ fn test_phase4a_dual_path_signal_processing() -> Result<()> {
 
     let task_id = TaskId::new("test-scan");
     let window_id = WindowId::new(task_id.clone(), 0);
-    let mut entity = SignalEntity::new(88.9e6, window_id.clone());
+    let mut entity = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
 
     let (tx, rx) = std::sync::mpsc::channel();
 

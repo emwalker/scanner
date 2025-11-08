@@ -196,6 +196,10 @@ where
                 crate::ui::tui::model::types::FocusState::ScanProgress(selected),
                 FocusedTable::ScanProgress,
             ) => Some(*selected),
+            (
+                crate::ui::tui::model::types::FocusState::SignalsTable(selected),
+                FocusedTable::SignalsTable,
+            ) => Some(*selected),
             _ => None,
         }
     }

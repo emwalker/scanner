@@ -132,6 +132,10 @@ impl AudioCaptureSink<Buffering> {
         // Format modulation type
         let mod_str = match modulation_type {
             ModulationType::WFM => "wfm",
+            ModulationType::NFM => "nfm",
+            ModulationType::AM => "am",
+            ModulationType::LSB => "lsb",
+            ModulationType::USB => "usb",
         };
 
         // Find next available test number

@@ -1,5 +1,7 @@
 use super::super::helpers::{ModelTestContext, TestSignalState};
-use crate::ui::tui::model::UiMode;
+use crate::{
+    core::signals::ModulationType, ecs::components::signal::SignalId, ui::tui::model::UiMode,
+};
 
 #[test]
 fn test_ui_mode_transition_idle_to_navigating() {
@@ -28,7 +30,7 @@ fn test_ui_mode_transition_navigating_to_awaiting_tune() {
     model.ui_mode = UiMode::AwaitingTune {
         signal_index: 0,
         window_id: 0,
-        tuning_signal_id: "88.9-0".to_string(),
+        tuning_signal_id: SignalId::from_string("88.9-0".to_string()),
     };
 
     assert!(model.is_awaiting_tune());
@@ -39,7 +41,6 @@ fn test_ui_mode_transition_navigating_to_awaiting_tune() {
 fn test_ui_mode_transition_awaiting_tune_to_listening() {
     let mut ctx = ModelTestContext::new();
     let window_id = 1;
-    let signal_id = "88.9-test-task-1".to_string();
 
     ctx.update_signal(
         88_900_000.0,
@@ -49,6 +50,9 @@ fn test_ui_mode_transition_awaiting_tune_to_listening() {
         None,
     );
     ctx.sync();
+
+    // Get the actual SignalId that was created (now uses new format)
+    let signal_id = SignalId::new(88_900_000.0, ModulationType::WFM);
 
     ctx.model.ui_mode = UiMode::AwaitingTune {
         signal_index: 0,
@@ -81,9 +85,6 @@ fn test_ui_mode_transition_listening_to_listening_switch_station() {
     let mut ctx = ModelTestContext::new();
     let window_id = 1;
 
-    let signal1_id = "88.5-test-task-1".to_string();
-    let signal2_id = "88.9-test-task-1".to_string();
-
     ctx.update_signal(
         88_500_000.0,
         window_id,
@@ -99,6 +100,10 @@ fn test_ui_mode_transition_listening_to_listening_switch_station() {
         None,
     );
     ctx.sync();
+
+    // Get the actual SignalIds that were created (now use new format)
+    let signal1_id = SignalId::new(88_500_000.0, ModulationType::WFM);
+    let signal2_id = SignalId::new(88_900_000.0, ModulationType::WFM);
 
     ctx.model.ui_mode = UiMode::Listening {
         signal_index: 0,
@@ -136,7 +141,7 @@ fn test_ui_mode_transition_listening_to_idle() {
     model.ui_mode = UiMode::Listening {
         signal_index: 0,
         window_id: 1,
-        playing_signal_id: "88.9-1".to_string(),
+        playing_signal_id: SignalId::from_string("88.9-1".to_string()),
     };
 
     model.ui_mode = UiMode::Idle;

@@ -17,6 +17,7 @@ pub mod scan;
 pub mod signal;
 pub mod station;
 pub mod task;
+pub mod ui;
 pub mod window;
 
 pub use allocation::{AllocationComponent, AllocationState};

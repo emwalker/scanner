@@ -50,6 +50,7 @@ impl PlaybackSystem {
         config: &std::sync::Arc<crate::core::types::ScanningConfig>,
         shutdown_coordinator: &std::sync::Arc<crate::shutdown::ShutdownCoordinator>,
         audio_resources: &AudioResources,
+        global_pause_resource: &Option<crate::ecs::GlobalPauseResource>,
     ) -> bool {
         // Find the signal by station_id (string match during dual-write)
         let mut signals = match signal_entities.try_write() {
@@ -104,6 +105,7 @@ impl PlaybackSystem {
             request.center_frequency,
             config,
             shutdown_coordinator.token(),
+            global_pause_resource.clone(),
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -230,6 +232,7 @@ impl PlaybackSystem {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_audio_queue(
         audio_entities: &Entities<AudioEntity>,
         audio_streams: &Resource<HashMap<AudioId, cpal::Stream>>,
@@ -238,6 +241,7 @@ impl PlaybackSystem {
         pool: &std::sync::Arc<crate::hardware::pool::Pool>,
         config: &std::sync::Arc<crate::core::types::ScanningConfig>,
         shutdown_coordinator: &std::sync::Arc<crate::shutdown::ShutdownCoordinator>,
+        global_pause_resource: &Option<crate::ecs::GlobalPauseResource>,
     ) {
         let mut queue = match audio_queue.try_lock() {
             Ok(q) => q,
@@ -270,6 +274,7 @@ impl PlaybackSystem {
                         signal.frequency_hz,
                         config,
                         shutdown_coordinator.token(),
+                        global_pause_resource.clone(),
                     ) {
                         let sdr_rx = segment.audio_subscriber();
 
@@ -394,6 +399,7 @@ impl System for PlaybackSystem {
                     streams: &audio_streams,
                     segments: &audio_segments,
                 },
+                &context.global_pause_resource,
             );
 
             if success {
@@ -426,6 +432,7 @@ impl System for PlaybackSystem {
                 &pool,
                 &config,
                 &shutdown_coordinator,
+                &context.global_pause_resource,
             );
         }
 

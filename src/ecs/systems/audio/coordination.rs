@@ -187,7 +187,7 @@ mod tests {
         let mut signal_world = EntityWorld::new();
         let window_id = WindowId::new(TaskId::new("test-scan".to_string()), 1);
 
-        let signal = SignalEntity::new(88.9e6, window_id);
+        let signal = SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
 
         signal_world.insert(signal);
 
@@ -221,7 +221,7 @@ mod tests {
 
         // Create SignalEntity with NotPlaying state (default)
         // This represents the signal that the audio is for, but it's not currently playing
-        let signal_entity = crate::ecs::SignalEntity::new(88.9e6, window_id);
+        let signal_entity = crate::ecs::SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
         // Note: signal_entity.playback defaults to PlaybackState::NotPlaying
         signal_world.insert(signal_entity);
 
@@ -269,7 +269,7 @@ mod tests {
         // the removal is based on stop_listening_request, not playing state
         let task_id = TaskId::new("test_task");
         let window_id = WindowId::new(task_id, 0);
-        let signal_entity = crate::ecs::SignalEntity::new(88.9e6, window_id);
+        let signal_entity = crate::ecs::SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
         signal_world.insert(signal_entity);
 
         let audio_entities = Arc::new(RwLock::new(audio_world));

@@ -1,6 +1,6 @@
-# Scanner
+# Monitor
 
-This project is a software-defined radio (SDR) scanner. Eventually it will sweep over a frequency range, look for stations that are transmitting, and attempt to demodulate the signal to determine if there is audio and human voice. The hope is to support various modes like WBFM, NFM, LSB, USB, and AM.
+This project is a software-defined radio (SDR) monitor. Eventually it will sweep over a frequency range, look for stations that are transmitting, and attempt to demodulate the signal to determine if there is audio and human voice. The hope is to support various modes like WBFM, NFM, LSB, USB, and AM.
 
 ```sh
 $ cargo run -- scan --band fm

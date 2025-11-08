@@ -1,5 +1,5 @@
 use super::super::helpers::{ModelTestContext, TestSignalState};
-use crate::ui::tui::model::UiMode;
+use crate::{ecs::components::signal::SignalId, ui::tui::model::UiMode};
 
 #[test]
 fn test_browsing_mode_only_true_when_scan_paused() {
@@ -43,7 +43,7 @@ fn test_browsing_mode_only_true_when_scan_paused() {
         ctx.model.ui_mode = UiMode::Listening {
             signal_index,
             window_id,
-            playing_signal_id: "test-signal".to_string(),
+            playing_signal_id: SignalId::from_string("test-signal".to_string()),
         };
     }
     assert!(matches!(ctx.model.ui_mode, UiMode::Listening { .. }));

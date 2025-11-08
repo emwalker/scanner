@@ -151,7 +151,7 @@ pub fn render_no_progress_message(
     f.render_widget(paragraph, area);
 }
 
-fn format_frequency_hz(freq_hz: f64) -> String {
+pub fn format_frequency_hz(freq_hz: f64) -> String {
     let freq_int = freq_hz as u64;
     let freq_str = freq_int.to_string();
     let len = freq_str.len();
@@ -182,8 +182,19 @@ mod tests {
             audio_quality: None,
             is_window_complete: false,
             completion: 0.5,
+            notes: None,
         };
 
         assert_eq!(row.group_id(), 5);
+    }
+
+    #[test]
+    fn test_scan_progress_uses_central_frequency_formatting() {
+        // Test that scan progress table uses central formatting function
+        let frequency_hz = 89_100_000.0;
+        let formatted = format_frequency_hz(frequency_hz);
+
+        // Should produce dotted format via central function
+        assert_eq!(formatted, "89.100.000");
     }
 }

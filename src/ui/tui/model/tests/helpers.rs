@@ -6,9 +6,10 @@ use std::{
 use indexmap::IndexMap;
 
 use crate::{
+    core::signals::ModulationType,
     ecs::{
         AudioEntity, Entities, Entity, EntityWorld, SignalEntity, System, SystemContext,
-        components::window::WindowId,
+        components::{signal::SignalId, window::WindowId},
     },
     hardware::pool::{PoolStatus, TunerActivity, TunerId, TunerState, TunerStatus},
     ui::tui::model::Model,
@@ -104,12 +105,16 @@ impl ModelTestContext {
 
         let task_id = TaskId::new("test-task");
         let window_identifier = WindowId::new(task_id.clone(), window_id);
-        let id = SignalId::new(frequency_hz, window_identifier.clone());
+        let id = SignalId::new(frequency_hz, ModulationType::WFM);
         let mut entities = self.signal_entities.write().unwrap();
 
         // Create entity if it doesn't exist
         if entities.get(&id).is_none() {
-            entities.insert(SignalEntity::new(frequency_hz, window_identifier.clone()));
+            entities.insert(SignalEntity::new(
+                frequency_hz,
+                window_identifier.clone(),
+                ModulationType::WFM,
+            ));
         }
 
         if let Some(entity) = entities.get_mut(&id) {
@@ -175,10 +180,14 @@ impl ModelTestContext {
 
         // Mirror changes to SignalEntity
         let mut signal_entities = self.signal_entities.write().unwrap();
-        let signal_id = SignalId::new(frequency_hz, window_identifier.clone());
+        let signal_id = SignalId::new(frequency_hz, ModulationType::WFM);
 
         if signal_entities.get(&signal_id).is_none() {
-            signal_entities.insert(SignalEntity::new(frequency_hz, window_identifier.clone()));
+            signal_entities.insert(SignalEntity::new(
+                frequency_hz,
+                window_identifier.clone(),
+                ModulationType::WFM,
+            ));
         }
 
         if let Some(signal) = signal_entities.get_mut(&signal_id) {
@@ -319,7 +328,7 @@ impl ModelTestContext {
             types::{AnalysisStatus, PlaybackState, SignalProgress, WindowProgress},
         };
 
-        let mut playing_signal_id: Option<String> = None;
+        let mut playing_signal_id: Option<SignalId> = None;
         let is_browsing = matches!(
             self.model.ui_mode,
             UiMode::NavigatingScanner { .. } | UiMode::Listening { .. }
@@ -389,6 +398,7 @@ impl ModelTestContext {
                     audio_quality,
                     signal_strength,
                     last_update: Instant::now(),
+                    notes: None,
                 };
 
                 if let Some(&index) = window.signal_lookup.get(&signal_data.signal_id) {
@@ -409,12 +419,12 @@ impl ModelTestContext {
         }
     }
 
-    fn mark_old_playing_as_completed(&mut self, new_playing_id: &str) {
+    fn mark_old_playing_as_completed(&mut self, new_playing_id: &SignalId) {
         use crate::ui::tui::model::types::PlaybackState;
 
         for window in self.model.windows.values_mut() {
             for signal in &mut window.signals {
-                if signal.signal_id != new_playing_id
+                if signal.signal_id != *new_playing_id
                     && signal.playback_state == PlaybackState::Playing
                 {
                     signal.playback_state = PlaybackState::Completed;
@@ -423,7 +433,7 @@ impl ModelTestContext {
         }
     }
 
-    fn transition_to_listening_if_needed(&mut self, playing_signal_id: &str) {
+    fn transition_to_listening_if_needed(&mut self, playing_signal_id: &SignalId) {
         use crate::ui::tui::model::UiMode;
 
         match &self.model.ui_mode {
@@ -434,11 +444,11 @@ impl ModelTestContext {
             } => {
                 for (window_id, window) in &self.model.windows {
                     for signal in &window.signals {
-                        if signal.signal_id == playing_signal_id {
+                        if signal.signal_id == *playing_signal_id {
                             self.model.ui_mode = UiMode::Listening {
                                 signal_index: *signal_index,
                                 window_id: *window_id,
-                                playing_signal_id: playing_signal_id.to_string(),
+                                playing_signal_id: playing_signal_id.clone(),
                             };
                             return;
                         }
@@ -448,11 +458,11 @@ impl ModelTestContext {
             UiMode::Listening { signal_index, .. } => {
                 for (window_id, window) in &self.model.windows {
                     for signal in &window.signals {
-                        if signal.signal_id == playing_signal_id {
+                        if signal.signal_id == *playing_signal_id {
                             self.model.ui_mode = UiMode::Listening {
                                 signal_index: *signal_index,
                                 window_id: *window_id,
-                                playing_signal_id: playing_signal_id.to_string(),
+                                playing_signal_id: playing_signal_id.clone(),
                             };
                             return;
                         }

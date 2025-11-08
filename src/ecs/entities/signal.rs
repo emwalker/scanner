@@ -1,10 +1,13 @@
-use crate::ecs::{
-    Entity,
-    components::{
-        AnalysisInputComponent,
-        signal::*,
-        station::{TuneState, TuneTransitionComponent},
-        window::WindowId,
+use crate::{
+    core::signals::ModulationType,
+    ecs::{
+        Entity,
+        components::{
+            AnalysisInputComponent,
+            signal::*,
+            station::{TuneState, TuneTransitionComponent},
+            window::WindowId,
+        },
     },
 };
 
@@ -22,10 +25,10 @@ pub struct SignalEntity {
 }
 
 impl SignalEntity {
-    pub fn new(frequency_hz: f64, window_id: WindowId) -> Self {
+    pub fn new(frequency_hz: f64, window_id: WindowId, modulation: ModulationType) -> Self {
         Self {
-            id: SignalId::new(frequency_hz, window_id.clone()),
-            info: SignalInfoComponent::new(frequency_hz),
+            id: SignalId::new(frequency_hz, modulation.clone()),
+            info: SignalInfoComponent::new(frequency_hz, modulation),
             discovery: SignalDiscoveryComponent::new(window_id),
             analysis: AnalysisStateComponent::new(),
             analysis_input: None,
@@ -144,7 +147,7 @@ mod tests {
     #[test]
     fn test_signal_entity_creation() {
         let window_id = create_test_window_id();
-        let signal = SignalEntity::new(88.9e6, window_id.clone());
+        let signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
 
         assert_eq!(signal.frequency(), 88.9e6);
         assert_eq!(signal.window_id(), &window_id);
@@ -158,15 +161,15 @@ mod tests {
     #[test]
     fn test_signal_id_format() {
         let window_id = create_test_window_id();
-        let signal = SignalEntity::new(88.9e6, window_id);
+        let signal = SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
 
-        assert_eq!(signal.id().as_str(), "88.9-test-scan-5");
+        assert_eq!(signal.id().as_str(), "000.088.900.000-WFM");
     }
 
     #[test]
     fn test_tune_requires_confirmed_analysis() {
         let window_id = create_test_window_id();
-        let mut signal = SignalEntity::new(88.9e6, window_id.clone());
+        let mut signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
 
         let result = signal.request_tune_transition(window_id, 88.9e6);
 
@@ -178,7 +181,7 @@ mod tests {
     #[test]
     fn test_tune_blocked_during_analysis() {
         let window_id = create_test_window_id();
-        let mut signal = SignalEntity::new(88.9e6, window_id.clone());
+        let mut signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
 
         let (handle, rx) = create_test_analysis_thread();
         signal.analysis.start_analysis(handle, rx);
@@ -192,7 +195,7 @@ mod tests {
     #[test]
     fn test_tune_blocked_when_rejected() {
         let window_id = create_test_window_id();
-        let mut signal = SignalEntity::new(88.9e6, window_id.clone());
+        let mut signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
 
         signal.analysis.reject_analysis(AudioQuality::NoAudio, 0.05);
 
@@ -205,7 +208,7 @@ mod tests {
     #[test]
     fn test_tune_succeeds_when_confirmed() {
         let window_id = create_test_window_id();
-        let mut signal = SignalEntity::new(88.9e6, window_id.clone());
+        let mut signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
 
         signal.analysis.confirm_analysis(AudioQuality::Good, 0.85);
 
@@ -218,7 +221,7 @@ mod tests {
     #[test]
     fn test_complete_signal_lifecycle() {
         let window_id = create_test_window_id();
-        let mut signal = SignalEntity::new(88.9e6, window_id.clone());
+        let mut signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
 
         // Detection
         assert!(signal.analysis.is_not_started());
@@ -258,7 +261,7 @@ mod tests {
     #[test]
     fn test_rejected_signal_cannot_tune() {
         let window_id = create_test_window_id();
-        let mut signal = SignalEntity::new(88.9e6, window_id.clone());
+        let mut signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
 
         // Reject analysis
         signal.analysis.reject_analysis(AudioQuality::NoAudio, 0.05);
@@ -280,7 +283,7 @@ mod tests {
     #[test]
     fn test_signal_selection() {
         let window_id = create_test_window_id();
-        let mut signal = SignalEntity::new(88.9e6, window_id);
+        let mut signal = SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
 
         assert!(!signal.is_selected());
 
@@ -295,7 +298,7 @@ mod tests {
     #[test]
     fn test_audio_spawn_coordination() {
         let window_id = create_test_window_id();
-        let mut signal = SignalEntity::new(88.9e6, window_id);
+        let mut signal = SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
         signal.analysis.confirm_analysis(AudioQuality::Good, 0.85);
 
         // First spawn succeeds
@@ -309,7 +312,7 @@ mod tests {
     #[test]
     fn test_multiple_play_sessions() {
         let window_id = create_test_window_id();
-        let mut signal = SignalEntity::new(88.9e6, window_id);
+        let mut signal = SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
 
         // Session 1
         signal.history.start_play_session();
@@ -333,7 +336,7 @@ mod tests {
         let mut world = EntityWorld::<SignalEntity>::new();
         let window_id = WindowId::new(TaskId::new("test-scan"), 5);
 
-        let signal = SignalEntity::new(88.9e6, window_id);
+        let signal = SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
         let signal_id = signal.id().clone();
 
         world.insert(signal);
@@ -348,8 +351,8 @@ mod tests {
         let mut world = EntityWorld::<SignalEntity>::new();
         let window_id = WindowId::new(TaskId::new("test-scan"), 5);
 
-        let signal1 = SignalEntity::new(88.9e6, window_id.clone());
-        let signal2 = SignalEntity::new(89.3e6, window_id);
+        let signal1 = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
+        let signal2 = SignalEntity::new(89.3e6, window_id, ModulationType::WFM);
 
         world.insert(signal1);
         world.insert(signal2);

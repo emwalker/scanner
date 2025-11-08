@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
+    core::signals::ModulationType,
     ecs::{
         AudioEntity, DeviceEntity, EntityWorld, ScanTaskData, Scheduler, TaskEntity, TaskId,
         components::{Priority, WindowId},
@@ -200,7 +201,7 @@ fn test_audio_coordination_stop_listening_flow() {
     // Add SignalEntity that the AudioCoordinationSystem needs
     let task_id = TaskId::new("test_task");
     let window_id = WindowId::new(task_id, 0);
-    let signal_entity = crate::ecs::SignalEntity::new(88.9e6, window_id);
+    let signal_entity = crate::ecs::SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
     signal_world.insert(signal_entity);
 
     let audio_entities = Arc::new(RwLock::new(audio_world));
@@ -334,7 +335,11 @@ fn test_segment_survives_until_signals_spawn_and_complete() {
     let config = Arc::new(ScanningConfig::default());
     let mut signals = Vec::new();
     for i in 0..3 {
-        let mut signal = SignalEntity::new(88.0e6 + (i as f64) * 0.1e6, window_id.clone());
+        let mut signal = SignalEntity::new(
+            88.0e6 + (i as f64) * 0.1e6,
+            window_id.clone(),
+            ModulationType::WFM,
+        );
 
         // Give signal an analysis input so it's ready to spawn
         let (_tx_refining, sdr_rx_refining) = broadcast::channel(32);

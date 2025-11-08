@@ -300,6 +300,7 @@ mod tests {
     use super::*;
     use crate::{
         audio::quality::AudioQuality,
+        core::signals::ModulationType,
         ecs::{EntityWorld, SignalEntity, TaskId, WindowId},
     };
 
@@ -329,7 +330,7 @@ mod tests {
 
         let task_id = TaskId::new("test-scan");
         let window_id = WindowId::new(task_id.clone(), 1);
-        let mut signal = SignalEntity::new(88.5e6, window_id.clone());
+        let mut signal = SignalEntity::new(88.5e6, window_id.clone(), ModulationType::WFM);
         signal.analysis.confirm_analysis(AudioQuality::Good, 0.8);
 
         let mut signal_world = EntityWorld::new();
@@ -363,13 +364,13 @@ mod tests {
 
         let mut window = WindowEntity::new(window_id.clone(), task_id.clone(), 88.5e6);
         window.lifecycle.complete_signal();
-        let signal_id = SignalId::new(88.5e6, window_id.clone());
+        let signal_id = SignalId::new(88.5e6, ModulationType::WFM);
         window.allocation.queue_for_playback(signal_id.clone());
 
         let mut window_world = EntityWorld::new();
         window_world.insert(window);
 
-        let mut signal = SignalEntity::new(88.5e6, window_id.clone());
+        let mut signal = SignalEntity::new(88.5e6, window_id.clone(), ModulationType::WFM);
         signal.analysis.confirm_analysis(AudioQuality::Good, 0.8);
 
         let mut signal_world = EntityWorld::new();
@@ -414,7 +415,7 @@ mod tests {
 
         let task_id = TaskId::new("test");
         let window_id = WindowId::new(task_id, 1);
-        let mut signal = SignalEntity::new(88.9e6, window_id.clone());
+        let mut signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
         signal.analysis.confirm_analysis(AudioQuality::Good, 0.8);
 
         let mut signal_world = EntityWorld::new();

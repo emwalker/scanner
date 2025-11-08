@@ -37,10 +37,47 @@ pub struct Signal {
     pub audio_quality: crate::audio::quality::AudioQuality,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum ModulationType {
-    WFM,
-    // Future: NFM, Am, Digital, etc.
+    WFM, // Wideband FM
+    NFM, // Narrowband FM
+    AM,  // Amplitude Modulation
+    LSB, // Lower Side Band
+    USB, // Upper Side Band
+}
+
+impl<'de> serde::Deserialize<'de> for ModulationType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "WFM" => Ok(ModulationType::WFM),
+            "NFM" => Ok(ModulationType::NFM),
+            "AM" => Ok(ModulationType::AM),
+            "LSB" => Ok(ModulationType::LSB),
+            "USB" => Ok(ModulationType::USB),
+            // Handle legacy "FM" by mapping to WFM
+            "FM" => Ok(ModulationType::WFM),
+            _ => Err(serde::de::Error::unknown_variant(&s, &[
+                "WFM", "NFM", "AM", "LSB", "USB", "FM",
+            ])),
+        }
+    }
+}
+
+impl std::fmt::Display for ModulationType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ModulationType::WFM => write!(f, "WFM"),
+            ModulationType::NFM => write!(f, "NFM"),
+            ModulationType::AM => write!(f, "AM"),
+            ModulationType::LSB => write!(f, "LSB"),
+            ModulationType::USB => write!(f, "USB"),
+        }
+    }
 }
 
 impl Signal {

@@ -91,6 +91,20 @@ impl Tuner {
         samp_rate: f64,
         gain_db: f64,
     ) -> Result<rustradio::stream::ReadStream<Complex>> {
+        self.add_source_to_graph_with_pause(graph, freq, samp_rate, gain_db, None)
+    }
+
+    /// Add source to rustradio graph with pause support
+    ///
+    /// When global_pause_resource is Some, the source will respect global pause state.
+    pub fn add_source_to_graph_with_pause(
+        &self,
+        graph: &mut rustradio::graph::Graph,
+        freq: f64,
+        samp_rate: f64,
+        gain_db: f64,
+        global_pause_resource: Option<crate::ecs::GlobalPauseResource>,
+    ) -> Result<rustradio::stream::ReadStream<Complex>> {
         if self.shutdown_mode.load(Ordering::SeqCst) {
             return Err(ScannerError::PoolShutdown);
         }
@@ -100,10 +114,18 @@ impl Tuner {
                 match subprocess.configure_and_start(self.channel_index(), freq, gain_db, samp_rate)
                 {
                     Ok(_config) => {
-                        let (source, stream) = crate::hardware::pool::SubprocessSource::new(
-                            Arc::clone(&subprocess.data_receiver),
-                            self.channel_index(),
-                        );
+                        let (source, stream) = if let Some(pause_resource) = global_pause_resource {
+                            crate::hardware::pool::SubprocessSource::with_pause_support(
+                                Arc::clone(&subprocess.data_receiver),
+                                self.channel_index(),
+                                pause_resource,
+                            )
+                        } else {
+                            crate::hardware::pool::SubprocessSource::new(
+                                Arc::clone(&subprocess.data_receiver),
+                                self.channel_index(),
+                            )
+                        };
 
                         graph.add(Box::new(source));
                         Ok(stream)

@@ -13,9 +13,18 @@ pub mod updates;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod signal_detail_modal_tests;
+
+#[cfg(test)]
+mod signal_persistence_tests;
+
+#[cfg(test)]
+mod signal_path_tests;
+
 // Re-export all types for backward compatibility
 pub use state::{Model, TunerInfo};
 pub use types::{
-    AnalysisStatus, FocusState, FocusedTable, PlaybackState, SelectedSignalInfo, SignalProgress,
-    TunerDisplayInfo, TunerDisplayState, TunerState, UiMode, WindowProgress,
+    AnalysisStatus, FocusState, FocusedTable, PlaybackState, SelectedSignalInfo, SignalDetailModal,
+    SignalProgress, TunerDisplayInfo, TunerDisplayState, TunerState, UiMode, WindowProgress,
 };

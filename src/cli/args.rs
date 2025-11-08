@@ -12,7 +12,7 @@ pub enum AudioClassifier {
 
 #[derive(Parser, Debug)]
 #[command(name = "scanner")]
-#[command(about = "FM radio scanner with audio quality analysis")]
+#[command(about = "FM monitor with audio quality analysis")]
 #[command(version)]
 pub struct Cli {
     #[command(subcommand)]

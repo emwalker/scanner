@@ -220,6 +220,7 @@ impl Model {
                     audio_quality: signal.audio_quality,
                     is_window_complete: window.is_complete,
                     completion: signal.completion,
+                    notes: signal.notes.clone(),
                 });
             }
         }
@@ -228,7 +229,95 @@ impl Model {
         rows
     }
 
-    /// Count all signals (now shows all signals unconditionally)
+    /// Build flattened list of confirmed signal rows (only those sent into playback)
+    /// Used specifically for the "Signals" table which only shows confirmed signals
+    pub fn build_confirmed_signal_rows(&self) -> Vec<SignalRow> {
+        let mut rows = Vec::new();
+
+        for window in self.windows.values() {
+            for signal in &window.signals {
+                // Only include confirmed signals (those that would go into playback)
+                if signal.status == AnalysisStatus::Signal {
+                    rows.push(SignalRow {
+                        window_id: signal.window_id,
+                        frequency_hz: signal.frequency_hz,
+                        status: signal.status.clone(),
+                        playback_state: signal.playback_state.clone(),
+                        audio_quality: signal.audio_quality,
+                        is_window_complete: window.is_complete,
+                        completion: signal.completion,
+                        notes: signal.notes.clone(),
+                    });
+                }
+            }
+        }
+
+        // Add persistent signals from storage (loaded on startup)
+        // But first, collect them in a way that allows deduplication
+        let mut persistent_rows = Vec::new();
+        for persistent_signal in &self.persistent_signals {
+            persistent_rows.push(SignalRow {
+                window_id: 0, // Persistent signals don't belong to a scan window
+                frequency_hz: persistent_signal.frequency_hz,
+                status: AnalysisStatus::Signal, // Persistent signals are confirmed
+                playback_state: PlaybackState::NotPlaying,
+                audio_quality: None,      // Could be enhanced later
+                is_window_complete: true, // Persistent signals are "complete"
+                completion: 1.0,
+                notes: persistent_signal.notes.clone(),
+            });
+        }
+
+        // Deduplicate by frequency: prefer scan signals but merge persistent notes
+        rows = self.merge_duplicate_signals(rows, persistent_rows);
+
+        rows.sort_by(|a, b| a.frequency_hz.partial_cmp(&b.frequency_hz).unwrap());
+        rows
+    }
+
+    /// Merge duplicate signals by frequency, preferring scan signal state but preserving persistent
+    /// notes Following elm-design principle: pure function that combines data from multiple
+    /// sources
+    fn merge_duplicate_signals(
+        &self,
+        scan_rows: Vec<SignalRow>,
+        persistent_rows: Vec<SignalRow>,
+    ) -> Vec<SignalRow> {
+        use std::collections::HashMap;
+
+        let mut merged: HashMap<u64, SignalRow> = HashMap::new();
+
+        // First, add all scan signals (these take priority for state)
+        for scan_row in scan_rows {
+            let freq_key = scan_row.frequency_hz as u64;
+            merged.insert(freq_key, scan_row);
+        }
+
+        // Then, merge in persistent signals
+        for persistent_row in persistent_rows {
+            let freq_key = persistent_row.frequency_hz as u64;
+
+            if let Some(existing_scan_row) = merged.get_mut(&freq_key) {
+                // Merge: prefer scan signal state, but add persistent notes if scan has none
+                if existing_scan_row.notes.is_none() && persistent_row.notes.is_some() {
+                    existing_scan_row.notes = persistent_row.notes;
+                }
+            } else {
+                // No scan signal at this frequency, add the persistent signal
+                merged.insert(freq_key, persistent_row);
+            }
+        }
+
+        merged.into_values().collect()
+    }
+
+    /// Get count of confirmed signals (for Signals table layout calculation)
+    /// Only counts signals with AnalysisStatus::Signal
+    pub fn confirmed_signal_count(&self) -> usize {
+        self.build_confirmed_signal_rows().len()
+    }
+
+    /// Count all signals (shows all signals for scan progress)
     pub fn count_visible_signals(
         &self,
         _context: &crate::ui::tui::renderers::table_styles::VisibilityContext<usize>,
@@ -261,7 +350,7 @@ impl Model {
 #[cfg(test)]
 mod selected_window_tests {
     use super::*;
-    use crate::ui::tui::model::types::UiMode;
+    use crate::{ecs::SignalId, ui::tui::model::types::UiMode};
 
     #[test]
     fn test_selected_window_returns_none_when_idle() {
@@ -285,7 +374,7 @@ mod selected_window_tests {
         model.ui_mode = UiMode::AwaitingTune {
             signal_index: 3,
             window_id: 1,
-            tuning_signal_id: "test".to_string(),
+            tuning_signal_id: SignalId::from_string("test".to_string()),
         };
         assert_eq!(model.selected_window(), Some(1));
     }
@@ -296,7 +385,7 @@ mod selected_window_tests {
         model.ui_mode = UiMode::Listening {
             signal_index: 7,
             window_id: 3,
-            playing_signal_id: "test".to_string(),
+            playing_signal_id: SignalId::from_string("test".to_string()),
         };
         assert_eq!(model.selected_window(), Some(3));
     }
@@ -307,8 +396,9 @@ mod flat_to_visible_tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::ui::tui::model::types::{
-        AnalysisStatus, PlaybackState, SignalProgress, WindowProgress,
+    use crate::{
+        ecs::SignalId,
+        ui::tui::model::types::{AnalysisStatus, PlaybackState, SignalProgress, WindowProgress},
     };
 
     fn create_test_signal(
@@ -317,7 +407,7 @@ mod flat_to_visible_tests {
         status: AnalysisStatus,
     ) -> SignalProgress {
         SignalProgress {
-            signal_id: format!("cand_{}", frequency),
+            signal_id: SignalId::from_string(format!("cand_{}", frequency)),
             frequency_hz: frequency,
             window_id,
             center_frequency_hz: frequency,
@@ -327,6 +417,7 @@ mod flat_to_visible_tests {
             audio_quality: None,
             signal_strength: None,
             last_update: Instant::now(),
+            notes: None,
         }
     }
 
@@ -397,8 +488,11 @@ mod selected_signal_info_tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::ui::tui::model::types::{
-        AnalysisStatus, PlaybackState, SignalProgress, UiMode, WindowProgress,
+    use crate::{
+        ecs::SignalId,
+        ui::tui::model::types::{
+            AnalysisStatus, PlaybackState, SignalProgress, UiMode, WindowProgress,
+        },
     };
 
     #[test]
@@ -416,7 +510,7 @@ mod selected_signal_info_tests {
             window_id: 0,
             signals: vec![
                 SignalProgress {
-                    signal_id: "c1".to_string(),
+                    signal_id: SignalId::from_string("c1".to_string()),
                     frequency_hz: 88.1e6,
                     window_id: 0,
                     center_frequency_hz: 88.1e6,
@@ -426,9 +520,10 @@ mod selected_signal_info_tests {
                     audio_quality: None,
                     signal_strength: Some(0.8),
                     last_update: Instant::now(),
+                    notes: None,
                 },
                 SignalProgress {
-                    signal_id: "c2".to_string(),
+                    signal_id: SignalId::from_string("c2".to_string()),
                     frequency_hz: 88.5e6,
                     window_id: 0,
                     center_frequency_hz: 88.5e6,
@@ -438,6 +533,7 @@ mod selected_signal_info_tests {
                     audio_quality: None,
                     signal_strength: Some(0.9),
                     last_update: Instant::now(),
+                    notes: None,
                 },
             ],
             is_complete: false,
@@ -457,7 +553,7 @@ mod selected_signal_info_tests {
         let info = model.selected_signal_info().unwrap();
         // After reverse: [c2, c1]
         // Index 1 -> c1
-        assert_eq!(info.signal_id, "c1");
+        assert_eq!(info.signal_id, SignalId::from_string("c1".to_string()));
         assert_eq!(info.signal_frequency, 88.1e6);
         assert_eq!(info.signal_strength, Some(0.8));
     }

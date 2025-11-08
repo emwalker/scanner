@@ -1,5 +1,5 @@
 use super::super::helpers::{ModelTestContext, TestSignalState};
-use crate::ui::tui::model::UiMode;
+use crate::{ecs::components::signal::SignalId, ui::tui::model::UiMode};
 
 #[test]
 fn test_navigation_and_highlight_separate_in_listening_mode() {
@@ -23,7 +23,7 @@ fn test_navigation_and_highlight_separate_in_listening_mode() {
     ctx.model.ui_mode = UiMode::AwaitingTune {
         signal_index: 0,
         window_id: 0,
-        tuning_signal_id: "signal_0".to_string(),
+        tuning_signal_id: SignalId::from_string("signal_0".to_string()),
     };
 
     if let UiMode::AwaitingTune {
@@ -34,7 +34,10 @@ fn test_navigation_and_highlight_separate_in_listening_mode() {
     {
         assert_eq!(*signal_index, 0);
         assert_eq!(*mode_window_id, 0);
-        assert_eq!(tuning_signal_id, "signal_0");
+        assert_eq!(
+            tuning_signal_id,
+            &SignalId::from_string("signal_0".to_string())
+        );
     }
 
     ctx.model.select_next_signal();
@@ -48,7 +51,8 @@ fn test_navigation_and_highlight_separate_in_listening_mode() {
         assert_eq!(*signal_index, 1, "Navigation should move to index 1");
         assert_eq!(*mode_window_id, 0, "Window ID should stay at 0");
         assert_eq!(
-            tuning_signal_id, "signal_0",
+            tuning_signal_id,
+            &SignalId::from_string("signal_0".to_string()),
             "Tuning signal should stay the same"
         );
     } else {
@@ -58,7 +62,7 @@ fn test_navigation_and_highlight_separate_in_listening_mode() {
     ctx.model.ui_mode = UiMode::Listening {
         signal_index: 1,
         window_id: 0,
-        playing_signal_id: "signal_0".to_string(),
+        playing_signal_id: SignalId::from_string("signal_0".to_string()),
     };
 
     ctx.model.select_next_signal();
@@ -71,7 +75,10 @@ fn test_navigation_and_highlight_separate_in_listening_mode() {
     {
         assert_eq!(*signal_index, 2, "Navigation should move to index 2");
         assert_eq!(*mode_window_id, 0, "Window ID should stay at 0");
-        assert_eq!(playing_signal_id, "signal_0");
+        assert_eq!(
+            playing_signal_id,
+            &SignalId::from_string("signal_0".to_string())
+        );
     } else {
         panic!("Should still be in Listening mode");
     }

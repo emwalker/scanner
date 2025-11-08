@@ -160,7 +160,7 @@ impl SymbolSet for ArrakisDarkTheme {
 
 impl TextStyle for ArrakisDarkTheme {
     fn title(&self) -> &'static str {
-        "RADIO SCANNER"
+        "MONITOR"
     }
 
     fn subtitle(&self) -> &'static str {
@@ -356,7 +356,7 @@ impl SymbolSet for ArrakisLightTheme {
 
 impl TextStyle for ArrakisLightTheme {
     fn title(&self) -> &'static str {
-        "RADIO SCANNER"
+        "MONITOR"
     }
 
     fn subtitle(&self) -> &'static str {

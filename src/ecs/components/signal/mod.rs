@@ -6,7 +6,8 @@ use std::{
 };
 
 use crate::{
-    audio::quality::AudioQuality, core::types::Result as ScannerResult,
+    audio::quality::AudioQuality,
+    core::{signals::ModulationType, types::Result as ScannerResult},
     ecs::components::window::WindowId,
 };
 
@@ -14,12 +15,24 @@ use crate::{
 pub struct SignalId(String);
 
 impl SignalId {
-    pub fn new(frequency_hz: f64, window_id: WindowId) -> Self {
-        let frequency_mhz = frequency_hz / 1e6;
-        let task_id = &window_id.task_id;
-        let window_index = window_id.window_index;
+    pub fn new(frequency_hz: f64, modulation: ModulationType) -> Self {
+        let formatted_frequency =
+            crate::ui::tui::renderers::format::format_frequency_with_leading_zeros(frequency_hz);
+        Self(format!("{}-{}", formatted_frequency, modulation))
+    }
 
-        Self(format!("{}-{}-{}", frequency_mhz, task_id, window_index))
+    /// Create a stable SignalId based on frequency and modulation only
+    /// Format: "{formatted_frequency_hz}-{modulation}"
+    /// Example: "000.088.900.000-WFM"
+    pub fn new_stable(frequency_hz: f64, modulation: &str) -> Self {
+        let formatted_frequency =
+            crate::ui::tui::renderers::format::format_frequency_with_leading_zeros(frequency_hz);
+        Self(format!("{}-{}", formatted_frequency, modulation))
+    }
+
+    /// Create a SignalId from a string - used for compatibility with legacy string IDs
+    pub fn from_string(s: String) -> Self {
+        Self(s)
     }
 
     pub fn as_str(&self) -> &str {
@@ -36,6 +49,7 @@ impl fmt::Display for SignalId {
 #[derive(Debug, Clone)]
 pub struct SignalInfoComponent {
     frequency_hz: f64,
+    modulation: ModulationType,
     signal_strength: Option<f64>,
     audio_quality: Option<AudioQuality>,
     name: Option<String>,
@@ -403,9 +417,10 @@ impl Default for SignalHistoryComponent {
 }
 
 impl SignalInfoComponent {
-    pub fn new(frequency_hz: f64) -> Self {
+    pub fn new(frequency_hz: f64, modulation: ModulationType) -> Self {
         Self {
             frequency_hz,
+            modulation,
             signal_strength: None,
             audio_quality: None,
             name: None,
@@ -414,6 +429,10 @@ impl SignalInfoComponent {
 
     pub fn frequency(&self) -> f64 {
         self.frequency_hz
+    }
+
+    pub fn modulation(&self) -> &ModulationType {
+        &self.modulation
     }
 
     pub fn signal_strength(&self) -> Option<f64> {
@@ -452,37 +471,36 @@ mod tests {
 
     #[test]
     fn test_signal_id_creation() {
-        let window_id = create_test_window_id();
-        let signal_id = SignalId::new(88.9e6, window_id);
+        let signal_id = SignalId::new(88.9e6, ModulationType::WFM);
 
-        assert!(signal_id.as_str().contains("88.9"));
-        assert!(signal_id.as_str().contains("test-scan"));
-        assert!(signal_id.as_str().contains("5"));
+        // New format: "{formatted_frequency_hz}-{modulation}"
+        assert!(signal_id.as_str().contains("000.088.900.000"));
+        assert!(signal_id.as_str().contains("WFM"));
+        assert_eq!(signal_id.as_str(), "000.088.900.000-WFM");
     }
 
     #[test]
     fn test_signal_id_format() {
-        let window_id = create_test_window_id();
-        let signal_id = SignalId::new(88.9e6, window_id);
+        let signal_id = SignalId::new(88.9e6, ModulationType::WFM);
 
-        // Format: "{frequency_mhz}-{task_id}-{window_index}"
-        let expected = "88.9-test-scan-5";
+        // New format: "{formatted_frequency_hz}-{modulation}"
+        let expected = "000.088.900.000-WFM";
         assert_eq!(signal_id.as_str(), expected);
     }
 
     #[test]
     fn test_signal_id_display() {
-        let window_id = create_test_window_id();
-        let signal_id = SignalId::new(88.9e6, window_id);
+        let signal_id = SignalId::new(88.9e6, ModulationType::WFM);
 
-        assert_eq!(format!("{}", signal_id), "88.9-test-scan-5");
+        assert_eq!(format!("{}", signal_id), "000.088.900.000-WFM");
     }
 
     #[test]
     fn test_signal_info_creation() {
-        let info = SignalInfoComponent::new(88.9e6);
+        let info = SignalInfoComponent::new(88.9e6, ModulationType::WFM);
 
         assert_eq!(info.frequency(), 88.9e6);
+        assert_eq!(info.modulation(), &ModulationType::WFM);
         assert_eq!(info.signal_strength(), None);
         assert_eq!(info.audio_quality(), None);
         assert_eq!(info.name(), None);
@@ -490,7 +508,7 @@ mod tests {
 
     #[test]
     fn test_set_signal_strength() {
-        let mut info = SignalInfoComponent::new(88.9e6);
+        let mut info = SignalInfoComponent::new(88.9e6, ModulationType::WFM);
 
         info.set_signal_strength(Some(0.85));
 
@@ -499,7 +517,7 @@ mod tests {
 
     #[test]
     fn test_set_audio_quality() {
-        let mut info = SignalInfoComponent::new(88.9e6);
+        let mut info = SignalInfoComponent::new(88.9e6, ModulationType::WFM);
 
         info.set_audio_quality(Some(AudioQuality::Good));
 
@@ -508,7 +526,7 @@ mod tests {
 
     #[test]
     fn test_set_name() {
-        let mut info = SignalInfoComponent::new(88.9e6);
+        let mut info = SignalInfoComponent::new(88.9e6, ModulationType::WFM);
 
         info.set_name(Some("KQED".to_string()));
 

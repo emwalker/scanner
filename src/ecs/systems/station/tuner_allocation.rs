@@ -102,6 +102,7 @@ impl TunerAllocationSystem {
             request.center_frequency,
             &config,
             shutdown_coordinator.token(),
+            context.global_pause_resource.clone(),
         ) {
             Ok(s) => s,
             Err(e) => {

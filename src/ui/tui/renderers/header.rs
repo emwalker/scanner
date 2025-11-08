@@ -7,36 +7,17 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::ui::tui::{
-    model::Model,
-    themes::{SharedText, Theme},
-};
+use crate::ui::tui::{model::Model, themes::Theme};
 
 /// Render the application header
-pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, theme: &dyn Theme) {
+pub fn render_header(
+    f: &mut Frame,
+    area: ratatui::layout::Rect,
+    _model: &Model,
+    theme: &dyn Theme,
+) {
     let title_text = theme.title();
     let subtitle_text = theme.subtitle();
-
-    // Calculate statistics
-    let total_signals = model
-        .windows
-        .values()
-        .map(|w| w.signals.len())
-        .sum::<usize>();
-
-    let stations_found = model
-        .windows
-        .values()
-        .flat_map(|w| &w.signals)
-        .filter(|c| {
-            matches!(c.status, crate::ui::tui::model::AnalysisStatus::Signal)
-                || matches!(
-                    c.playback_state,
-                    crate::ui::tui::model::PlaybackState::Playing
-                        | crate::ui::tui::model::PlaybackState::Completed
-                )
-        })
-        .count();
 
     // Create a block with top border only (dotted style)
     let block = Block::default()
@@ -61,39 +42,15 @@ pub fn render_header(f: &mut Frame, area: ratatui::layout::Rect, model: &Model, 
     let inner = block.inner(area);
     let inner_width = inner.width as usize;
 
-    // Create stats text with colored stations count
-    let stats_text = format!(
-        "{}: {} | {}: {}",
-        SharedText::signals_label(),
-        total_signals,
-        SharedText::stations_label(),
-        stations_found
-    );
-    let stats_text_len = stats_text.len();
-
-    // Calculate padding for right-aligned stats
-    let title_padding = inner_width
-        .saturating_sub(title_text.len())
-        .saturating_sub(stats_text_len);
+    // Calculate padding for centered text
+    let title_padding = inner_width.saturating_sub(title_text.len());
     let subtitle_padding = inner_width.saturating_sub(subtitle_text.len());
 
-    // Create title line with colored spans
-    let title_spans = vec![
-        Span::styled(
-            format!("{}{}", title_text, " ".repeat(title_padding)),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!("{}: ", SharedText::signals_label())),
-        Span::raw(total_signals.to_string()),
-        Span::raw(format!(" | {}: ", SharedText::stations_label())),
-        Span::styled(
-            stations_found.to_string(),
-            Style::default()
-                .fg(theme.header_accent())
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
-    let title_line = Line::from(title_spans);
+    // Create simple title line
+    let title_line = Line::from(vec![Span::styled(
+        format!("{}{}", title_text, " ".repeat(title_padding)),
+        Style::default().add_modifier(Modifier::BOLD),
+    )]);
 
     let subtitle_line = Line::from(vec![Span::styled(
         format!("{}{}", subtitle_text, " ".repeat(subtitle_padding)),
@@ -113,19 +70,11 @@ mod tests {
 
     #[test]
     fn test_header_format_unchanged() {
-        let title_text = "Radio Scanner";
+        let title_text = "Monitor";
         let subtitle_text = "";
 
-        assert_eq!(title_text, "Radio Scanner");
+        assert_eq!(title_text, "Monitor");
         assert_eq!(subtitle_text, "");
-
-        let total_signals = 5;
-        let stations_found = 2;
-        let stats_text = format!(
-            "Candidates: {} | Signals: {}",
-            total_signals, stations_found
-        );
-        assert_eq!(stats_text, "Candidates: 5 | Signals: 2");
 
         let header_width: usize = 50;
         let top_border = format!("╭{}╮", "─".repeat(header_width.saturating_sub(2)));

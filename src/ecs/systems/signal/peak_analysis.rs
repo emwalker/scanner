@@ -77,7 +77,10 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use super::*;
-    use crate::ecs::{EntityWorld, SignalEntity, TaskId, WindowId};
+    use crate::{
+        core::signals::ModulationType,
+        ecs::{EntityWorld, SignalEntity, TaskId, WindowId},
+    };
 
     #[test]
     fn test_system_creation() {
@@ -102,7 +105,7 @@ mod tests {
 
         let task_id = TaskId::new("test-scan");
         let window_id = WindowId::new(task_id, 1);
-        let signal = SignalEntity::new(88.5e6, window_id);
+        let signal = SignalEntity::new(88.5e6, window_id, ModulationType::WFM);
 
         let mut world = EntityWorld::new();
         world.insert(signal);
@@ -124,7 +127,7 @@ mod tests {
 
         let task_id = TaskId::new("test-scan");
         let window_id = WindowId::new(task_id, 1);
-        let signal = SignalEntity::new(88.5e6, window_id);
+        let signal = SignalEntity::new(88.5e6, window_id, ModulationType::WFM);
         assert!(signal.analysis.is_not_started());
 
         let mut world = EntityWorld::new();

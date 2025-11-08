@@ -50,7 +50,8 @@ pub fn start_tui(
         )
         .with_entities(task_entities, audio_entities, signal_entities)
         .with_pause_request_queue(pause_request_queue)
-        .with_global_pause_resource(global_pause_resource);
+        .with_global_pause_resource(global_pause_resource)
+        .with_persistence();
         tui_display.run()
     })
 }

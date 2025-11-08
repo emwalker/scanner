@@ -1,6 +1,8 @@
 use super::super::helpers::{ModelTestContext, TestSignalState};
 use crate::{
     audio::quality::AudioQuality,
+    core::signals::ModulationType,
+    ecs::components::signal::SignalId,
     ui::tui::model::{PlaybackState, UiMode},
 };
 
@@ -8,7 +10,6 @@ use crate::{
 fn test_enter_key_tunes_to_selected_station() {
     let mut ctx = ModelTestContext::new();
     let window_id = 0;
-    let signal_id = format!("{:.1}-test-task-{}", 88_900_000.0 / 1e6, window_id);
 
     ctx.update_signal(
         88_900_000.0,
@@ -25,6 +26,9 @@ fn test_enter_key_tunes_to_selected_station() {
         Some(0.8),
     );
     ctx.sync();
+
+    // Get the actual SignalId that was created (now uses new format)
+    let signal_id = SignalId::new(88_900_000.0, ModulationType::WFM);
 
     assert!(ctx.model.is_idle());
 

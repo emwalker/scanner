@@ -114,6 +114,7 @@ pub fn signals_from_peaks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::signals::ModulationType;
 
     #[test]
     fn test_analysis_thread_returns_results() {
@@ -148,7 +149,7 @@ mod tests {
 
         let task_id = TaskId::new("test-scan");
         let window_id = WindowId::new(task_id, 0);
-        let entity = SignalEntity::new(88.9e6, window_id);
+        let entity = SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
         let signal_id = entity.id().clone();
         signal_entities.write().unwrap().insert(entity);
 

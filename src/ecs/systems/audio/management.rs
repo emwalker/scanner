@@ -259,7 +259,7 @@ mod tests {
         let mut station = StationEntity::from_signal(&signal, window_id.clone());
 
         // Create SignalEntity and set it to playing
-        let mut signal_entity = SignalEntity::new(88.9e6, window_id);
+        let mut signal_entity = SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
         signal_entity
             .playback
             .transition_to(crate::ecs::components::signal::PlaybackState::Playing);

@@ -188,7 +188,10 @@ impl Model {
     pub fn navigate_next_table(&mut self, tuner_count: usize) {
         let entering_scan_progress = match self.focus_state {
             FocusState::ScanProgress(_) => false,
-            FocusState::Activities(_) | FocusState::TunersTable(_) => true,
+            FocusState::Activities(_)
+            | FocusState::TunersTable(_)
+            | FocusState::SignalsTable(_) => true,
+            FocusState::SignalDetailModal => false,
         };
 
         self.focus_state = match self.focus_state {
@@ -196,11 +199,13 @@ impl Model {
                 if tuner_count > 0 {
                     FocusState::TunersTable(0)
                 } else {
-                    FocusState::ScanProgress(0)
+                    FocusState::SignalsTable(0)
                 }
             }
-            FocusState::TunersTable(_) => FocusState::ScanProgress(0),
+            FocusState::TunersTable(_) => FocusState::SignalsTable(0),
+            FocusState::SignalsTable(_) => FocusState::ScanProgress(0),
             FocusState::ScanProgress(_) => FocusState::Activities(0),
+            FocusState::SignalDetailModal => FocusState::SignalsTable(0),
         };
 
         // When entering ScanProgress table, transition to NavigatingScanner mode
@@ -226,19 +231,23 @@ impl Model {
         let entering_scan_progress = match self.focus_state {
             FocusState::Activities(_) => true,
             FocusState::TunersTable(_) => false,
+            FocusState::SignalsTable(_) => false,
             FocusState::ScanProgress(_) => false,
+            FocusState::SignalDetailModal => false,
         };
 
         self.focus_state = match self.focus_state {
             FocusState::Activities(_) => FocusState::ScanProgress(0),
             FocusState::TunersTable(_) => FocusState::Activities(0),
-            FocusState::ScanProgress(_) => {
+            FocusState::SignalsTable(_) => {
                 if tuner_count > 0 {
                     FocusState::TunersTable(0)
                 } else {
                     FocusState::Activities(0)
                 }
             }
+            FocusState::ScanProgress(_) => FocusState::SignalsTable(0),
+            FocusState::SignalDetailModal => FocusState::SignalsTable(0),
         };
 
         // When entering ScanProgress table, transition to NavigatingScanner mode
@@ -284,6 +293,14 @@ impl Model {
                     self.mark_dirty();
                 }
             }
+            FocusState::SignalsTable(idx) => {
+                let row_count = self.signals_table_row_count();
+                if row_count > 0 {
+                    self.focus_state =
+                        FocusState::SignalsTable(if idx == 0 { row_count - 1 } else { idx - 1 });
+                    self.mark_dirty();
+                }
+            }
             FocusState::ScanProgress(idx) => {
                 let row_count = self.scan_signals_row_count();
                 if row_count > 0 {
@@ -303,6 +320,9 @@ impl Model {
 
                     self.mark_dirty();
                 }
+            }
+            FocusState::SignalDetailModal => {
+                // Modal doesn't support navigation
             }
         }
     }
@@ -331,6 +351,13 @@ impl Model {
                     self.mark_dirty();
                 }
             }
+            FocusState::SignalsTable(idx) => {
+                let row_count = self.signals_table_row_count();
+                if row_count > 0 {
+                    self.focus_state = FocusState::SignalsTable((idx + 1) % row_count);
+                    self.mark_dirty();
+                }
+            }
             FocusState::ScanProgress(idx) => {
                 let row_count = self.scan_signals_row_count();
                 if row_count > 0 {
@@ -351,6 +378,9 @@ impl Model {
                     self.mark_dirty();
                 }
             }
+            FocusState::SignalDetailModal => {
+                // Modal doesn't support navigation
+            }
         }
     }
 
@@ -362,14 +392,21 @@ impl Model {
                 self.focus_state = FocusState::Activities(0);
                 self.mark_dirty();
             }
-            FocusState::ScanProgress(_) => {
-                // Exiting ScanProgress, but keep NavigatingScanner mode to remember selection
+            FocusState::SignalsTable(_) => {
                 if tuner_count > 0 {
                     self.focus_state = FocusState::TunersTable(0);
                 } else {
                     self.focus_state = FocusState::Activities(0);
                 }
                 self.mark_dirty();
+            }
+            FocusState::ScanProgress(_) => {
+                // Exiting ScanProgress, but keep NavigatingScanner mode to remember selection
+                self.focus_state = FocusState::SignalsTable(0);
+                self.mark_dirty();
+            }
+            FocusState::SignalDetailModal => {
+                // Left arrow in modal doesn't change tables
             }
         }
     }
@@ -378,7 +415,10 @@ impl Model {
     pub fn navigate_right(&mut self, tuner_count: usize) {
         let entering_scan_progress = match self.focus_state {
             FocusState::ScanProgress(_) => false,
-            FocusState::Activities(_) | FocusState::TunersTable(_) => true,
+            FocusState::Activities(_)
+            | FocusState::TunersTable(_)
+            | FocusState::SignalsTable(_) => true,
+            FocusState::SignalDetailModal => false,
         };
 
         match self.focus_state {
@@ -386,15 +426,22 @@ impl Model {
                 if tuner_count > 0 {
                     self.focus_state = FocusState::TunersTable(0);
                 } else {
-                    self.focus_state = FocusState::ScanProgress(0);
+                    self.focus_state = FocusState::SignalsTable(0);
                 }
                 self.mark_dirty();
             }
             FocusState::TunersTable(_) => {
+                self.focus_state = FocusState::SignalsTable(0);
+                self.mark_dirty();
+            }
+            FocusState::SignalsTable(_) => {
                 self.focus_state = FocusState::ScanProgress(0);
                 self.mark_dirty();
             }
             FocusState::ScanProgress(_) => {}
+            FocusState::SignalDetailModal => {
+                // Right arrow in modal doesn't change tables
+            }
         }
 
         // When entering ScanProgress table from arrow key, transition to NavigatingScanner mode
@@ -416,12 +463,33 @@ impl Model {
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_focus_cycle_includes_signals_table() {
+        let mut model = Model::default();
+        model.focus_state = FocusState::Activities(0);
+
+        model.navigate_next_table(1); // 1 tuner available
+        assert_eq!(model.focus_state, FocusState::TunersTable(0));
+
+        model.navigate_next_table(1);
+        assert_eq!(model.focus_state, FocusState::SignalsTable(0));
+
+        model.navigate_next_table(1);
+        assert_eq!(model.focus_state, FocusState::ScanProgress(0));
+    }
+}
+
+#[cfg(test)]
 mod navigate_stable_tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::ui::tui::model::types::{
-        AnalysisStatus, PlaybackState, SignalProgress, WindowProgress,
+    use crate::{
+        ecs::SignalId,
+        ui::tui::model::types::{AnalysisStatus, PlaybackState, SignalProgress, WindowProgress},
     };
 
     fn create_test_model_with_signals() -> Model {
@@ -432,7 +500,7 @@ mod navigate_stable_tests {
             window_id: 0,
             signals: vec![
                 SignalProgress {
-                    signal_id: "c1".to_string(),
+                    signal_id: SignalId::from_string("c1".to_string()),
                     frequency_hz: 88.1e6,
                     window_id: 0,
                     center_frequency_hz: 88.1e6,
@@ -442,9 +510,10 @@ mod navigate_stable_tests {
                     audio_quality: None,
                     signal_strength: None,
                     last_update: Instant::now(),
+                    notes: None,
                 },
                 SignalProgress {
-                    signal_id: "c2".to_string(),
+                    signal_id: SignalId::from_string("c2".to_string()),
                     frequency_hz: 88.5e6,
                     window_id: 0,
                     center_frequency_hz: 88.5e6,
@@ -454,9 +523,10 @@ mod navigate_stable_tests {
                     audio_quality: None,
                     signal_strength: None,
                     last_update: Instant::now(),
+                    notes: None,
                 },
                 SignalProgress {
-                    signal_id: "c3".to_string(),
+                    signal_id: SignalId::from_string("c3".to_string()),
                     frequency_hz: 88.9e6,
                     window_id: 0,
                     center_frequency_hz: 88.9e6,
@@ -466,6 +536,7 @@ mod navigate_stable_tests {
                     audio_quality: None,
                     signal_strength: None,
                     last_update: Instant::now(),
+                    notes: None,
                 },
             ],
             is_complete: false,
@@ -549,7 +620,7 @@ mod navigate_stable_tests {
         let mut window0 = WindowProgress {
             window_id: 0,
             signals: vec![SignalProgress {
-                signal_id: "c1".to_string(),
+                signal_id: SignalId::from_string("c1".to_string()),
                 frequency_hz: 88.1e6,
                 window_id: 0,
                 center_frequency_hz: 88.1e6,
@@ -559,17 +630,20 @@ mod navigate_stable_tests {
                 audio_quality: None,
                 signal_strength: None,
                 last_update: Instant::now(),
+                notes: None,
             }],
             is_complete: true,
             signal_lookup: std::collections::HashMap::new(),
         };
-        window0.signal_lookup.insert("c1".to_string(), 0);
+        window0
+            .signal_lookup
+            .insert(SignalId::from_string("c1".to_string()), 0);
 
         // Window 1 with 1 signal
         let mut window1 = WindowProgress {
             window_id: 1,
             signals: vec![SignalProgress {
-                signal_id: "c2".to_string(),
+                signal_id: SignalId::from_string("c2".to_string()),
                 frequency_hz: 95.5e6,
                 window_id: 1,
                 center_frequency_hz: 95.5e6,
@@ -579,11 +653,14 @@ mod navigate_stable_tests {
                 audio_quality: None,
                 signal_strength: None,
                 last_update: Instant::now(),
+                notes: None,
             }],
             is_complete: false,
             signal_lookup: std::collections::HashMap::new(),
         };
-        window1.signal_lookup.insert("c2".to_string(), 0);
+        window1
+            .signal_lookup
+            .insert(SignalId::from_string("c2".to_string()), 0);
 
         model.windows.insert(0, window0);
         model.windows.insert(1, window1);
@@ -619,7 +696,7 @@ mod navigate_stable_tests {
         let mut window0 = WindowProgress {
             window_id: 0,
             signals: vec![SignalProgress {
-                signal_id: "c1".to_string(),
+                signal_id: SignalId::from_string("c1".to_string()),
                 frequency_hz: 88.1e6,
                 window_id: 0,
                 center_frequency_hz: 88.1e6,
@@ -629,16 +706,19 @@ mod navigate_stable_tests {
                 audio_quality: None,
                 signal_strength: None,
                 last_update: Instant::now(),
+                notes: None,
             }],
             is_complete: true,
             signal_lookup: std::collections::HashMap::new(),
         };
-        window0.signal_lookup.insert("c1".to_string(), 0);
+        window0
+            .signal_lookup
+            .insert(SignalId::from_string("c1".to_string()), 0);
 
         let mut window1 = WindowProgress {
             window_id: 1,
             signals: vec![SignalProgress {
-                signal_id: "c2".to_string(),
+                signal_id: SignalId::from_string("c2".to_string()),
                 frequency_hz: 95.5e6,
                 window_id: 1,
                 center_frequency_hz: 95.5e6,
@@ -648,11 +728,14 @@ mod navigate_stable_tests {
                 audio_quality: None,
                 signal_strength: None,
                 last_update: Instant::now(),
+                notes: None,
             }],
             is_complete: false,
             signal_lookup: std::collections::HashMap::new(),
         };
-        window1.signal_lookup.insert("c2".to_string(), 0);
+        window1
+            .signal_lookup
+            .insert(SignalId::from_string("c2".to_string()), 0);
 
         model.windows.insert(0, window0);
         model.windows.insert(1, window1);
@@ -714,5 +797,66 @@ mod navigate_stable_tests {
         model.adjust_scroll_to_selection(1);
 
         assert_eq!(model.scroll_offset, 2);
+    }
+
+    #[test]
+    fn test_signals_table_navigation_should_work_with_confirmed_signals() {
+        // This test will fail because signals_table_row_count() returns 0
+        // even when there are confirmed signals in the model
+        let mut model = create_test_model_with_signals();
+
+        // Focus on signals table
+        model.focus_state = FocusState::SignalsTable(0);
+
+        // Verify we have confirmed signals to navigate through
+        let confirmed_signals = model.build_confirmed_signal_rows();
+        assert!(
+            !confirmed_signals.is_empty(),
+            "Model should have confirmed signals for navigation testing"
+        );
+
+        // The bug: signals_table_row_count() returns 0 instead of confirmed_signals.len()
+        let row_count = model.signals_table_row_count();
+        assert_eq!(
+            row_count,
+            confirmed_signals.len(),
+            "signals_table_row_count() should return count of confirmed signals but returned {} \
+             instead of {}",
+            row_count,
+            confirmed_signals.len()
+        );
+
+        // Navigation down should work when there are signals
+        let initial_state = model.focus_state;
+        model.navigate_down();
+
+        // Should have moved to index 1 if there are 2+ signals, or stay at 0 if only 1
+        match (initial_state, model.focus_state) {
+            (FocusState::SignalsTable(0), FocusState::SignalsTable(new_idx)) => {
+                if confirmed_signals.len() > 1 {
+                    assert_eq!(
+                        new_idx, 1,
+                        "Should navigate to index 1 when there are multiple signals"
+                    );
+                } else {
+                    assert_eq!(
+                        new_idx, 0,
+                        "Should stay at index 0 when there's only one signal"
+                    );
+                }
+            }
+            _ => panic!("Navigation should maintain SignalsTable focus state"),
+        }
+
+        // Navigation up should also work
+        model.focus_state = FocusState::SignalsTable(1);
+        model.navigate_up();
+
+        match model.focus_state {
+            FocusState::SignalsTable(idx) => {
+                assert_eq!(idx, 0, "Should navigate up to index 0");
+            }
+            _ => panic!("Navigation should maintain SignalsTable focus state"),
+        }
     }
 }

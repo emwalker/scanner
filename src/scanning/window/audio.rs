@@ -471,6 +471,7 @@ mod tests {
     use super::*;
     use crate::{
         audio::quality::AudioQuality,
+        core::signals::ModulationType,
         ecs::{EntityWorld, SignalEntity, SignalId, TaskId, WindowId},
     };
 
@@ -481,7 +482,7 @@ mod tests {
         let frequency_hz = 88.9e6;
         let window_id = WindowId::new(task_id.clone(), window_index);
 
-        let signal = SignalEntity::new(frequency_hz, window_id.clone());
+        let signal = SignalEntity::new(frequency_hz, window_id.clone(), ModulationType::WFM);
         assert!(
             signal.analysis.is_not_started(),
             "Candidate should start with NotStarted analysis"
@@ -501,7 +502,7 @@ mod tests {
             AudioQuality::Good,
         );
 
-        let id = SignalId::new(signal.frequency_hz, window_id.clone());
+        let id = SignalId::new(signal.frequency_hz, ModulationType::WFM);
         if let Ok(mut entities) = signal_entities.write()
             && let Some(entity) = entities.get_mut(&id)
         {
@@ -561,7 +562,7 @@ mod tests {
         let frequency_hz = 89.3e6;
         let window_id = WindowId::new(task_id.clone(), window_index);
 
-        let signal = SignalEntity::new(frequency_hz, window_id.clone());
+        let signal = SignalEntity::new(frequency_hz, window_id.clone(), ModulationType::WFM);
 
         let mut world = EntityWorld::new();
         world.insert(signal);
@@ -577,7 +578,7 @@ mod tests {
             AudioQuality::Moderate,
         );
 
-        let id = SignalId::new(signal.frequency_hz, window_id.clone());
+        let id = SignalId::new(signal.frequency_hz, ModulationType::WFM);
         if let Ok(mut entities) = signal_entities.write()
             && let Some(entity) = entities.get_mut(&id)
         {

@@ -303,6 +303,7 @@ impl Default for WindowAllocationComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::signals::ModulationType;
 
     #[test]
     fn test_allocation_lifecycle() {
@@ -370,12 +371,7 @@ mod tests {
         allocation.complete_analysis();
 
         // Queue a signal for playback
-        use crate::ecs::{components::window::WindowId, entities::TaskId};
-        let window_id = WindowId {
-            task_id: TaskId("scan_1".to_string()),
-            window_index: 0,
-        };
-        let signal_id = SignalId::new(96.9e6, window_id);
+        let signal_id = SignalId::new(96.9e6, ModulationType::WFM);
         allocation.queue_for_playback(signal_id.clone());
 
         // All analysis done, but playback pending - NOT complete

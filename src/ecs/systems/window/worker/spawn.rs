@@ -101,6 +101,7 @@ impl WindowWorkerSpawnSystem {
         let pool = self.pool.clone();
         let window_entities = context.window_entities.clone();
         let task_id = task_id.clone();
+        let global_pause_resource = context.global_pause_resource.clone();
 
         debug!(
             task_id = ?task_id,
@@ -157,6 +158,7 @@ impl WindowWorkerSpawnSystem {
                 &config,
                 cancel_clone.clone(),
                 pause_signal,
+                global_pause_resource.clone(),
             ) {
                 Ok(result) => result,
                 Err(e) => {
@@ -232,6 +234,7 @@ impl WindowWorkerSpawnSystem {
                 center_freq,
                 &config,
                 cancel_clone.clone(),
+                global_pause_resource.clone(),
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -530,6 +533,7 @@ impl System for WindowWorkerSpawnSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::signals::ModulationType;
 
     #[test]
     fn test_system_creation() {
@@ -923,9 +927,21 @@ mod tests {
         let signal_entities = Arc::new(RwLock::new(EntityWorld::new()));
         {
             let mut entities = signal_entities.write().unwrap();
-            entities.insert(SignalEntity::new(94.1e6, window_id.clone()));
-            entities.insert(SignalEntity::new(94.7e6, window_id.clone()));
-            entities.insert(SignalEntity::new(95.1e6, window_id.clone()));
+            entities.insert(SignalEntity::new(
+                94.1e6,
+                window_id.clone(),
+                ModulationType::WFM,
+            ));
+            entities.insert(SignalEntity::new(
+                94.7e6,
+                window_id.clone(),
+                ModulationType::WFM,
+            ));
+            entities.insert(SignalEntity::new(
+                95.1e6,
+                window_id.clone(),
+                ModulationType::WFM,
+            ));
         }
 
         // Simulate what the fixed window worker does: calls start_active with the correct count

@@ -270,8 +270,12 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use super::*;
-    use crate::ecs::{
-        EntityWorld, ScanTaskData, SignalEntity, TaskEntity, TaskId, components::window::WindowId,
+    use crate::{
+        core::signals::ModulationType,
+        ecs::{
+            EntityWorld, ScanTaskData, SignalEntity, TaskEntity, TaskId,
+            components::window::WindowId,
+        },
     };
 
     fn create_test_task(task_id: &str, total_windows: usize) -> TaskEntity {
@@ -454,7 +458,7 @@ mod tests {
         let mut signal_world = EntityWorld::new();
         let task_id = TaskId::new("test-scan".to_string());
         let window_id = WindowId::new(task_id, 0);
-        let mut signal_entity = SignalEntity::new(88.9e6, window_id);
+        let mut signal_entity = SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
 
         // Confirm the signal so it can be tuned
         signal_entity
@@ -535,7 +539,7 @@ mod tests {
         let mut signal_world = EntityWorld::new();
         let task_id = TaskId::new("test-scan".to_string());
         let window_id1 = WindowId::new(task_id.clone(), 0);
-        let mut _signal1_entity = SignalEntity::new(88.9e6, window_id1);
+        let mut _signal1_entity = SignalEntity::new(88.9e6, window_id1, ModulationType::WFM);
 
         // Confirm signals so they can be tuned
         _signal1_entity
@@ -546,7 +550,7 @@ mod tests {
             .transition_to(crate::ecs::components::signal::PlaybackState::Playing);
 
         let window_id2 = WindowId::new(task_id, 1);
-        let mut _signal2_entity = SignalEntity::new(89.7e6, window_id2);
+        let mut _signal2_entity = SignalEntity::new(89.7e6, window_id2, ModulationType::WFM);
         _signal2_entity
             .analysis
             .confirm_analysis(crate::audio::quality::AudioQuality::Good, 0.8);
@@ -666,13 +670,13 @@ mod tests {
         let mut signal_world = EntityWorld::new();
         let task_id = TaskId::new("test-scan".to_string());
         let window_id1 = WindowId::new(task_id.clone(), 0);
-        let mut _signal1_entity = SignalEntity::new(88.9e6, window_id1);
+        let mut _signal1_entity = SignalEntity::new(88.9e6, window_id1, ModulationType::WFM);
         _signal1_entity
             .analysis
             .confirm_analysis(crate::audio::quality::AudioQuality::Good, 0.8);
 
         let window_id2 = WindowId::new(task_id, 1);
-        let mut _signal2_entity = SignalEntity::new(89.7e6, window_id2);
+        let mut _signal2_entity = SignalEntity::new(89.7e6, window_id2, ModulationType::WFM);
         _signal2_entity
             .analysis
             .confirm_analysis(crate::audio::quality::AudioQuality::Good, 0.7);

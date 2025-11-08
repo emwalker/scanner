@@ -306,6 +306,7 @@ mod tests {
     use super::*;
     use crate::{
         audio::quality::AudioQuality,
+        core::signals::ModulationType,
         ecs::{EntityWorld, SignalEntity, TaskId, components::window::WindowId},
     };
 
@@ -330,7 +331,7 @@ mod tests {
 
         let task_id = TaskId::new("test".to_string());
         let window_id = WindowId::new(task_id, 0);
-        let signal = SignalEntity::new(88.9e6, window_id);
+        let signal = SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
 
         let world = Arc::new(RwLock::new(EntityWorld::new()));
         world.write().unwrap().insert(signal);
@@ -362,7 +363,7 @@ mod tests {
         let window_id = WindowId::new(task_id.clone(), 0);
 
         // Create a signal that has already completed analysis with Good quality
-        let mut signal = SignalEntity::new(88.9e6, window_id.clone());
+        let mut signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
         signal.analysis.confirm_analysis(AudioQuality::Good, 26.4);
         signal.info.set_audio_quality(Some(AudioQuality::Good));
         signal.info.set_signal_strength(Some(26.4));
@@ -435,7 +436,7 @@ mod tests {
         let task_id = TaskId::new("scan_guard".to_string());
         let window_id = WindowId::new(task_id.clone(), 0);
 
-        let mut signal = SignalEntity::new(102.5e6, window_id.clone());
+        let mut signal = SignalEntity::new(102.5e6, window_id.clone(), ModulationType::WFM);
         signal.analysis.confirm_analysis(AudioQuality::Good, 12.5);
         signal.info.set_audio_quality(Some(AudioQuality::Good));
         signal.info.set_signal_strength(Some(12.5));
@@ -515,7 +516,7 @@ mod tests {
 
         let task_id = TaskId::new("test-scan".to_string());
         let window_id = WindowId::new(task_id.clone(), 0);
-        let mut signal = SignalEntity::new(88.9e6, window_id.clone());
+        let mut signal = SignalEntity::new(88.9e6, window_id.clone(), ModulationType::WFM);
         signal.analysis.confirm_analysis(AudioQuality::Static, 0.5);
         signal.info.set_audio_quality(Some(AudioQuality::Static));
         signal.info.set_signal_strength(Some(0.5));
@@ -561,7 +562,7 @@ mod tests {
 
         let task_id = TaskId::new("test".to_string());
         let window_id = WindowId::new(task_id, 0);
-        let mut signal = SignalEntity::new(88.9e6, window_id);
+        let mut signal = SignalEntity::new(88.9e6, window_id, ModulationType::WFM);
 
         // Create result channel and barrier for synchronization
         let (result_tx, result_rx) = std::sync::mpsc::channel();
@@ -656,7 +657,7 @@ mod tests {
         let window_id = WindowId::new(task_id.clone(), 0);
 
         // Create a signal that has FAILED analysis (Poor quality)
-        let mut signal = SignalEntity::new(87.1e6, window_id.clone());
+        let mut signal = SignalEntity::new(87.1e6, window_id.clone(), ModulationType::WFM);
         signal.analysis.reject_analysis(AudioQuality::Poor, 0.2);
         signal.info.set_audio_quality(Some(AudioQuality::Poor));
         signal.info.set_signal_strength(Some(0.2));

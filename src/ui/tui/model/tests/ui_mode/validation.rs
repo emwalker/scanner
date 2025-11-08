@@ -1,5 +1,5 @@
 use super::super::helpers::{ModelTestContext, TestSignalState};
-use crate::ui::tui::model::UiMode;
+use crate::{ecs::components::signal::SignalId, ui::tui::model::UiMode};
 
 #[test]
 fn test_ui_mode_helper_methods() {
@@ -19,7 +19,7 @@ fn test_ui_mode_helper_methods() {
     ctx.model.ui_mode = UiMode::AwaitingTune {
         signal_index: 0,
         window_id: 0,
-        tuning_signal_id: "88.9-0".to_string(),
+        tuning_signal_id: SignalId::from_string("88.9-0".to_string()),
     };
     assert!(ctx.model.is_awaiting_tune());
     assert!(ctx.model.is_interactive());
@@ -28,7 +28,7 @@ fn test_ui_mode_helper_methods() {
     ctx.model.ui_mode = UiMode::Listening {
         signal_index: 0,
         window_id: 1,
-        playing_signal_id: "88.9-1".to_string(),
+        playing_signal_id: SignalId::from_string("88.9-1".to_string()),
     };
     assert!(ctx.model.is_listening());
     assert!(ctx.model.is_interactive());

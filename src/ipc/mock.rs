@@ -73,6 +73,14 @@ impl MockDataReceiver {
     pub fn inject_packet(&self, packet: IQPacket) {
         self.to_recv.lock().unwrap().push_back(packet);
     }
+
+    pub fn add_packet(&self, packet: IQPacket) {
+        self.inject_packet(packet);
+    }
+
+    pub fn pending_packets(&self) -> usize {
+        self.to_recv.lock().unwrap().len()
+    }
 }
 
 impl Default for MockDataReceiver {
