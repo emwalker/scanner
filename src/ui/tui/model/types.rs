@@ -263,6 +263,7 @@ pub struct SignalRow {
     pub is_window_complete: bool,
     pub completion: f64,
     pub notes: Option<String>,
+    pub modulation: crate::core::signals::ModulationType,
 }
 
 impl SignalRow {
@@ -275,8 +276,7 @@ impl SignalRow {
 
         let frequency = format_frequency_hz(self.frequency_hz);
 
-        // For now, show "FM" as placeholder for modulation
-        let modulation = "FM";
+        let modulation = self.modulation.to_string();
 
         // Activity column should show "Playing" when playing, blank otherwise
         let activity = if self.playback_state == PlaybackState::Playing {
@@ -424,6 +424,7 @@ mod tests {
             is_window_complete: false,
             completion: 1.0,
             notes: None,
+            modulation: crate::core::signals::ModulationType::WFM,
         };
 
         let cells = signal_row.build_signals_table_cells(&theme);
@@ -460,6 +461,7 @@ mod tests {
             is_window_complete: false,
             completion: 1.0,
             notes: None,
+            modulation: crate::core::signals::ModulationType::WFM,
         };
 
         let cells = signal_row.build_signals_table_cells(&theme);
@@ -493,6 +495,7 @@ mod tests {
             is_window_complete: false,
             completion: 1.0,
             notes: None,
+            modulation: crate::core::signals::ModulationType::WFM,
         };
 
         let cells = signal_row.build_signals_table_cells(&theme);
@@ -522,6 +525,7 @@ mod tests {
             is_window_complete: false,
             completion: 1.0,
             notes: None,
+            modulation: crate::core::signals::ModulationType::WFM,
         };
 
         let cells = signal_row.build_signals_table_cells(&theme);
@@ -565,6 +569,7 @@ mod tests {
             is_window_complete: false,
             completion: 1.0,
             notes: None,
+            modulation: crate::core::signals::ModulationType::WFM,
         };
 
         // Currently SignalRow doesn't have a formatted_frequency field
@@ -578,5 +583,82 @@ mod tests {
         // TODO: Once we add formatted_frequency field, this test should verify:
         // assert!(signal_row.formatted_frequency.is_some());
         // assert_eq!(signal_row.formatted_frequency.unwrap(), "89.100.000");
+    }
+
+    #[test]
+    fn test_signal_row_displays_wfm_modulation_for_wideband_fm() {
+        use crate::{core::signals::ModulationType, ui::tui::themes::basic::BasicDarkTheme};
+
+        let theme = BasicDarkTheme;
+
+        let signal_row = SignalRow {
+            window_id: 0,
+            frequency_hz: 88_900_000.0,
+            status: AnalysisStatus::Signal,
+            playback_state: PlaybackState::NotPlaying,
+            audio_quality: None,
+            is_window_complete: false,
+            completion: 1.0,
+            notes: None,
+            modulation: ModulationType::WFM,
+        };
+
+        let cells = signal_row.build_signals_table_cells(&theme);
+
+        // Should have 4 cells: Frequency, Modulation, Activity, Notes
+        assert_eq!(
+            cells.len(),
+            4,
+            "SignalRow should build 4 cells for Signals table"
+        );
+
+        // Modulation column (index 1) should show "WFM" for wideband FM signals
+        let modulation_content = format!("{:?}", cells[1]);
+        assert!(
+            modulation_content.contains("WFM"),
+            "Modulation column should show 'WFM' for WFM signals, got: {}",
+            modulation_content
+        );
+    }
+
+    #[test]
+    fn test_signal_row_displays_correct_modulation_types() {
+        use crate::{core::signals::ModulationType, ui::tui::themes::basic::BasicDarkTheme};
+
+        let theme = BasicDarkTheme;
+
+        // Test different modulation types display correctly
+        let test_cases = vec![
+            (ModulationType::WFM, "WFM"),
+            (ModulationType::NFM, "NFM"),
+            (ModulationType::AM, "AM"),
+            (ModulationType::LSB, "LSB"),
+            (ModulationType::USB, "USB"),
+        ];
+
+        for (modulation, expected_text) in test_cases {
+            let signal_row = SignalRow {
+                window_id: 0,
+                frequency_hz: 88_900_000.0,
+                status: AnalysisStatus::Signal,
+                playback_state: PlaybackState::NotPlaying,
+                audio_quality: None,
+                is_window_complete: false,
+                completion: 1.0,
+                notes: None,
+                modulation: modulation.clone(),
+            };
+
+            let cells = signal_row.build_signals_table_cells(&theme);
+            let modulation_content = format!("{:?}", cells[1]);
+
+            assert!(
+                modulation_content.contains(expected_text),
+                "Modulation column should show '{}' for {:?} signals, got: {}",
+                expected_text,
+                modulation,
+                modulation_content
+            );
+        }
     }
 }

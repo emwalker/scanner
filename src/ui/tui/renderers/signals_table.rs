@@ -56,18 +56,23 @@ pub fn render_signals_table(f: &mut Frame, area: Rect, model: &mut Model, theme:
         renderer.render(&model.focus_state, theme, visibility_context)
     };
 
-    let table = Table::new(rows, [
-        Constraint::Length(11),     // Frequency (matches Scan Progress table)
-        Constraint::Percentage(30), // Modulation
-        Constraint::Percentage(30), // Activity
-        Constraint::Percentage(40), // Notes
-    ])
-    .header(header)
-    .block(block)
-    .column_spacing(2);
+    let table = Table::new(rows, get_signals_table_constraints())
+        .header(header)
+        .block(block)
+        .column_spacing(2);
 
     f.render_widget(table, area);
     table_styles::render_scrollbar(f, area, &scrollbar_state, theme);
+}
+
+/// Get the column constraints used by render_signals_table
+fn get_signals_table_constraints() -> [ratatui::layout::Constraint; 4] {
+    [
+        Constraint::Length(11),      // Frequency (matches Scan Progress table)
+        Constraint::Length(10),      // Modulation (fits header and future types)
+        Constraint::Length(8),       // Activity (minimum for "Playing")
+        Constraint::Percentage(100), // Notes (takes remaining space)
+    ]
 }
 
 #[cfg(test)]
@@ -591,6 +596,93 @@ mod tests {
              2, got offset = {}. This fails because TableRenderer2.get_selected_index() doesn't \
              handle SignalsTable focus state.",
             test_scroll.offset
+        );
+    }
+
+    #[test]
+    fn test_signals_table_uses_optimized_column_widths() {
+        // TDD RED: Test that signals table uses optimized column widths
+        // - Modulation column: minimum width for content (3 chars for "WFM", "NFM", etc.)
+        // - Activity column: minimum width for content (7 chars for "Playing")
+        // - Notes column: takes remaining space
+
+        use std::time::Instant;
+
+        use crate::{
+            audio::quality::AudioQuality,
+            core::signals::ModulationType,
+            ecs::components::SignalId,
+            ui::tui::model::types::{
+                AnalysisStatus, PlaybackState, SignalProgress, WindowProgress,
+            },
+        };
+
+        let mut model = Model::default();
+
+        // Create test signal with content that will exercise the column widths
+        let signal_id = SignalId::new(88.9e6, ModulationType::WFM);
+        let mut window_progress = WindowProgress {
+            window_id: 0,
+            signals: vec![SignalProgress {
+                signal_id: signal_id.clone(),
+                frequency_hz: 88.9e6,
+                window_id: 0,
+                center_frequency_hz: 88.9e6,
+                completion: 1.0,
+                status: AnalysisStatus::Signal,
+                playback_state: PlaybackState::Playing, // Will show "Playing" in Activity column
+                audio_quality: Some(AudioQuality::Good),
+                signal_strength: Some(0.8),
+                last_update: Instant::now(),
+                notes: Some("This is a long note that should take up remaining space".to_string()),
+            }],
+            is_complete: false,
+            signal_lookup: std::collections::HashMap::new(),
+        };
+
+        window_progress.signal_lookup.insert(signal_id, 0);
+        model.windows.insert(0, window_progress);
+
+        // Get the table constraints currently used in render_signals_table
+        // This test will fail until we optimize the constraints
+
+        // Current implementation uses percentages - we want to change to:
+        // - Frequency: Length(11) (unchanged)
+        // - Modulation: Length(3) (minimum for "WFM", "NFM", etc.)
+        // - Activity: Length(7) (minimum for "Playing")
+        // - Notes: Percentage(100) (takes remaining space)
+
+        let constraints = get_signals_table_constraints();
+
+        // Assert the optimized constraint layout
+        assert_eq!(constraints.len(), 4, "Should have 4 column constraints");
+
+        // Frequency column should remain fixed width
+        assert_eq!(
+            format!("{:?}", constraints[0]),
+            "Length(11)",
+            "Frequency column should be Length(11)"
+        );
+
+        // Modulation column should be minimum width for content
+        assert_eq!(
+            format!("{:?}", constraints[1]),
+            "Length(10)",
+            "Modulation column should be Length(10) for header and future modulation types"
+        );
+
+        // Activity column should be minimum width for "Playing"
+        assert_eq!(
+            format!("{:?}", constraints[2]),
+            "Length(8)",
+            "Activity column should be Length(8) for 'Playing'"
+        );
+
+        // Notes column should take remaining space
+        assert_eq!(
+            format!("{:?}", constraints[3]),
+            "Percentage(100)",
+            "Notes column should be Percentage(100) to take remaining space"
         );
     }
 }

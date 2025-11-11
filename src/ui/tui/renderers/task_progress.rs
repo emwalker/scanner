@@ -183,6 +183,7 @@ mod tests {
             is_window_complete: false,
             completion: 0.5,
             notes: None,
+            modulation: crate::core::signals::ModulationType::WFM,
         };
 
         assert_eq!(row.group_id(), 5);

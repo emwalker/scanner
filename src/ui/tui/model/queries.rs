@@ -221,6 +221,7 @@ impl Model {
                     is_window_complete: window.is_complete,
                     completion: signal.completion,
                     notes: signal.notes.clone(),
+                    modulation: crate::core::signals::ModulationType::WFM,
                 });
             }
         }
@@ -247,6 +248,7 @@ impl Model {
                         is_window_complete: window.is_complete,
                         completion: signal.completion,
                         notes: signal.notes.clone(),
+                        modulation: crate::core::signals::ModulationType::WFM,
                     });
                 }
             }
@@ -265,6 +267,7 @@ impl Model {
                 is_window_complete: true, // Persistent signals are "complete"
                 completion: 1.0,
                 notes: persistent_signal.notes.clone(),
+                modulation: persistent_signal.modulation.clone(),
             });
         }
 

@@ -22,10 +22,10 @@ use crate::{
     core::signals::ModulationType,
     ecs::{
         AudioEntity, Entities, Entity, SignalEntity, TaskComponents, TaskEntity,
-        components::scan::PreviousPauseState,
+        components::scan::PreviousPauseState, resources::LocationResource,
     },
     persistence::{
-        location::{Location, LocationDetector, UserSettings},
+        location::{DEFAULT_LOCATION, Location, LocationDetector, UserSettings},
         storage::SignalStorage,
         types::PersistedSignal,
     },
@@ -63,6 +63,8 @@ pub struct TuiProgressDisplay {
     audio_entities: Option<Entities<AudioEntity>>,
     signal_entities: Option<Entities<SignalEntity>>,
     pause_request_queue: Option<crate::ecs::Resource<crate::ecs::PauseRequestQueue>>,
+    location_resource: Option<LocationResource>,
+    cached_locality: Option<String>,
     last_audio_gen: u64,
     last_scan_gen: u64,
     signal_storage: SignalStorage,
@@ -108,6 +110,8 @@ impl TuiProgressDisplay {
             audio_entities: None,
             signal_entities: None,
             pause_request_queue: None,
+            location_resource: None,
+            cached_locality: None,
             last_audio_gen: 0,
             last_scan_gen: 0,
             signal_storage: SignalStorage::new(Self::get_signals_storage_path()),
@@ -133,6 +137,8 @@ impl TuiProgressDisplay {
             audio_entities: None,
             signal_entities: None,
             pause_request_queue: None,
+            location_resource: None,
+            cached_locality: None,
             last_audio_gen: 0,
             last_scan_gen: 0,
             signal_storage: SignalStorage::new(Self::get_signals_storage_path()),
@@ -167,23 +173,48 @@ impl TuiProgressDisplay {
         self
     }
 
+    pub fn with_location_resource(mut self, resource: LocationResource) -> Self {
+        self.location_resource = Some(resource);
+        self
+    }
+
     /// Load persistent signals from storage during TUI initialization
     /// Following Elm Architecture - this updates Model state during startup
     pub fn with_persistence(mut self) -> Self {
-        // Use a default location for now - could be enhanced to get actual user location
-        let default_location = crate::persistence::location::Location {
-            lat: 37.7749, // San Francisco default
-            lon: -122.4194,
+        // Try to get actual user location, fall back to San Francisco default
+        let location = if let Some(ref location_resource) = self.location_resource {
+            // Try to get location using LocationResource
+            if let Ok(mut resource) = location_resource.try_lock() {
+                if let Ok(detected_location) = resource.detect_current_location() {
+                    debug!(
+                        "Using detected location for signal storage: lat={}, lon={}",
+                        detected_location.lat, detected_location.lon
+                    );
+                    crate::persistence::location::Location {
+                        lat: detected_location.lat,
+                        lon: detected_location.lon,
+                    }
+                } else {
+                    debug!("Location detection failed, using San Francisco default");
+                    DEFAULT_LOCATION
+                }
+            } else {
+                debug!("LocationResource locked, using San Francisco default");
+                DEFAULT_LOCATION
+            }
+        } else {
+            debug!("No LocationResource available, using San Francisco default");
+            DEFAULT_LOCATION
         };
 
         debug!(
             "Starting persistent signal loading with location: lat={}, lon={}",
-            default_location.lat, default_location.lon
+            location.lat, location.lon
         );
 
         match self
             .model
-            .load_persistent_signals_from_storage(&self.signal_storage, default_location)
+            .load_persistent_signals_from_storage(&self.signal_storage, location)
         {
             Ok(()) => {
                 debug!("Successfully loaded persistent signals from storage");
@@ -1018,7 +1049,7 @@ impl TuiProgressDisplay {
             lat: 37.7749, // San Francisco default
             lon: -122.4194,
         };
-        let location = LocationDetector::get_current_location(Some(fallback_location))?;
+        let location = LocationDetector::current_location(Some(fallback_location))?;
 
         // Create persisted signal with current data
         let persisted_signal = PersistedSignal {
@@ -1093,7 +1124,7 @@ impl TuiProgressDisplay {
             lat: 37.7749, // San Francisco default
             lon: -122.4194,
         };
-        let location = LocationDetector::get_current_location(Some(fallback_location))?;
+        let location = LocationDetector::current_location(Some(fallback_location))?;
 
         // Create persisted signal with current data
         let persisted_signal = PersistedSignal {
@@ -1239,7 +1270,7 @@ impl TuiProgressDisplay {
         &mut self,
         signal_progress: &crate::ui::tui::model::types::SignalProgress,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let location = LocationDetector::get_current_location(Some(Location {
+        let location = LocationDetector::current_location(Some(Location {
             lat: 37.7749, // San Francisco default
             lon: -122.4194,
         }))?;
@@ -1439,6 +1470,11 @@ impl TuiProgressDisplay {
         let mut iterations = 0;
         let animation_interval = Duration::from_millis(100); // 10 FPS for slower, smoother animation
 
+        // Initialize locality on first run
+        if self.cached_locality.is_none() {
+            self.update_cached_locality_sync();
+        }
+
         loop {
             // Update spectrum data from entities
             self.update_spectrum_from_entities();
@@ -1472,6 +1508,31 @@ impl TuiProgressDisplay {
         Ok(())
     }
 
+    /// Update cached locality using location resource
+    fn update_cached_locality_sync(&mut self) {
+        // Try to get locality from LocationResource if available
+        if let Some(ref location_resource) = self.location_resource
+            && let Ok(mut resource) = location_resource.try_lock()
+            && let Ok(detected_location) = resource.detect_current_location()
+        {
+            self.cached_locality = Some(detected_location.locality_name());
+            return;
+        }
+
+        // Fallback to settings-based location
+        let locality = if let Ok(settings) = LocationDetector::load_user_settings() {
+            if settings.last_known_location.is_some() {
+                Some("Local".to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        self.cached_locality = locality;
+    }
+
     fn ui(&mut self, f: &mut Frame) {
         let theme = self.theme.as_ref();
         let theme_name = self.current_theme.to_string();
@@ -1486,7 +1547,13 @@ impl TuiProgressDisplay {
             total_signals_count,
         );
 
-        header::render_header(f, layout.header, &self.model, theme);
+        header::render_header(
+            f,
+            layout.header,
+            &self.model,
+            theme,
+            self.cached_locality.as_deref(),
+        );
         render_activities(f, layout.activities, &mut self.model, theme);
 
         if let Some(task_id) = self.model.displayed_task_id.clone() {
@@ -1721,6 +1788,130 @@ mod tests {
                 entities.iter().all(|e| !e.is_playing()),
                 "All audio should be stopped after pause_all_audio"
             );
+        }
+    }
+
+    #[test]
+    fn test_update_cached_locality_uses_location_resource() {
+        // Create a TUI with location resource
+        let (_tui_tx, tui_rx) = std::sync::mpsc::channel();
+        let shutdown_token = tokio_util::sync::CancellationToken::new();
+
+        let location_resource = crate::ecs::resources::new_location_resource();
+
+        let mut tui = TuiProgressDisplay::new(tui_rx, shutdown_token)
+            .with_location_resource(location_resource);
+
+        // Initially cached_locality should be None
+        assert!(tui.cached_locality.is_none());
+
+        // Call the method - should detect location and set locality
+        tui.update_cached_locality_sync();
+
+        // Should now have a locality (not the stub "Local" string)
+        assert!(tui.cached_locality.is_some());
+        let locality = tui.cached_locality.unwrap();
+
+        // Should be actual city name, not the stub "Local" string
+        assert_ne!(locality, "Local");
+        assert!(!locality.is_empty());
+    }
+
+    #[test]
+    fn test_locality_display_basic_integration() {
+        let (_tui_tx, tui_rx) = std::sync::mpsc::channel();
+        let shutdown_token = tokio_util::sync::CancellationToken::new();
+
+        // Test basic TUI functionality without location resource
+        let mut tui = TuiProgressDisplay::new(tui_rx, shutdown_token);
+
+        // Initially cached_locality should be None
+        assert!(tui.cached_locality.is_none());
+
+        // Update locality without location resource - should work without panic
+        tui.update_cached_locality_sync();
+
+        // May or may not have locality depending on settings
+        // Test passes as long as it doesn't panic
+    }
+
+    #[test]
+    fn test_locality_display_with_real_location_resource() {
+        let (_tui_tx, tui_rx) = std::sync::mpsc::channel();
+        let shutdown_token = tokio_util::sync::CancellationToken::new();
+
+        // Use real location resource
+        let location_resource = crate::ecs::resources::new_location_resource();
+
+        let mut tui = TuiProgressDisplay::new(tui_rx, shutdown_token)
+            .with_location_resource(location_resource);
+
+        // Initially cached_locality should be None
+        assert!(tui.cached_locality.is_none());
+
+        // Update locality - should either detect location or fall back gracefully
+        tui.update_cached_locality_sync();
+
+        // Should either have a locality or None - test passes as long as no panic
+        if let Some(locality) = &tui.cached_locality {
+            assert!(!locality.is_empty());
+            // Should not be placeholder values
+            assert_ne!(locality, "Local");
+            assert_ne!(locality, "Unknown");
+        }
+    }
+
+    #[test]
+    fn test_locality_caching_behavior() {
+        let (_tui_tx, tui_rx) = std::sync::mpsc::channel();
+        let shutdown_token = tokio_util::sync::CancellationToken::new();
+
+        let location_resource = crate::ecs::resources::new_location_resource();
+
+        let mut tui = TuiProgressDisplay::new(tui_rx, shutdown_token)
+            .with_location_resource(location_resource);
+
+        // First update
+        tui.update_cached_locality_sync();
+        let first_result = tui.cached_locality.clone();
+
+        // Second update should be consistent (cached or same result)
+        tui.update_cached_locality_sync();
+        let second_result = tui.cached_locality.clone();
+
+        // Results should be consistent
+        assert_eq!(first_result, second_result);
+    }
+
+    #[test]
+    fn test_ui_locality_display_thread_safety() {
+        use std::thread;
+
+        let location_resource = crate::ecs::resources::new_location_resource();
+
+        // Test multiple threads accessing same location resource
+        let handles: Vec<_> = (0..3)
+            .map(|_| {
+                let location_resource = location_resource.clone();
+                thread::spawn(move || {
+                    let (_tui_tx, tui_rx) = std::sync::mpsc::channel();
+                    let shutdown_token = tokio_util::sync::CancellationToken::new();
+
+                    let mut tui = TuiProgressDisplay::new(tui_rx, shutdown_token)
+                        .with_location_resource(location_resource);
+
+                    tui.update_cached_locality_sync();
+                    tui.cached_locality
+                })
+            })
+            .collect();
+
+        // All threads should complete successfully
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // All should either succeed with same result or handle errors gracefully
+        for locality in results.into_iter().flatten() {
+            assert!(!locality.is_empty());
         }
     }
 }

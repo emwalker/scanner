@@ -28,6 +28,7 @@ use crate::{
         AudioEntity, Entities, EntityWorld, SignalEntity, TaskEntity, TunerEntity, WindowEntity,
         components::audio::{AudioId, AudioQueueComponent},
         queue::{PauseRequestQueue, TunerAllocationQueue, TunerRequestQueue},
+        resources::LocationResource,
     },
     hardware::pool::{Pool, Segment},
     shutdown::ShutdownCoordinator,
@@ -69,6 +70,9 @@ pub struct SystemContext {
     /// Global pause resource
     pub global_pause_resource: Option<crate::ecs::GlobalPauseResource>,
 
+    /// Location detection resource
+    pub location_resource: Option<LocationResource>,
+
     pub pool: Option<Arc<Pool>>,
     pub config: Option<Arc<ScanningConfig>>,
     pub shutdown_coordinator: Option<Arc<ShutdownCoordinator>>,
@@ -95,6 +99,7 @@ impl SystemContext {
             tuner_allocation_queue: None,
             pause_request_queue: None,
             global_pause_resource: None,
+            location_resource: None,
             pool: None,
             config: None,
             shutdown_coordinator: None,
@@ -158,6 +163,11 @@ impl SystemContext {
 
     pub fn with_global_pause_resource(mut self, resource: crate::ecs::GlobalPauseResource) -> Self {
         self.global_pause_resource = Some(resource);
+        self
+    }
+
+    pub fn with_location_resource(mut self, resource: LocationResource) -> Self {
+        self.location_resource = Some(resource);
         self
     }
 

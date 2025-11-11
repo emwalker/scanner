@@ -11,6 +11,7 @@ use crate::{
         AudioEntity, AudioId, Entities, EntityWorld, Scheduler, SignalEntity, TaskEntity,
         TunerEntity, WindowEntity,
         queue::{PauseRequestQueue, TunerAllocationQueue, TunerRequestQueue},
+        resources::LocationResource,
         system::SystemContext,
     },
     hardware::pool::{Pool, Segment},
@@ -41,6 +42,7 @@ pub struct Coordinator {
     tuner_allocation_queue: Resource<TunerAllocationQueue>,
     pause_request_queue: Resource<PauseRequestQueue>,
     global_pause_resource: crate::ecs::GlobalPauseResource,
+    location_resource: Option<LocationResource>,
 
     pool: Arc<Pool>,
     config: Arc<ScanningConfig>,
@@ -69,6 +71,7 @@ impl Coordinator {
             tuner_allocation_queue: Arc::new(Mutex::new(VecDeque::new())),
             pause_request_queue: Arc::new(Mutex::new(VecDeque::new())),
             global_pause_resource: Arc::new(Mutex::new(crate::ecs::GlobalPauseState::Active)),
+            location_resource: None,
             pool: Arc::clone(pool),
             config: Arc::clone(config),
             shutdown_coordinator: Arc::clone(shutdown_coordinator),
@@ -111,6 +114,12 @@ impl Coordinator {
         self
     }
 
+    /// Set the location resource for IP-based location detection
+    pub fn with_location_resource(mut self, resource: LocationResource) -> Self {
+        self.location_resource = Some(resource);
+        self
+    }
+
     /// Get a clone of the global pause resource for external access (e.g., TUI)
     pub fn global_pause_resource(&self) -> crate::ecs::GlobalPauseResource {
         Arc::clone(&self.global_pause_resource)
@@ -142,6 +151,10 @@ impl Coordinator {
             .with_pool(Arc::clone(&self.pool))
             .with_config(Arc::clone(&self.config))
             .with_shutdown_coordinator(Arc::clone(&self.shutdown_coordinator));
+
+        if let Some(ref location_resource) = self.location_resource {
+            context = context.with_location_resource(Arc::clone(location_resource));
+        }
 
         if let Some(ref task_entities) = self.task_entities {
             context = context.with_task_entities(Arc::clone(task_entities));

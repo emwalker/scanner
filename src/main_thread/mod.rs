@@ -9,6 +9,7 @@ use crate::{
     core::types::{Result, ScanningConfig},
     ecs::{
         AudioEntity, DeviceEntity, Entities, EntityWorld, SignalEntity, TunerEntity, WindowEntity,
+        resources::LocationResource,
     },
     hardware::pool::{Pool, PoolFilter, TuningMode},
     shutdown::ShutdownCoordinator,
@@ -38,6 +39,7 @@ pub struct MainThread {
     global_pause_resource: crate::ecs::GlobalPauseResource,
     pending_scan_request: Arc<RwLock<Option<crate::ecs::components::scan::PendingScanRequest>>>,
     discovery_rx: Option<std::sync::mpsc::Receiver<crate::discovery::Event>>,
+    location_resource: LocationResource,
 }
 
 impl MainThread {
@@ -79,6 +81,9 @@ impl MainThread {
         let pending_scan_request = Arc::new(RwLock::new(None));
         let (_discovery_tx, discovery_rx) = std::sync::mpsc::channel();
 
+        // Create a dummy LocationResource for testing
+        let location_resource = crate::ecs::resources::new_location_resource();
+
         let main_thread = MainThread {
             config,
             _backend: backend,
@@ -98,6 +103,7 @@ impl MainThread {
             global_pause_resource,
             pending_scan_request,
             discovery_rx: Some(discovery_rx),
+            location_resource,
         };
 
         Ok(main_thread)
@@ -119,6 +125,7 @@ impl MainThread {
         global_pause_resource: crate::ecs::GlobalPauseResource,
         pending_scan_request: Arc<RwLock<Option<crate::ecs::components::scan::PendingScanRequest>>>,
         discovery_rx: std::sync::mpsc::Receiver<crate::discovery::Event>,
+        location_resource: LocationResource,
     ) -> Result<Self> {
         let main_thread = MainThread {
             config,
@@ -139,6 +146,7 @@ impl MainThread {
             global_pause_resource,
             pending_scan_request,
             discovery_rx: Some(discovery_rx),
+            location_resource,
         };
 
         Ok(main_thread)
@@ -180,6 +188,7 @@ impl MainThread {
 
         let pause_request_queue = self.pause_request_queue.clone();
         let global_pause_resource = self.global_pause_resource.clone();
+        let location_resource = self.location_resource.clone();
 
         let handle = std::thread::spawn(move || {
             if let Ok(mut guard) = thread_handle.lock() {
@@ -192,7 +201,8 @@ impl MainThread {
                 .with_audio_entities(audio_entities)
                 .with_signal_entities(signal_entities)
                 .with_pause_request_queue(pause_request_queue)
-                .with_global_pause_resource(global_pause_resource);
+                .with_global_pause_resource(global_pause_resource)
+                .with_location_resource(location_resource);
 
             coordinator.add_system(Box::new(crate::ecs::systems::DiscoverySystem::new()));
             coordinator.add_system(Box::new(crate::ecs::systems::AllocationSystem::new()));

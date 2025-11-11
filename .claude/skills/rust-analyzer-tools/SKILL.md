@@ -1,6 +1,6 @@
 ---
 name: rust-analyzer-tools
-description: REQUIRED for ALL Rust symbol operations and refactoring. Use BEFORE Grep/Read for any Rust code work. Provides semantic understanding via rust-analyzer for navigation, error analysis, safe refactoring, and code generation. MANDATORY checklist inside shows when to use find_references (not Grep), rename_symbol (not find/replace), get_diagnostics (not cargo build), and organize_imports (not manual). Check the Pre-Flight Checklist before using standard tools.
+description: REQUIRED for ALL Rust symbol operations and refactoring. Use BEFORE Grep/Read for any Rust code work. Provides semantic understanding via rust-analyzer for navigation, error analysis, safe refactoring, and code generation. MANDATORY checklist inside shows when to use find_references (not Grep), get_diagnostics (not cargo build), and organize_imports (not manual). Check the Pre-Flight Checklist before using standard tools.
 ---
 
 # rust-analyzer Tools
@@ -31,7 +31,7 @@ Do NOT use this skill for:
 **Before using Grep, Read, or manual editing for Rust code, check this list:**
 
 - [ ] Am I looking for all usages of a symbol? → **Use find_references** (not Grep)
-- [ ] Am I renaming something? → **Use rename_symbol** (not find/replace, NEVER manual editing)
+- [ ] Am I renaming something? → **Don't use rename_symbol** (it doesn't work)
 - [ ] Am I looking for where something is defined? → **Use find_definition** (not Grep)
 - [ ] Am I searching for types/traits/functions by name? → **Use workspace_symbols** (not Grep)
 - [ ] Did I just make changes? → **Use get_diagnostics** (not cargo build) + **organize_imports** (not manual)
@@ -99,13 +99,6 @@ Navigate Rust code using semantic understanding, not text matching.
 ### 3. Safe Refactoring
 
 Perform refactoring operations with semantic awareness to avoid breaking changes.
-
-**rename_symbol** - Rename variables, functions, types
-- Scope-aware: won't rename unrelated symbols with same name
-- Updates all references automatically
-- Checks for naming conflicts before applying
-- Updates imports and qualified paths
-- Example: "Rename `old_var` to `new_var` throughout the codebase"
 
 **extract_function** - Move code into a separate function
 - Analyzes data flow to determine parameters
@@ -228,7 +221,6 @@ Starting point: What do you need to do?
 │  └─ Borrow checker issues → validate_lifetimes
 │
 ├─ Refactor code?
-│  ├─ Rename → rename_symbol (NEVER manual find-replace)
 │  ├─ Extract code → extract_function
 │  ├─ Remove indirection → inline_function
 │  ├─ Clean imports → organize_imports
@@ -270,7 +262,7 @@ Starting point: What do you need to do?
 ### Workflow 3: Safe Refactoring
 
 1. Use `find_references` to understand current usage patterns
-2. Apply refactoring: `rename_symbol`, `extract_function`, or `inline_function`
+2. Apply refactoring: `extract_function`, or `inline_function`
 3. Run `run_cargo_check` to verify no breakage
 4. Use `organize_imports` to clean up use statements
 5. Apply `format_code` for consistent style
@@ -305,8 +297,6 @@ Starting point: What do you need to do?
 - Performance-critical simple searches
 
 ### Refactoring Safety
-
-**ALWAYS use `rename_symbol` for renaming** - Never use manual find-replace or Grep + Edit for renaming Rust symbols. The `rename_symbol` tool is scope-aware and will prevent accidental renaming of unrelated symbols.
 
 **Verify after refactoring** - After any refactoring operation, run `run_cargo_check` to ensure no compilation errors were introduced.
 

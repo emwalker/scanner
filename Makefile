@@ -9,4 +9,4 @@ test:
 	cargo test --quiet
 	@echo ""
 	@echo "Running Loom concurrency tests..."
-	RUSTFLAGS="--cfg loom" cargo test --test shutdown --release --quiet
+	RUSTFLAGS="--cfg loom" cargo test --test shutdown --release --quiet --no-default-features --features soapysdr

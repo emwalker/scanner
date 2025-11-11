@@ -394,6 +394,7 @@ fn test_interactive_mode_keeps_coordinator_alive_after_scan_completion() {
     )));
 
     let (_discovery_tx, discovery_rx) = std::sync::mpsc::channel();
+    let location_resource = crate::ecs::resources::new_location_resource();
 
     let main_thread = MainThread::new_with_entities(
         Arc::new(config),
@@ -410,6 +411,7 @@ fn test_interactive_mode_keeps_coordinator_alive_after_scan_completion() {
         global_pause_resource,
         pending_scan_request,
         discovery_rx,
+        location_resource,
     )
     .unwrap()
     .with_tui_event_sender(tui_sender)

@@ -5,6 +5,7 @@ use std::{
 
 use crate::{
     core::types::{Result, ScannerError, ScanningConfig},
+    ecs::resources::LocationResource,
     hardware::pool::Pool,
     main_thread::MainThread,
     shutdown::ShutdownCoordinator,
@@ -38,10 +39,13 @@ pub fn start_tui(
     signal_entities: Arc<std::sync::RwLock<crate::ecs::EntityWorld<crate::ecs::SignalEntity>>>,
     pause_request_queue: crate::ecs::Resource<crate::ecs::PauseRequestQueue>,
     global_pause_resource: crate::ecs::GlobalPauseResource,
+    location_resource: LocationResource,
 ) -> thread::JoinHandle<std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>> {
     let theme = create_theme(&theme_name);
 
     thread::spawn(move || {
+        // Use LocationResource provided from application level
+
         let mut tui_display = TuiProgressDisplay::new_with_theme(
             tui_event_receiver,
             shutdown_coordinator.token(),
@@ -51,6 +55,7 @@ pub fn start_tui(
         .with_entities(task_entities, audio_entities, signal_entities)
         .with_pause_request_queue(pause_request_queue)
         .with_global_pause_resource(global_pause_resource)
+        .with_location_resource(location_resource)
         .with_persistence();
         tui_display.run()
     })
@@ -70,6 +75,7 @@ pub struct TuiRunContext {
     pub pending_scan_request:
         Arc<std::sync::RwLock<Option<crate::ecs::components::scan::PendingScanRequest>>>,
     pub discovery_rx: std::sync::mpsc::Receiver<crate::discovery::Event>,
+    pub location_resource: LocationResource,
 }
 
 pub fn run_with_tui(
@@ -98,6 +104,7 @@ pub fn run_with_tui(
         context.global_pause_resource,
         context.pending_scan_request,
         context.discovery_rx,
+        context.location_resource,
     )?
     .with_tui_event_sender(tui_context.tui_event_sender)
     .start();

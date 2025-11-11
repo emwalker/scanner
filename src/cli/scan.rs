@@ -10,6 +10,7 @@ use super::{
 };
 use crate::{
     core::types::{Result, ScannerError},
+    ecs::resources::{LocationResource, new_location_resource},
     hardware::pool::{Pool, PoolFilter, TuningMode},
     shutdown::ShutdownCoordinator,
     task::TaskScheduler,
@@ -131,10 +132,13 @@ pub fn handle_scan_command(args: ScanArgs) -> Result<()> {
     let shutdown_coordinator = Arc::new(ShutdownCoordinator::new());
     setup_signal_handler(shutdown_coordinator.clone())?;
 
+    // Create LocationResource once at application level - used by both TUI and headless modes
+    let location_resource = new_location_resource();
+
     if args.headless || is_stdout_piped() {
-        run_log_mode(&args, config, shutdown_coordinator)
+        run_log_mode(&args, config, shutdown_coordinator, location_resource)
     } else {
-        run_tui_mode(&args, config, shutdown_coordinator)
+        run_tui_mode(&args, config, shutdown_coordinator, location_resource)
     }
 }
 
@@ -142,6 +146,7 @@ fn run_tui_mode(
     args: &ScanArgs,
     config: crate::core::types::ScanningConfig,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
+    location_resource: LocationResource,
 ) -> Result<()> {
     let (tui_context, tui_event_receiver) = setup_tui_channels();
 
@@ -208,6 +213,7 @@ fn run_tui_mode(
         entity_worlds.signal_entities.clone(),
         pause_request_queue.clone(),
         global_pause_resource.clone(),
+        location_resource.clone(),
     );
 
     let format = super::config::determine_format(args);
@@ -227,6 +233,7 @@ fn run_tui_mode(
         global_pause_resource,
         pending_scan_request,
         discovery_rx,
+        location_resource: location_resource.clone(),
     };
 
     let result = run_with_tui(run_context, tui_context, tui_handle);
@@ -241,6 +248,7 @@ fn run_log_mode(
     args: &ScanArgs,
     config: crate::core::types::ScanningConfig,
     shutdown_coordinator: Arc<ShutdownCoordinator>,
+    location_resource: LocationResource,
 ) -> Result<()> {
     let filter = PoolFilter::new()
         .with_driver("sdrplay")
@@ -285,6 +293,28 @@ fn run_log_mode(
     let level = crate::logging::level_from_flags(args.verbose, args.quiet);
     crate::logging::init(level, format, None)?;
 
+    // Attempt location detection at startup (fail gracefully if rate limited)
+    {
+        tracing::debug!("Attempting location detection at startup...");
+        if let Ok(mut resource) = location_resource.try_lock() {
+            match resource.detect_current_location() {
+                Ok(detected_location) => {
+                    tracing::info!(
+                        lat = detected_location.lat,
+                        lon = detected_location.lon,
+                        city = ?detected_location.city,
+                        source = ?detected_location.source,
+                        "Location detected at startup: {}",
+                        detected_location.locality_name()
+                    );
+                }
+                Err(e) => {
+                    tracing::debug!("Startup location detection failed (may retry later): {}", e);
+                }
+            }
+        }
+    }
+
     let run_context = log_mode::LogRunContext {
         config,
         stations: args.stations.clone(),
@@ -295,6 +325,7 @@ fn run_log_mode(
         audio_entities: entity_worlds.audio_entities,
         pending_scan_request,
         discovery_rx,
+        location_resource,
     };
 
     let result = log_mode::run_with_logs(run_context);

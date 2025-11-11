@@ -2,6 +2,7 @@ use std::{sync::Arc, thread};
 
 use crate::{
     core::types::{Result, ScannerError, ScanningConfig},
+    ecs::resources::LocationResource,
     hardware::pool::Pool,
     main_thread::MainThread,
     shutdown::ShutdownCoordinator,
@@ -19,6 +20,7 @@ pub struct LogRunContext {
     pub pending_scan_request:
         Arc<std::sync::RwLock<Option<crate::ecs::components::scan::PendingScanRequest>>>,
     pub discovery_rx: std::sync::mpsc::Receiver<crate::discovery::Event>,
+    pub location_resource: LocationResource,
 }
 
 pub fn run_with_logs(context: LogRunContext) -> Result<()> {
@@ -49,6 +51,7 @@ pub fn run_with_logs(context: LogRunContext) -> Result<()> {
         global_pause_resource,
         context.pending_scan_request,
         context.discovery_rx,
+        context.location_resource,
     )?
     .start();
 
@@ -125,6 +128,8 @@ mod tests {
 
         let (_discovery_tx, discovery_rx) = std::sync::mpsc::channel();
 
+        let location_resource = crate::ecs::resources::new_location_resource();
+
         let context = LogRunContext {
             config,
             stations: Some("88.9e6".to_string()),
@@ -135,6 +140,7 @@ mod tests {
             audio_entities,
             pending_scan_request,
             discovery_rx,
+            location_resource,
         };
 
         std::thread::spawn(move || {
